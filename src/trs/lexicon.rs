@@ -1062,8 +1062,8 @@ impl GP for Lexicon {
                 {
                     return vec![new_trs];
                 }
-            } else if let Ok(new_trs) = trs.delete_rule(rng) {
-                return vec![new_trs];
+            } else if let Ok(new_trss) = trs.delete_rule() {
+                return new_trss;
             }
         }
     }

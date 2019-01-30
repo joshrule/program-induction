@@ -257,17 +257,24 @@ impl TRS {
     }
     /// Delete a rule from the rewrite system if possible. Background knowledge
     /// cannot be deleted.
-    pub fn delete_rule<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
+    pub fn delete_rule(&self) -> Result<Vec<TRS>, SampleError> {
         let background = &self.lex.0.read().expect("poisoned lexicon").background;
         let clauses = self.utrs.clauses();
-        let deletable: Vec<_> = clauses.iter().filter(|c| !background.contains(c)).collect();
+        let deletable = clauses
+            .iter()
+            .filter(|c| !background.contains(c))
+            .collect_vec();
         if deletable.is_empty() {
             Err(SampleError::OptionsExhausted)
         } else {
-            let mut trs = self.clone();
-            trs.utrs
-                .remove_clauses(deletable.choose(rng).ok_or(SampleError::OptionsExhausted)?)?;
-            Ok(trs)
+            deletable
+                .iter()
+                .map(|d| {
+                    let mut trs = self.clone();
+                    trs.utrs.remove_clauses(d)?;
+                    Ok(trs)
+                })
+                .collect()
         }
     }
     /// Move a Rule from one place in the TRS to another at random, excluding the background.
