@@ -264,6 +264,9 @@ impl TRS {
             true,
             max_size,
         )?;
+        if rule.lhs == rule.rhs().unwrap() {
+            return Err(SampleError::Trivial);
+        }
         trs.lex
             .0
             .write()

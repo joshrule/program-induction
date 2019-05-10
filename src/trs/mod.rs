@@ -94,6 +94,7 @@ pub enum SampleError {
     SizeExceeded(usize, usize),
     OptionsExhausted,
     Subterm,
+    Trivial,
 }
 impl From<TypeError> for SampleError {
     fn from(e: TypeError) -> SampleError {
@@ -120,6 +121,7 @@ impl fmt::Display for SampleError {
             }
             SampleError::OptionsExhausted => write!(f, "failed to sample (options exhausted)"),
             SampleError::Subterm => write!(f, "cannot sample subterm"),
+            SampleError::Trivial => write!(f, "result is a trivial rule"),
         }
     }
 }
