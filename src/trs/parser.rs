@@ -230,13 +230,16 @@ fn make_atom(
 
 named!(colon<CompleteStr, CompleteStr>, tag!(":"));
 // reserved characters include:
+// - [!] for holes
+// -   (space) for separating terms
+// - | for separating terms
 // - # for comments
 // - _ for variables
 // - : for signatures
 // - ( and ) for grouping
 // - = for specifying rules
 // - ; for ending statements
-named!(identifier<CompleteStr, CompleteStr>, is_not!("#_:()=;"));
+named!(identifier<CompleteStr, CompleteStr>, is_not!("[!]| #_:()=;"));
 named!(underscore<CompleteStr, CompleteStr>, tag!("_"));
 named!(atom_name<CompleteStr, AtomName>,
        alt!(map!(terminated!(identifier, underscore),
