@@ -1,6 +1,6 @@
-use itertools::{repeat_n, Itertools};
+use itertools::Itertools;
 use polytype::{Context as TypeContext, Type, TypeSchema, Variable as TypeVar};
-use rand::Rng;
+use rand::{distributions::Distribution, distributions::WeightedIndex, Rng};
 use std::collections::HashMap;
 use std::f64::NEG_INFINITY;
 use std::fmt;
@@ -1012,18 +1012,23 @@ impl GP for Lexicon {
                     trs.utrs.make_deterministic(rng);
                 }
                 let templates = self.0.read().expect("poisoned lexicon").templates.clone();
-                repeat_n(trs, pop_size)
-                    .map(|trs| loop {
-                        if let Ok(new_trs) = trs.add_rule(
-                            &templates,
-                            params.atom_weights,
-                            params.max_sample_size,
-                            rng,
-                        ) {
-                            return new_trs;
+                let mut pop = Vec::with_capacity(pop_size);
+                while pop.len() < pop_size {
+                    if let Ok(new_trs) = trs.clone().add_rule(
+                        &templates,
+                        params.atom_weights,
+                        params.max_sample_size,
+                        rng,
+                    ) {
+                        if !pop
+                            .iter()
+                            .any(|p: &TRS| UntypedTRS::alphas(&p.utrs, &new_trs.utrs))
+                        {
+                            pop.push(new_trs);
                         }
-                    })
-                    .collect()
+                    }
+                }
+                return pop;
             }
             Err(err) => {
                 let lex = self.0.read().expect("poisoned lexicon");
@@ -1043,16 +1048,27 @@ impl GP for Lexicon {
         trs: &Self::Expression,
         _obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
+        // disallow deleting if you have no rules to delete
+        let weights = vec![1, 1 * (!trs.is_empty() as usize)];
+        let dist = WeightedIndex::new(weights).unwrap();
         loop {
-            if trs.is_empty() | rng.gen_bool(params.p_add) {
-                let templates = self.0.read().expect("poisoned lexicon").templates.clone();
-                if let Ok(new_trs) =
-                    trs.add_rule(&templates, params.atom_weights, params.max_sample_size, rng)
-                {
-                    return vec![new_trs];
+            match dist.sample(rng) {
+                // add rule
+                0 => {
+                    let templates = self.0.read().expect("poisoned lexicon").templates.clone();
+                    if let Ok(new_trs) =
+                        trs.add_rule(&templates, params.atom_weights, params.max_sample_size, rng)
+                    {
+                        return vec![new_trs];
+                    }
                 }
-            } else if let Ok(new_trss) = trs.delete_rule() {
-                return new_trss;
+                // delete rule
+                1 => {
+                    if let Ok(new_trss) = trs.delete_rule() {
+                        return new_trss;
+                    }
+                }
+                _ => unreachable!(),
             }
         }
     }
@@ -1091,12 +1107,12 @@ impl GP for Lexicon {
     ) {
         // select alpha-unique individuals that are not yet in the population
         offspring.retain(|ref x| {
-            !population
+            (!population
                 .iter()
-                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs))
-                & !children
+                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs)))
+                & (!children
                     .iter()
-                    .any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs))
+                    .any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs)))
         });
         *offspring = offspring.iter().fold(vec![], |mut acc, ref x| {
             if !acc.iter().any(|a| UntypedTRS::alphas(&a.utrs, &x.utrs)) {
