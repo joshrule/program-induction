@@ -13,7 +13,9 @@ use std::f64::NEG_INFINITY;
 use std::fmt;
 use std::iter::once;
 use term_rewriting::trace::Trace;
-use term_rewriting::{Rule, RuleContext, Strategy as RewriteStrategy, Term, TRS as UntypedTRS};
+use term_rewriting::{
+    Context, Rule, RuleContext, Strategy as RewriteStrategy, Term, TRS as UntypedTRS,
+};
 
 use super::{Lexicon, ModelParams, SampleError, TypeError};
 
@@ -257,6 +259,39 @@ impl TRS {
             .expect("poisoned lexicon")
             .infer_rule(&rule, &mut trs.ctx)?;
         trs.utrs.push(rule)?;
+        Ok(trs)
+    }
+    /// Regenerate some portion of a rule
+    pub fn regenerate_rule<R: Rng>(
+        &self,
+        atom_weights: (f64, f64, f64),
+        max_size: usize,
+        rng: &mut R,
+    ) -> Result<TRS, SampleError> {
+        // get hold of a rule
+        let lex = &self.lex.0.read().expect("poisoned lexicon");
+        let background = &lex.background;
+        let mut ctx = lex.ctx.clone();
+        let rules = &self.utrs.rules[0..(self.utrs.rules.len() - background.len())];
+        let clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
+        let clause = clauses.choose(rng).ok_or(SampleError::OptionsExhausted)?;
+        // convert term to a context
+        let rulecontext = RuleContext::from(clause.clone());
+        // list all the subterms
+        let subcontexts = rulecontext.subcontexts();
+        // sample one at random
+        let subcontext = subcontexts
+            .choose(rng)
+            .ok_or(SampleError::OptionsExhausted)?;
+        // replace it with a hole
+        let template = rulecontext.replace(&subcontext.1, Context::Hole).unwrap();
+        // sample a term from the context
+        let mut trs = self.clone();
+        let new_clause =
+            trs.lex
+                .sample_rule_from_context(template, &mut ctx, atom_weights, true, max_size)?;
+        // return the new TRS
+        trs.utrs.replace(0, clause, new_clause)?;
         Ok(trs)
     }
     /// Delete a rule from the rewrite system if possible. Background knowledge
