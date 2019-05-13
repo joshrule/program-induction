@@ -1049,7 +1049,7 @@ impl GP for Lexicon {
         _obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // disallow deleting if you have no rules to delete
-        let weights = vec![1, (!trs.is_empty() as usize), 1];
+        let weights = vec![1, (!trs.is_empty() as usize), 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             match dist.sample(rng) {
@@ -1073,6 +1073,11 @@ impl GP for Lexicon {
                     if let Ok(new_trs) =
                         trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng)
                     {
+                        return new_trs;
+                    }
+                // add exception
+                3 => {
+                    if let Ok(new_trs) = trs.add_exception(obs, rng) {
                         return new_trs;
                     }
                 }

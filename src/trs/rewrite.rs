@@ -634,7 +634,7 @@ impl TRS {
             .and_then(|rhs| Rule::new(rhs, vec![rule.lhs.clone()]))
     }
     /// Given a list of `Rule`s considered to be data, add one datum as a rule.
-    pub fn add_exception<R: Rng>(&self, data: Vec<Rule>, rng: &mut R) -> Result<TRS, SampleError> {
+    pub fn add_exception<R: Rng>(&self, data: &[Rule], rng: &mut R) -> Result<TRS, SampleError> {
         let datum = data.choose(rng).ok_or(SampleError::OptionsExhausted)?;
         let mut trs = self.clone();
         trs.utrs.push(datum.clone())?;
