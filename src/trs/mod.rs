@@ -132,9 +132,13 @@ impl ::std::error::Error for SampleError {
 /// Parameters for a TRS-based probabilistic model.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct ModelParams {
-    /// How much partial credit is given for incorrect answers; it should be a
-    /// probability (i.e. in [0, 1]).
-    pub p_partial: f64,
+    /// Multiply the likelihood by this factor. `temperature > 1` biases in
+    /// favor of the likelihood, while `temperature < 1` biases in favor of the
+    /// prior.
+    pub temperature: f64,
+    /// The power to which the goodness of the match between proposed solution
+    /// and correct solution is raised.
+    pub noise_level: f64,
     /// The (non-log) probability of generating observations at arbitrary
     /// evaluation steps (i.e. not just normal forms). Typically 0.0.
     pub p_observe: f64,
@@ -143,12 +147,16 @@ pub struct ModelParams {
     /// The largest term that will be considered for evaluation. `None` will
     /// evaluate all terms.
     pub max_size: Option<usize>,
+    /// The prior probability of adding another rule.
+    pub p_rule: f64,
 }
 impl Default for ModelParams {
     fn default() -> ModelParams {
         ModelParams {
-            p_partial: 0.0,
+            temperature: 1.0,
+            noise_level: 1.0,
             p_observe: 0.0,
+            p_rule: 0.5,
             max_steps: 50,
             max_size: Some(500),
         }
@@ -170,12 +178,15 @@ impl Default for ModelParams {
 pub fn task_by_rewrite<'a, O: Sync>(
     data: &'a [Rule],
     params: ModelParams,
+    gparams: GeneticParams,
     lex: &Lexicon,
     observation: O,
 ) -> Result<Task<'a, Lexicon, TRS, O>, TypeError> {
     let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
     Ok(Task {
-        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.posterior(data, params)),
+        oracle: Box::new(move |s: &Lexicon, h: &TRS| {
+            -h.posterior(s, data, params, gparams.atom_weights)
+        }),
         // assuming the data have no variables, we can use the Lexicon's ctx.
         tp: lex.infer_rules(data, &mut ctx)?,
         observation,

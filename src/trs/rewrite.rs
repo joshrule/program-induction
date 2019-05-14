@@ -131,24 +131,25 @@ impl TRS {
 
     /// Compute the log likelihood for a single datum.
     fn single_log_likelihood(&self, datum: &Rule, params: ModelParams) -> f64 {
-        let ll = if let Some(ref rhs) = datum.rhs() {
+        if let Some(ref rhs) = datum.rhs() {
             let mut trace = Trace::new(
                 &self.utrs,
                 &datum.lhs,
                 params.p_observe,
+                params.noise_level,
                 params.max_size,
                 RewriteStrategy::All,
             );
             trace.rewrites_to(params.max_steps, rhs)
         } else {
             NEG_INFINITY
-        };
-
-        if ll == NEG_INFINITY {
-            params.p_partial.ln()
-        } else {
-            (1.0 - params.p_partial).ln() + ll
         }
+        // Partial credit doesn't make sense with softened likelihood
+        //if ll == NEG_INFINITY {
+        //    params.p_partial.ln()
+        //} else {
+        //    (1.0 - params.p_partial).ln() + ll
+        //}
     }
 
     /// Combine [`pseudo_log_prior`] and [`log_likelihood`], failing early if the
@@ -156,12 +157,28 @@ impl TRS {
     ///
     /// [`pseudo_log_prior`]: struct.TRS.html#method.pseudo_log_prior
     /// [`log_likelihood`]: struct.TRS.html#method.log_likelihood
-    pub fn posterior(&self, data: &[Rule], params: ModelParams) -> f64 {
+    pub fn posterior(
+        &self,
+        lex: &Lexicon,
+        data: &[Rule],
+        params: ModelParams,
+        atom_weights: (f64, f64, f64),
+    ) -> f64 {
         let prior = self.pseudo_log_prior();
+        //let prior = lex
+        //    .logprior_utrs(
+        //        &self.utrs,
+        //        params.p_rule,
+        //        &mut lex.context(),
+        //        atom_weights,
+        //        true,
+        //    )
+        //    .unwrap_or(NEG_INFINITY);
+
         if prior == NEG_INFINITY {
             NEG_INFINITY
         } else {
-            prior + self.log_likelihood(data, params)
+            prior + params.temperature * self.log_likelihood(data, params)
         }
     }
 

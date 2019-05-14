@@ -11,10 +11,10 @@ use term_rewriting::{
 };
 
 use super::{SampleError, TypeError, TRS};
-use utils::{logsumexp, weighted_permutation};
+use utils::weighted_permutation;
 use GP;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 /// Parameters for [`Lexicon`] genetic programming ([`GP`]).
 ///
 /// [`Lexicon`]: struct.Lexicon.html
@@ -346,26 +346,24 @@ impl Lexicon {
     pub fn logprior_rule(
         &self,
         rule: &Rule,
-        schema: &TypeSchema,
         ctx: &mut TypeContext,
         atom_weights: (f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
         let lex = self.0.read().expect("poisoned lexicon");
-        lex.logprior_rule(rule, schema, ctx, atom_weights, invent)
+        lex.logprior_rule(rule, ctx, atom_weights, invent)
     }
     /// Give the log probability of sampling a TRS.
     pub fn logprior_utrs(
         &self,
         utrs: &UntypedTRS,
-        schemas: &[TypeSchema],
         p_rule: f64,
         ctx: &mut TypeContext,
         atom_weights: (f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
         let lex = self.0.read().expect("poisoned lexicon");
-        lex.logprior_utrs(utrs, schemas, p_rule, ctx, atom_weights, invent)
+        lex.logprior_utrs(utrs, p_rule, ctx, atom_weights, invent)
     }
 
     /// merge two `TRS` into a single `TRS`.
@@ -959,44 +957,35 @@ impl Lex {
     fn logprior_rule(
         &self,
         rule: &Rule,
-        schema: &TypeSchema,
         ctx: &mut TypeContext,
         atom_weights: (f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
         let mut lp = 0.0;
-        let lp_lhs = self.logprior_term(&rule.lhs, schema, ctx, atom_weights, invent)?;
+        let schema = self.infer_rule(rule, ctx)?.0;
+        let lp_lhs = self.logprior_term(&rule.lhs, &schema, ctx, atom_weights, invent)?;
         for rhs in &rule.rhs {
-            let tmp_lp = self.logprior_term(&rhs, schema, ctx, atom_weights, false)?;
-            lp += tmp_lp + lp_lhs;
+            lp += lp_lhs + self.logprior_term(&rhs, &schema, ctx, atom_weights, false)?;
         }
         Ok(lp)
     }
     fn logprior_utrs(
         &self,
         utrs: &UntypedTRS,
-        schemas: &[TypeSchema],
         p_rule: f64,
         ctx: &mut TypeContext,
         atom_weights: (f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        // TODO: this might not be numerically stable
-        // geometric distribution over number of rules
-        let p_n_rules = p_rule.ln() * (utrs.clauses().len() as f64);
+        // TODO: this geometric dist PDF might not be numerically stable
+        let n_rules: usize = utrs.clauses().len();
+        let n_background_rules: usize = self.background.iter().map(|x| x.clauses().len()).sum();
+        let n_learned_rules: usize = n_rules - n_background_rules;
+        let p_n_rules = p_rule.ln() * ((n_learned_rules as f64) + 1.0);
+
         let mut p_rules = 0.0;
-        for rule in &utrs.rules {
-            if self.background.contains(rule) {
-                // TODO: if we can guarantee that UntypedTRS has self.background at the end,
-                // then we wouldn't need to do this slow check
-                continue;
-            }
-            let mut rule_ps = vec![];
-            for schema in schemas {
-                let tmp_lp = self.logprior_rule(&rule, schema, ctx, atom_weights, invent)?;
-                rule_ps.push(tmp_lp);
-            }
-            p_rules += logsumexp(&rule_ps);
+        for rule in &utrs.rules[0..n_learned_rules] {
+            p_rules += self.logprior_rule(&rule, ctx, atom_weights, invent)?;
         }
         Ok(p_n_rules + p_rules)
     }
