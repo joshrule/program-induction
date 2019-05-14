@@ -157,24 +157,8 @@ impl TRS {
     ///
     /// [`pseudo_log_prior`]: struct.TRS.html#method.pseudo_log_prior
     /// [`log_likelihood`]: struct.TRS.html#method.log_likelihood
-    pub fn posterior(
-        &self,
-        lex: &Lexicon,
-        data: &[Rule],
-        params: ModelParams,
-        atom_weights: (f64, f64, f64),
-    ) -> f64 {
+    pub fn posterior(&self, data: &[Rule], params: ModelParams) -> f64 {
         let prior = self.pseudo_log_prior();
-        //let prior = lex
-        //    .logprior_utrs(
-        //        &self.utrs,
-        //        params.p_rule,
-        //        &mut lex.context(),
-        //        atom_weights,
-        //        true,
-        //    )
-        //    .unwrap_or(NEG_INFINITY);
-
         if prior == NEG_INFINITY {
             NEG_INFINITY
         } else {

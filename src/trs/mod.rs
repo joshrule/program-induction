@@ -180,15 +180,12 @@ impl Default for ModelParams {
 pub fn task_by_rewrite<'a, O: Sync>(
     data: &'a [Rule],
     params: ModelParams,
-    gparams: GeneticParams,
     lex: &Lexicon,
     observation: O,
 ) -> Result<Task<'a, Lexicon, TRS, O>, TypeError> {
     let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
     Ok(Task {
-        oracle: Box::new(move |s: &Lexicon, h: &TRS| {
-            -h.posterior(s, data, params, gparams.atom_weights)
-        }),
+        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.posterior(data, params)),
         // assuming the data have no variables, we can use the Lexicon's ctx.
         tp: lex.infer_rules(data, &mut ctx)?,
         observation,

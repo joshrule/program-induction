@@ -1028,7 +1028,7 @@ impl GP for Lexicon {
                         }
                     }
                 }
-                return pop;
+                pop
             }
             Err(err) => {
                 let lex = self.0.read().expect("poisoned lexicon");
@@ -1049,7 +1049,7 @@ impl GP for Lexicon {
         _obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // disallow deleting if you have no rules to delete
-        let weights = vec![1, 1 * (!trs.is_empty() as usize)];
+        let weights = vec![1, (!trs.is_empty() as usize)];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             match dist.sample(rng) {
