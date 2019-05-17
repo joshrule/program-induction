@@ -269,10 +269,11 @@ impl TRS {
         rng: &mut R,
     ) -> Result<TRS, SampleError> {
         // get hold of a rule
-        let lex = &self.lex.0.read().expect("poisoned lexicon");
-        let background = &lex.background;
-        let mut ctx = lex.ctx.clone();
-        let rules = &self.utrs.rules[0..(self.utrs.rules.len() - background.len())];
+        let rules = {
+            let lex = &self.lex.0.read().expect("poisoned lexicon");
+            let background = &lex.background;
+            &self.utrs.rules[0..(self.utrs.rules.len() - background.len())]
+        };
         let clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
         let clause = clauses.choose(rng).ok_or(SampleError::OptionsExhausted)?;
         // convert term to a context
@@ -287,9 +288,21 @@ impl TRS {
         let template = rulecontext.replace(&subcontext.1, Context::Hole).unwrap();
         // sample a term from the context
         let mut trs = self.clone();
-        let new_clause =
-            trs.lex
-                .sample_rule_from_context(template, &mut ctx, atom_weights, true, max_size)?;
+        let new_clause = trs.lex.sample_rule_from_context(
+            template,
+            &mut trs.ctx,
+            atom_weights,
+            true,
+            max_size,
+        )?;
+        if new_clause.lhs == new_clause.rhs().unwrap() {
+            return Err(SampleError::Trivial);
+        }
+        trs.lex
+            .0
+            .write()
+            .expect("poisoned lexicon")
+            .infer_rule(&new_clause, &mut trs.ctx)?;
         // return the new TRS
         trs.utrs.replace(0, clause, new_clause)?;
         Ok(trs)

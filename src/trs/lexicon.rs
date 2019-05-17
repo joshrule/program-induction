@@ -1046,7 +1046,7 @@ impl GP for Lexicon {
         params: &Self::Params,
         rng: &mut R,
         trs: &Self::Expression,
-        _obs: &Self::Observation,
+        obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // disallow deleting if you have no rules to delete
         let weights = vec![1, (!trs.is_empty() as usize), 1, 1];
@@ -1073,12 +1073,13 @@ impl GP for Lexicon {
                     if let Ok(new_trs) =
                         trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng)
                     {
-                        return new_trs;
+                        return vec![new_trs];
                     }
+                }
                 // add exception
                 3 => {
                     if let Ok(new_trs) = trs.add_exception(obs, rng) {
-                        return new_trs;
+                        return vec![new_trs];
                     }
                 }
                 _ => unreachable!(),
