@@ -487,30 +487,37 @@ impl TRS {
     ///
     /// let mut rng = thread_rng();
     ///
-    /// if let Ok(new_trs) = trs.local_difference(&mut rng) {
-    ///     assert_eq!(new_trs.len(), 2);
-    ///     let display_str = format!("{}", new_trs);
-    ///     assert_eq!(display_str, "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_));\nSUCC(PLUS(x_ SUCC(y_))) = SUCC(SUCC(PLUS(x_ y_)));");
-    /// } else {
-    ///     assert_eq!(trs.len(), 1);
-    /// }
+    /// let num_new_trss = trs.local_difference(&mut rng).map(|x| x.len()).ok();
+    ///
+    /// assert_eq!(Some(2), num_new_trss)
     /// # }
     /// ```
-    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
-        let mut trs = self.clone();
-        let num_rules = self.len();
-        let background = &self.lex.0.read().expect("poisoned lexicon").background;
-        let num_background = background.len();
-        if num_rules > num_background {
-            let idx = rng.gen_range(num_background, num_rules);
-            let new_rules = TRS::local_difference_helper(&trs.utrs.rules[idx]);
-            if !new_rules.is_empty() {
-                trs.utrs.remove_idx(idx)?;
-                trs.utrs.inserts_idx(num_background, new_rules)?;
-                return Ok(trs);
-            }
+    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
+        let rules = {
+            let num_rules = self.len();
+            let background = &self.lex.0.read().expect("poisoned lexicon").background;
+            let num_background = background.len();
+            &self.utrs.rules[num_background..num_rules]
+        };
+        let clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
+        let clause = clauses.choose(rng).ok_or(SampleError::OptionsExhausted)?;
+        let new_rules = TRS::local_difference_helper(clause);
+        let new_trss = new_rules
+            .into_iter()
+            .filter_map(|r| {
+                let mut trs = self.clone();
+                if trs.utrs.replace(0, clause, r).is_ok() {
+                    Some(trs)
+                } else {
+                    None
+                }
+            })
+            .collect_vec();
+        if new_trss.is_empty() {
+            Err(SampleError::OptionsExhausted)
+        } else {
+            Ok(new_trss)
         }
-        Err(SampleError::OptionsExhausted)
     }
     /// Given a rule that has similar terms in the lhs and rhs,
     /// returns a list of rules where each similarity is removed one at a time
