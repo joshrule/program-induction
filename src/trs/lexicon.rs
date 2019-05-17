@@ -1070,10 +1070,10 @@ impl GP for Lexicon {
                 }
                 // regenerate rule
                 2 => {
-                    if let Ok(new_trs) =
+                    if let Ok(new_trss) =
                         trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng)
                     {
-                        return vec![new_trs];
+                        return new_trss;
                     }
                 }
                 // add exception

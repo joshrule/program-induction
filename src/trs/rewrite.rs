@@ -267,45 +267,75 @@ impl TRS {
         atom_weights: (f64, f64, f64),
         max_size: usize,
         rng: &mut R,
-    ) -> Result<TRS, SampleError> {
-        // get hold of a rule
+    ) -> Result<Vec<TRS>, SampleError> {
+        // get hold of a single clause
         let rules = {
-            let lex = &self.lex.0.read().expect("poisoned lexicon");
-            let background = &lex.background;
-            &self.utrs.rules[0..(self.utrs.rules.len() - background.len())]
+            let num_rules = self.len();
+            let background = &self.lex.0.read().expect("poisoned lexicon").background;
+            let num_background = background.len();
+            &self.utrs.rules[num_background..num_rules]
         };
         let clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
         let clause = clauses.choose(rng).ok_or(SampleError::OptionsExhausted)?;
-        // convert term to a context
+        let new_rules = self.regenerate_helper(clause, atom_weights, max_size)?;
+        let new_trss = new_rules
+            .into_iter()
+            .filter_map(|r| {
+                let mut trs = self.clone();
+                let typechecks = trs
+                    .lex
+                    .0
+                    .write()
+                    .expect("poisoned lexicon")
+                    .infer_rule(&r, &mut trs.ctx)
+                    .is_ok();
+                let replaced = trs.utrs.replace(0, clause, r).is_ok();
+                if typechecks && replaced {
+                    Some(trs)
+                } else {
+                    None
+                }
+            })
+            .collect_vec();
+        if new_trss.is_empty() {
+            Err(SampleError::OptionsExhausted)
+        } else {
+            Ok(new_trss)
+        }
+    }
+    fn regenerate_helper(
+        &self,
+        clause: &Rule,
+        atom_weights: (f64, f64, f64),
+        max_size: usize,
+    ) -> Result<Vec<Rule>, SampleError> {
         let rulecontext = RuleContext::from(clause.clone());
-        // list all the subterms
         let subcontexts = rulecontext.subcontexts();
         // sample one at random
-        let subcontext = subcontexts
-            .choose(rng)
-            .ok_or(SampleError::OptionsExhausted)?;
-        // replace it with a hole
-        let template = rulecontext.replace(&subcontext.1, Context::Hole).unwrap();
-        // sample a term from the context
-        let mut trs = self.clone();
-        let new_clause = trs.lex.sample_rule_from_context(
-            template,
-            &mut trs.ctx,
-            atom_weights,
-            true,
-            max_size,
-        )?;
-        if new_clause.lhs == new_clause.rhs().unwrap() {
-            return Err(SampleError::Trivial);
+        let mut rules = Vec::with_capacity(subcontexts.len());
+        for subcontext in &subcontexts {
+            // replace it with a hole
+            let template = rulecontext.replace(&subcontext.1, Context::Hole).unwrap();
+            // sample a term from the context
+            let mut trs = self.clone();
+            let new_result = trs.lex.sample_rule_from_context(
+                template,
+                &mut trs.ctx,
+                atom_weights,
+                true,
+                max_size,
+            );
+            if let Ok(new_clause) = new_result {
+                if new_clause.lhs != new_clause.rhs().unwrap() {
+                    rules.push(new_clause);
+                }
+            }
         }
-        trs.lex
-            .0
-            .write()
-            .expect("poisoned lexicon")
-            .infer_rule(&new_clause, &mut trs.ctx)?;
-        // return the new TRS
-        trs.utrs.replace(0, clause, new_clause)?;
-        Ok(trs)
+        if rules.is_empty() {
+            Err(SampleError::OptionsExhausted)
+        } else {
+            Ok(rules)
+        }
     }
     /// Delete a rule from the rewrite system if possible. Background knowledge
     /// cannot be deleted.
