@@ -1078,8 +1078,8 @@ impl GP for Lexicon {
                 }
                 // add exception
                 3 => {
-                    if let Ok(new_trs) = trs.add_exception(obs, rng) {
-                        return vec![new_trs];
+                    if let Ok(new_trss) = trs.add_exception(obs) {
+                        return new_trss;
                     }
                 }
                 _ => unreachable!(),
