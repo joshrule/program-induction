@@ -164,10 +164,20 @@ impl Lexicon {
             })
             .ok_or(())
     }
-    /// All the free type variables in the lexicon.
+    /// All the free type variables in the `Lexicon`.
     pub fn free_vars(&self) -> Vec<TypeVar> {
         self.0.read().expect("poisoned lexicon").free_vars()
     }
+    /// Add a new variable to the `Lexicon`.
+    pub fn invent_variable(&mut self, tp: &Type) -> Variable {
+        self.0
+            .write()
+            .expect("poisoned lexicon")
+            .invent_variable(tp)
+    }
+    /// Return the `Lexicon`'s [`TypeContext`].
+    ///
+    /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
     pub fn context(&self) -> TypeContext {
         self.0.read().expect("poisoned lexicon").ctx.clone()
     }

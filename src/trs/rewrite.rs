@@ -7,8 +7,7 @@
 
 use itertools::Itertools;
 use polytype::Context as TypeContext;
-use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::{seq::IteratorRandom, seq::SliceRandom, Rng};
 use std::collections::HashMap;
 use std::f64::NEG_INFINITY;
 use std::fmt;
@@ -281,17 +280,10 @@ impl TRS {
         let new_rules = self.regenerate_helper(clause, atom_weights, max_size)?;
         let new_trss = new_rules
             .into_iter()
-            .filter_map(|r| {
+            .filter_map(|new_clause| {
                 let mut trs = self.clone();
-                let typechecks = trs
-                    .lex
-                    .0
-                    .write()
-                    .expect("poisoned lexicon")
-                    .infer_rule(&r, &mut trs.ctx)
-                    .is_ok();
-                let replaced = trs.utrs.replace(0, clause, r).is_ok();
-                if typechecks && replaced {
+                let okay = trs.replace(clause, new_clause).is_ok();
+                if okay {
                     Some(trs)
                 } else {
                     None
@@ -359,6 +351,69 @@ impl TRS {
                 })
                 .collect()
         }
+    }
+    /// Replace a subterm of the rule with a variable.
+    pub fn replace_term_with_var<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
+        let mut old_trs = self.clone(); // TODO: cloning is a hack!
+        let clause = self.choose_clause(rng)?;
+        let mut types = HashMap::new();
+        old_trs
+            .lex
+            .infer_rule(&clause, &mut old_trs.ctx, &mut types)?;
+        let new_trss = clause
+            .lhs
+            .subterms()
+            .iter()
+            .unique_by(|(t, _)| t)
+            .filter_map(|(t, p)| {
+                let mut trs = self.clone();
+                let term_type = &types[p];
+                let new_var = trs.lex.invent_variable(term_type);
+                let new_term = Term::Variable(new_var);
+                let new_lhs = clause.lhs.replace_all(t, &new_term);
+                let new_rhs = clause.rhs().unwrap().replace_all(t, &new_term);
+                Rule::new(new_lhs, vec![new_rhs]).and_then(|new_clause| {
+                    let okay = trs.replace(&clause, new_clause).is_ok();
+                    if okay {
+                        Some(trs)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect_vec();
+        if new_trss.is_empty() {
+            Err(SampleError::OptionsExhausted)
+        } else {
+            Ok(new_trss)
+        }
+    }
+    /// pick a single clause
+    fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<Rule, SampleError> {
+        let rules = {
+            let num_rules = self.len();
+            let background = &self.lex.0.read().expect("poisoned lexicon").background;
+            let num_background = background.len();
+            &self.utrs.rules[num_background..num_rules]
+        };
+        let mut clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
+        let idx = (0..clauses.len())
+            .choose(rng)
+            .ok_or(SampleError::OptionsExhausted)?;
+        Ok(clauses.swap_remove(idx))
+    }
+    pub fn replace(
+        &mut self,
+        old_clause: &Rule,
+        new_clause: Rule,
+    ) -> Result<&mut TRS, SampleError> {
+        self.lex.0.write().expect("poisoned lexicon").infer_rule(
+            &new_clause,
+            &mut self.ctx,
+            &mut HashMap::new(),
+        )?;
+        self.utrs.replace(0, old_clause, new_clause)?;
+        Ok(self)
     }
     /// Move a Rule from one place in the TRS to another at random, excluding the background.
     ///
