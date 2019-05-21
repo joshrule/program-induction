@@ -234,9 +234,14 @@ impl Lexicon {
         lex.infer_rulecontext(context, ctx)
     }
     /// Infer the `TypeSchema` associated with a `Rule`.
-    pub fn infer_rule(&self, rule: &Rule, ctx: &mut TypeContext) -> Result<TypeSchema, TypeError> {
+    pub fn infer_rule(
+        &self,
+        rule: &Rule,
+        ctx: &mut TypeContext,
+        types: &mut HashMap<Place, Type>,
+    ) -> Result<TypeSchema, TypeError> {
         let lex = self.0.write().expect("poisoned lexicon");
-        lex.infer_rule(rule, ctx).map(|(r, _, _)| r)
+        lex.infer_rule(rule, ctx, types)
     }
     /// Infer the `TypeSchema` associated with a collection of `Rules`.
     pub fn infer_rules(
@@ -554,27 +559,37 @@ impl Lex {
         }
     }
     pub fn infer_term(&self, term: &Term, ctx: &mut TypeContext) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_term_internal(term, ctx)?;
+        let tp = self.infer_term_internal(term, ctx, vec![], &mut HashMap::new())?;
         let lex_vars = self.free_vars_applied(ctx);
         Ok(tp.apply(ctx).generalize(&lex_vars))
     }
-    fn infer_term_internal(&self, term: &Term, ctx: &mut TypeContext) -> Result<Type, TypeError> {
-        if let Term::Application { ref op, ref args } = *term {
-            if op.arity() > 0 {
+    fn infer_term_internal(
+        &self,
+        term: &Term,
+        ctx: &mut TypeContext,
+        place: Place,
+        tps: &mut HashMap<Place, Type>,
+    ) -> Result<Type, TypeError> {
+        let tp = match *term {
+            Term::Variable(ref v) => self.instantiate_atom(&Atom::from(v.clone()), ctx)?,
+            Term::Application { ref op, ref args } => {
                 let head_type = self.instantiate_atom(&Atom::from(op.clone()), ctx)?;
                 let body_type = {
                     let mut pre_types = Vec::with_capacity(args.len() + 1);
-                    for a in args {
-                        pre_types.push(self.infer_term_internal(a, ctx)?);
+                    for (i, a) in args.iter().enumerate() {
+                        let mut new_place = place.clone();
+                        new_place.push(i);
+                        pre_types.push(self.infer_term_internal(a, ctx, new_place, tps)?);
                     }
                     pre_types.push(ctx.new_variable());
                     Type::from(pre_types)
                 };
                 ctx.unify(&head_type, &body_type)?;
-                return Ok(head_type.returns().unwrap_or(&head_type).apply(ctx));
+                head_type.returns().unwrap_or(&head_type).apply(ctx)
             }
-        }
-        self.instantiate_atom(&term.head(), ctx)
+        };
+        tps.insert(place, tp.clone());
+        Ok(tp)
     }
     pub fn infer_context(
         &self,
@@ -616,36 +631,46 @@ impl Lex {
     }
     pub fn infer_rule(
         &self,
-        r: &Rule,
+        rule: &Rule,
         ctx: &mut TypeContext,
-    ) -> Result<(TypeSchema, TypeSchema, Vec<TypeSchema>), TypeError> {
-        let lhs_schema = self.infer_term(&r.lhs, ctx)?;
-        let lhs_type = lhs_schema.instantiate(ctx);
-        let mut rhs_types = Vec::with_capacity(r.rhs.len());
-        let mut rhs_schemas = Vec::with_capacity(r.rhs.len());
-        for rhs in &r.rhs {
-            let rhs_schema = self.infer_term(&rhs, ctx)?;
-            rhs_types.push(rhs_schema.instantiate(ctx));
-            rhs_schemas.push(rhs_schema);
-        }
+        tps: &mut HashMap<Place, Type>,
+    ) -> Result<TypeSchema, TypeError> {
+        let tp = self.infer_rule_internal(rule, ctx, tps)?;
+        let lex_vars = self.free_vars_applied(&ctx);
+        Ok(tp.apply(ctx).generalize(&lex_vars))
+    }
+    fn infer_rule_internal(
+        &self,
+        rule: &Rule,
+        ctx: &mut TypeContext,
+        tps: &mut HashMap<Place, Type>,
+    ) -> Result<Type, TypeError> {
+        let lhs_type = self.infer_term_internal(&rule.lhs, ctx, vec![0], tps)?;
+        let rhs_types = rule
+            .rhs
+            .iter()
+            .enumerate()
+            .map(|(i, rhs)| self.infer_term_internal(&rhs, ctx, vec![i + 1], tps))
+            .collect::<Result<Vec<Type>, _>>()?;
+        // unify to introduce rule-level constraints
         for rhs_type in rhs_types {
             ctx.unify(&lhs_type, &rhs_type)?;
         }
-        let lex_vars = self.free_vars_applied(&ctx);
-        let rule_schema = lhs_type.apply(ctx).generalize(&lex_vars);
-        Ok((rule_schema, lhs_schema, rhs_schemas))
+        Ok(lhs_type.apply(ctx))
     }
     pub fn infer_rules(
         &self,
         rules: &[Rule],
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
+        let rule_tps = rules
+            .iter()
+            .map(|rule| {
+                self.infer_rule(rule, ctx, &mut HashMap::new())
+                    .map(|rule_tp| rule_tp.instantiate(ctx))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let tp = ctx.new_variable();
-        let mut rule_tps = vec![];
-        for rule in rules.iter() {
-            let rule_tp = self.infer_rule(rule, ctx)?.0;
-            rule_tps.push(rule_tp.instantiate(ctx));
-        }
         for rule_tp in rule_tps {
             ctx.unify(&tp, &rule_tp)?;
         }
@@ -683,7 +708,7 @@ impl Lex {
     pub fn infer_utrs(&self, utrs: &UntypedTRS, ctx: &mut TypeContext) -> Result<(), TypeError> {
         // TODO: we assume the variables already exist in the signature. Is that sensible?
         for rule in &utrs.rules {
-            self.infer_rule(rule, ctx)?;
+            self.infer_rule(rule, ctx, &mut HashMap::new())?;
         }
         Ok(())
     }
@@ -962,7 +987,7 @@ impl Lex {
         invent: bool,
     ) -> Result<f64, SampleError> {
         let mut lp = 0.0;
-        let schema = self.infer_rule(rule, ctx)?.0;
+        let schema = self.infer_rule(rule, ctx, &mut HashMap::new())?;
         let lp_lhs = self.logprior_term(&rule.lhs, &schema, ctx, atom_weights, invent)?;
         for rhs in &rule.rhs {
             lp += lp_lhs + self.logprior_term(&rhs, &schema, ctx, atom_weights, false)?;

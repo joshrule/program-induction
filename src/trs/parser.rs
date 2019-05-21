@@ -4,6 +4,7 @@ use nom;
 use nom::types::CompleteStr;
 use nom::{Context as Nomtext, Err};
 use polytype::{Context as TypeContext, TypeSchema};
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use term_rewriting::{
@@ -318,7 +319,7 @@ fn typed_rule<'a>(
     );
     if let Ok(rule) = result {
         add_parsed_variables_to_lexicon(lex, ctx);
-        if lex.infer_rule(&rule, ctx).is_ok() {
+        if lex.infer_rule(&rule, ctx, &mut HashMap::new()).is_ok() {
             return Ok((CompleteStr(""), rule));
         }
     }

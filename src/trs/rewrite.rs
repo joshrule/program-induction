@@ -9,6 +9,7 @@ use itertools::Itertools;
 use polytype::Context as TypeContext;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use std::collections::HashMap;
 use std::f64::NEG_INFINITY;
 use std::fmt;
 use std::iter::once;
@@ -253,11 +254,11 @@ impl TRS {
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }
-        trs.lex
-            .0
-            .write()
-            .expect("poisoned lexicon")
-            .infer_rule(&rule, &mut trs.ctx)?;
+        trs.lex.0.write().expect("poisoned lexicon").infer_rule(
+            &rule,
+            &mut trs.ctx,
+            &mut HashMap::new(),
+        )?;
         trs.utrs.push(rule)?;
         Ok(trs)
     }
