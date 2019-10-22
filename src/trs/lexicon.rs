@@ -164,6 +164,12 @@ impl Lexicon {
             })
             .ok_or(())
     }
+    /// All the [`term_rewriting::Variable`]s in the `Lexicon`.
+    ///
+    /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
+    pub fn variables(&self) -> Vec<Variable> {
+        self.0.read().expect("poisoned lexicon").variables()
+    }
     /// All the free type variables in the `Lexicon`.
     pub fn free_vars(&self) -> Vec<TypeVar> {
         self.0.read().expect("poisoned lexicon").free_vars()
@@ -180,6 +186,34 @@ impl Lexicon {
     /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
     pub fn context(&self) -> TypeContext {
         self.0.read().expect("poisoned lexicon").ctx.clone()
+    }
+    pub fn snapshot(&self) -> usize {
+        self.0.read().expect("poisoned lexicon").ctx.len()
+    }
+    pub fn rollback(&self, snapshot: usize) {
+        self.0
+            .write()
+            .expect("poisoned lexicon")
+            .ctx
+            .rollback(snapshot);
+    }
+    pub fn instantiate(&self, schema: &TypeSchema) -> Type {
+        schema.instantiate(&mut self.0.write().expect("poisoned lexicon").ctx)
+    }
+    pub fn unify(&self, t1: &Type, t2: &Type) -> Result<(), ()> {
+        self.0
+            .write()
+            .expect("poisoned lexicon")
+            .ctx
+            .unify(t1, t2)
+            .map_err(|_| ())
+    }
+    /// Return a new [`Type::Variable`] from the `Lexicon`'s [`TypeContext`].
+    ///
+    /// [`Type::Variable`]: https://docs.rs/polytype/~6.0/polytype/enum.Type.html
+    /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
+    pub fn fresh_type_variable(&self) -> Type {
+        self.0.write().expect("poisoned lexicon").ctx.new_variable()
     }
     /// Infer the [`polytype::TypeSchema`] associated with a [`term_rewriting::Context`].
     ///
