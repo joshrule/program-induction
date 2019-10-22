@@ -93,6 +93,10 @@ impl TRS {
         })
     }
 
+    pub fn context(&self) -> TypeContext {
+        self.lex.context()
+    }
+
     /// The size of the underlying [`term_rewriting::TRS`].
     ///
     /// [`term_rewriting::TRS`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.TRS.html#method.size
