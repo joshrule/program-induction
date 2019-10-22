@@ -2,7 +2,7 @@ use super::lexicon::Lexicon;
 use super::rewrite::TRS;
 use nom;
 use nom::types::CompleteStr;
-use nom::{Context as Nomtext, Err};
+use nom::{digit, Context as Nomtext, Err};
 use polytype::{Context as TypeContext, TypeSchema};
 use std::collections::HashMap;
 use std::fmt;
@@ -177,7 +177,7 @@ pub fn parse_templates(input: &str, lex: &mut Lexicon) -> Result<Vec<RuleContext
 #[derive(Debug, Clone)]
 enum AtomName {
     Variable(String),
-    Operator(String),
+    Operator(String, u32),
 }
 
 fn schema_wrapper(input: CompleteStr) -> nom::IResult<CompleteStr, TypeSchema> {
@@ -201,12 +201,8 @@ fn make_atom(
             vars.push(schema);
             Atom::Variable(v)
         }
-        AtomName::Operator(s) => {
-            let arity = schema
-                .instantiate(&mut TypeContext::default())
-                .args()
-                .map_or(0, |args| args.len());
-            let o = sig.new_op(arity as u32, Some(s.to_string()));
+        AtomName::Operator(s, a) => {
+            let o = sig.new_op(a, Some(s.to_string()));
             ops.push(schema);
             Atom::Operator(o)
         }
@@ -214,6 +210,7 @@ fn make_atom(
 }
 
 named!(colon<CompleteStr, CompleteStr>, tag!(":"));
+named!(slash<CompleteStr, CompleteStr>, tag!("/"));
 // reserved characters include:
 // - [!] for holes
 // -   (space) for separating terms
@@ -224,13 +221,16 @@ named!(colon<CompleteStr, CompleteStr>, tag!(":"));
 // - ( and ) for grouping
 // - = for specifying rules
 // - ; for ending statements
-named!(identifier<CompleteStr, CompleteStr>, is_not!("[!]| #_:()=;"));
+named!(identifier<CompleteStr, CompleteStr>, is_not!("[!]/| #_:()=;"));
 named!(underscore<CompleteStr, CompleteStr>, tag!("_"));
 named!(atom_name<CompleteStr, AtomName>,
        alt!(map!(terminated!(identifier, underscore),
                  |s| AtomName::Variable(s.to_string())) |
-            map!(identifier,
-                 |s| AtomName::Operator(s.to_string()))));
+            map!(do_parse!(ident: identifier >>
+                           slash >>
+                           arity: digit >>
+                           (ident, arity)),
+                 |(s, a)| AtomName::Operator(s.to_string(), a.parse::<u32>().unwrap()))));
 named!(schema<CompleteStr, TypeSchema>,
        call!(schema_wrapper));
 named!(comment<CompleteStr, CompleteStr>,
@@ -241,8 +241,7 @@ named_args!(declaration<'a>(sig: &mut Signature, vars: &mut Vec<TypeSchema>, ops
                       colon >>
                       schema: schema >>
                       (name, schema))),
-            |(n, s)| {
-                (make_atom(n, sig, s.clone(), vars, ops), s)}
+            |(n, s)| (make_atom(n, sig, s.clone(), vars, ops), s)
        ));
 fn simple_lexicon<'a>(
     input: CompleteStr<'a>,
@@ -392,7 +391,7 @@ mod tests {
         let mut ops = vec![];
         let mut sig = Signature::default();
         let (_, (a, s)) = declaration(
-            CompleteStr("SUCC: int -> int"),
+            CompleteStr("SUCC/1: int -> int"),
             &mut sig,
             &mut vars,
             &mut ops,
@@ -431,7 +430,7 @@ mod tests {
     #[test]
     fn typed_rule_test() {
         let mut lex = lexicon(
-            CompleteStr("ZERO: int; SUCC: int -> int;"),
+            CompleteStr("ZERO/0: int; SUCC/1: int -> int;"),
             CompleteStr(""),
             CompleteStr(""),
             Signature::default(),
@@ -450,7 +449,7 @@ mod tests {
     #[test]
     fn trs_test() {
         let mut lex = lexicon(
-            CompleteStr("ZERO: int; SUCC: int -> int; PLUS: int -> int -> int;"),
+            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             CompleteStr(""),
             CompleteStr(""),
             Signature::default(),
@@ -475,7 +474,7 @@ mod tests {
     #[test]
     fn context_test() {
         let mut lex = lexicon(
-            CompleteStr("ZERO: int; SUCC: int -> int; PLUS: int -> int -> int;"),
+            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             CompleteStr(""),
             CompleteStr(""),
             Signature::default(),
@@ -494,7 +493,7 @@ mod tests {
     #[test]
     fn rulecontext_test() {
         let mut lex = lexicon(
-            CompleteStr("ZERO: int; SUCC: int -> int; PLUS: int -> int -> int;"),
+            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             CompleteStr(""),
             CompleteStr(""),
             Signature::default(),
@@ -513,7 +512,7 @@ mod tests {
     #[test]
     fn templates_test() {
         let mut lex = lexicon(
-            CompleteStr("ZERO: int; SUCC: int -> int; PLUS: int -> int -> int;"),
+            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             CompleteStr(""),
             CompleteStr(""),
             Signature::default(),
