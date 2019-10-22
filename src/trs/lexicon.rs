@@ -378,6 +378,57 @@ impl Lexicon {
     ) -> Result<Rule, SampleError> {
         let mut lex = self.0.write().expect("posioned lexicon");
         lex.sample_rule_from_context(context, ctx, atom_weights, invent, max_size, 0)
+    pub fn enumerate_to_n_terms(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+    ) -> Vec<Term> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let vec = lex.enumerate_to_n_terms(schema, invent, associative, n);
+        lex.ctx.rollback(snapshot);
+        vec
+    }
+    pub fn enumerate_n_terms(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+    ) -> Vec<Term> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let vec = lex.enumerate_n_terms(schema, invent, associative, n);
+        lex.ctx.rollback(snapshot);
+        vec
+    }
+    pub fn enumerate_to_n_rules(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+    ) -> Vec<Rule> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let vec = lex.enumerate_to_n_rules(schema, invent, associative, n);
+        lex.ctx.rollback(snapshot);
+        vec
+    }
+    pub fn enumerate_n_rules(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+    ) -> Vec<Rule> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let vec = lex.enumerate_n_rules(schema, invent, associative, n);
+        lex.ctx.rollback(snapshot);
+        vec
     }
     /// Give the log probability of sampling a Term.
     pub fn logprior_term(
@@ -980,6 +1031,58 @@ impl Lex {
                     Atom::Operator(_) => os.push((Some(atom.clone()), arg_types)),
                 }
             }
+    fn enumerate_to_n_rules(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+    ) -> Vec<Rule> {
+        (0..=n)
+            .flat_map(|n_i| self.enumerate_n_rules(schema, invent, associative, n_i))
+            .collect_vec()
+    }
+    fn enumerate_n_rules(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+    ) -> Vec<Rule> {
+        if n == 0 {
+            return vec![];
+        }
+        let snapshot = self.ctx.len();
+        let lhss = self.enumerate_to_n_terms(schema, invent, associative, n - 1);
+        self.ctx.rollback(snapshot);
+        lhss.iter()
+            .flat_map(|lhs| {
+                let snapshot = self.ctx.len();
+                let rhss = if let Ok(schema) = self.infer_term(lhs) {
+                    self.enumerate_n_terms_internal(
+                        &schema,
+                        false,
+                        associative,
+                        n - lhs.size(),
+                        &mut lhs.variables(),
+                    )
+                } else {
+                    vec![]
+                };
+                self.ctx.rollback(snapshot);
+                rhss.into_iter()
+                    .filter_map(|rhs| {
+                        Rule::new(lhs.clone(), vec![rhs]).and_then(|rule| {
+                            let snapshot = self.ctx.len();
+                            let result = self.infer_rule(&rule, &mut HashMap::new());
+                            self.ctx.rollback(snapshot);
+                            result.ok().map(|_| rule)
+                        })
+                    })
+                    .collect_vec()
+            })
+            .collect_vec()
+    }
         }
         if invent {
             if let Term::Variable(ref v) = *term {
@@ -1055,6 +1158,81 @@ impl Lex {
         let mut p_rules = 0.0;
         for rule in &utrs.rules[0..n_learned_rules] {
             p_rules += self.logprior_rule(&rule, ctx, atom_weights, invent)?;
+    fn enumerate_n_terms_internal(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+        variables: &mut Vec<Variable>,
+    ) -> Vec<Term> {
+        self.prepare_options(schema, invent, true, variables)
+            .into_iter()
+            .flat_map(|atom| {
+                self.enumerate_n_terms_from_context(
+                    Context::from(atom),
+                    invent,
+                    associative,
+                    n,
+                    variables,
+                )
+            })
+            .collect_vec()
+    }
+    fn enumerate_n_terms_from_context(
+        &mut self,
+        context: Context,
+        invent: bool,
+        associative: bool,
+        n: usize,
+        variables: &mut Vec<Variable>,
+    ) -> Vec<Term> {
+        match n.cmp(&context.size()) {
+            Ordering::Less => vec![],
+            Ordering::Equal if context.holes().is_empty() => context
+                .to_term()
+                .map(|t| vec![t])
+                .unwrap_or_else(|()| vec![]),
+            _ => {
+                let holes = context.holes();
+                if holes.is_empty() {
+                    vec![]
+                } else {
+                    // typecheck and get the type of the first hole
+                    let hole = &holes[0];
+                    let complex = !associative || hole.iter().max() == Some(&0);
+                    let mut tps = HashMap::new();
+                    if self
+                        .infer_context_internal(&context, vec![], &mut tps)
+                        .is_err()
+                    {
+                        return vec![];
+                    }
+                    let lex_vars = self.free_vars_applied();
+                    let schema = tps[hole].apply(&self.ctx).generalize(&lex_vars);
+                    // find all the atoms that could fill that hole; recursively try each
+                    self.prepare_options(&schema, invent, complex, variables)
+                        .into_iter()
+                        .map(Context::from)
+                        .flat_map(|subcontext| {
+                            let mut new_vars = variables.clone();
+                            if let Context::Variable(ref v) = subcontext {
+                                if !new_vars.contains(v) {
+                                    new_vars.push(v.clone());
+                                }
+                            }
+                            let new_context = context.replace(hole, subcontext).unwrap();
+                            self.enumerate_n_terms_from_context(
+                                new_context,
+                                invent,
+                                associative,
+                                n,
+                                &mut new_vars,
+                            )
+                        })
+                        .collect_vec()
+                }
+            }
         }
         Ok(p_n_rules + p_rules)
     }
