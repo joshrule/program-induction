@@ -3,7 +3,7 @@ extern crate polytype;
 extern crate programinduction;
 extern crate rand;
 use programinduction::pcfg::{self, Grammar, Rule};
-use programinduction::{GPParams, GPSelection, Task, GP};
+use programinduction::{GPParams, GPSelection, GPWeights, Task, GP};
 use rand::{rngs::SmallRng, SeedableRng};
 
 #[test]
@@ -41,7 +41,11 @@ fn gp_sum_arith() {
         selection: GPSelection::Deterministic,
         population_size: 10,
         tournament_size: 5,
-        mutation_prob: 0.6,
+        weights: GPWeights {
+            mutation: 6,
+            crossover: 4,
+            abiogenesis: 0,
+        },
         n_delta: 1,
     };
     let params = pcfg::GeneticParams::default();
