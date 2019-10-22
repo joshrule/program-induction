@@ -28,8 +28,6 @@ pub struct GeneticParams {
     pub n_crosses: usize,
     /// The maximum number of nodes a sampled `Term` can have without failing.
     pub max_sample_size: usize,
-    /// The probability of adding (vs. deleting) a rule during mutation.
-    pub p_add: f64,
     /// The probability of keeping a rule during crossover.
     pub p_keep: f64,
     /// The weight to assign variables, constants, and non-constant operators, respectively.
@@ -577,7 +575,7 @@ impl Lexicon {
         result
     }
     /// merge two `TRS` into a single `TRS`.
-    pub fn combine<R: Rng>(&self, rng: &mut R, trs1: &TRS, trs2: &TRS) -> Result<TRS, TypeError> {
+    pub fn combine(&self, trs1: &TRS, trs2: &TRS) -> Result<TRS, TypeError> {
         assert_eq!(trs1.lex, trs2.lex);
         let background_size = trs1
             .lex
@@ -588,11 +586,25 @@ impl Lexicon {
             .len();
         let rules1 = trs1.utrs.rules[..(trs1.utrs.len() - background_size)].to_vec();
         let rules2 = trs2.utrs.rules[..(trs2.utrs.len() - background_size)].to_vec();
-        let ctx = &self.0.read().expect("poisoned lexicon").ctx;
-        let mut trs = TRS::new(&trs1.lex, rules1, ctx)?;
-        trs.utrs.pushes(rules2).unwrap(); // hack?
+        let mut trs = TRS::new(&trs1.lex, rules1)?;
+        let filtered_rules = rules2
+            .into_iter()
+            .flat_map(|r| r.clauses())
+            .filter(|r2| {
+                for r1 in &trs.utrs().clauses() {
+                    if Rule::alpha(r1, r2).is_some()
+                        || (self.0.read().expect("poisoned lexicon").deterministic
+                            && Term::alpha(&r1.lhs, &r2.lhs).is_some())
+                    {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect_vec();
+        trs.utrs.pushes(filtered_rules).unwrap(); // hack?
         if self.0.read().expect("poisoned lexicon").deterministic {
-            trs.utrs.make_deterministic(rng);
+            trs.utrs.make_deterministic();
         }
         Ok(trs)
     }
@@ -1556,15 +1568,11 @@ impl GP for Lexicon {
         pop_size: usize,
         _tp: &TypeSchema,
     ) -> Vec<Self::Expression> {
-        let trs = TRS::new(
-            self,
-            Vec::new(),
-            &self.0.read().expect("poisoned lexicon").ctx,
-        );
+        let trs = TRS::new(self, Vec::new());
         match trs {
             Ok(mut trs) => {
                 if self.0.read().expect("poisoned lexicon").deterministic {
-                    trs.utrs.make_deterministic(rng);
+                    trs.utrs.make_deterministic();
                 }
                 let templates = self.0.read().expect("poisoned lexicon").templates.clone();
                 let mut pop = Vec::with_capacity(pop_size);
@@ -1604,7 +1612,8 @@ impl GP for Lexicon {
         obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // disallow deleting if you have no rules to delete
-        let weights = vec![1, (!trs.is_empty() as usize), 1, 1, 1, 1];
+        let not_empty = !trs.is_empty() as usize;
+        let weights = vec![1, (5 * not_empty), (10 * not_empty), 1, 1, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             match dist.sample(rng) {
@@ -1617,14 +1626,36 @@ impl GP for Lexicon {
                         return vec![new_trs];
                     }
                 }
-                // delete rule
+                // replace rule
                 1 => {
+                    let templates = self.0.read().expect("poisoned lexicon").templates.clone();
+                    if let Ok(new_trss) = trs.delete_rule() {
+                        return new_trss
+                            .into_iter()
+                            .map(|trs| {
+                                if let Ok(new_trs) = trs.add_rule(
+                                    &templates,
+                                    params.atom_weights,
+                                    params.max_sample_size,
+                                    rng,
+                                ) {
+                                    vec![new_trs]
+                                } else {
+                                    vec![]
+                                }
+                            })
+                            .flatten()
+                            .collect_vec();
+                    }
+                }
+                // delete rule
+                2 => {
                     if let Ok(new_trss) = trs.delete_rule() {
                         return new_trss;
                     }
                 }
                 // regenerate rule
-                2 => {
+                3 => {
                     if let Ok(new_trss) =
                         trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng)
                     {
@@ -1632,19 +1663,19 @@ impl GP for Lexicon {
                     }
                 }
                 // add exception
-                3 => {
+                4 => {
                     if let Ok(new_trss) = trs.add_exception(obs) {
                         return new_trss;
                     }
                 }
                 // local difference
-                4 => {
+                5 => {
                     if let Ok(new_trss) = trs.local_difference(rng) {
                         return new_trss;
                     }
                 }
                 // replace term with variable
-                5 => {
+                6 => {
                     if let Ok(new_trss) = trs.replace_term_with_var(rng) {
                         return new_trss;
                     }
@@ -1662,7 +1693,7 @@ impl GP for Lexicon {
         _obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         let trs = self
-            .combine(rng, parent1, parent2)
+            .combine(parent1, parent2)
             .expect("poorly-typed TRS in crossover");
         iter::repeat(trs)
             .take(params.n_crosses)
