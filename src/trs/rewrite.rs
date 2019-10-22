@@ -13,11 +13,10 @@ use std::f64::NEG_INFINITY;
 use std::fmt;
 use std::iter::once;
 use term_rewriting::trace::Trace;
-use term_rewriting::{
-    Context, Rule, RuleContext, Strategy as RewriteStrategy, Term, TRS as UntypedTRS,
-};
+use term_rewriting::{Context, Rule, RuleContext, Term, TRS as UntypedTRS};
 
-use super::{Lexicon, ModelParams, SampleError, TypeError};
+use super::{Lexicon, Likelihood, ModelParams, Prior, SampleError, TypeError};
+use utils::{block_generative_logpdf, fail_geometric_logpdf};
 
 /// Manages the semantics of a term rewriting system.
 #[derive(Debug, PartialEq, Clone)]
@@ -25,7 +24,6 @@ pub struct TRS {
     pub(crate) lex: Lexicon,
     // INVARIANT: UntypedTRS.rules ends with lex.background
     pub(crate) utrs: UntypedTRS,
-    pub(crate) ctx: TypeContext,
 }
 impl TRS {
     /// Create a new `TRS` under the given [`Lexicon`]. Any background knowledge
@@ -117,11 +115,65 @@ impl TRS {
         self.utrs.is_empty()
     }
 
-    /// A pseudo log prior for a `TRS`: the negative [`size`] of the `TRS`.
+    /// The underlying [`term_rewriting::TRS`].
+    ///
+    /// [`term_rewriting::TRS`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.TRS.html#method.size
+    pub fn utrs(&self) -> UntypedTRS {
+        self.utrs.clone()
+    }
+
+    /// A pseudo log prior for a `TRS`: the negative [`size`] of the `TRS`
+    /// scaled by some cost per token.
     ///
     /// [`size`]: struct.TRS.html#method.size
-    pub fn pseudo_log_prior(&self) -> f64 {
-        -(self.size() as f64)
+    pub fn log_prior(&self, params: ModelParams) -> f64 {
+        match params.prior {
+            Prior::Size(p_token) => -p_token * (self.size() as f64),
+            Prior::SimpleGenerative {
+                p_rule,
+                atom_weights,
+            } => {
+                let p_num_rules = Box::new(move |k| fail_geometric_logpdf(k, 1.0 - p_rule));
+                self.lex
+                    .logprior_utrs(&self.utrs, p_num_rules, atom_weights, true)
+                    .unwrap_or(NEG_INFINITY)
+            }
+            Prior::BlockGenerative {
+                p_null,
+                p_rule,
+                n_blocks,
+                atom_weights,
+            } => {
+                let p_num_rules =
+                    Box::new(move |k| block_generative_logpdf(p_null, 1.0 - p_rule, k, n_blocks));
+                self.lex
+                    .logprior_utrs(&self.utrs, p_num_rules, atom_weights, true)
+                    .unwrap_or(NEG_INFINITY)
+            }
+            Prior::StringBlockGenerative {
+                p_null,
+                p_rule,
+                n_blocks,
+                atom_weights,
+                dist,
+                t_max,
+                d_max,
+            } => {
+                let p_num_rules =
+                    Box::new(move |k| block_generative_logpdf(p_null, 1.0 - p_rule, k, n_blocks));
+                self.lex
+                    .logprior_srs(
+                        &self.utrs,
+                        p_num_rules,
+                        atom_weights,
+                        true,
+                        dist,
+                        t_max,
+                        d_max,
+                    )
+                    .unwrap_or(NEG_INFINITY)
+            }
+        }
     }
 
     /// A log likelihood for a `TRS`: the probability of `data`'s RHSs appearing
@@ -141,20 +193,52 @@ impl TRS {
                 &self.utrs,
                 &datum.lhs,
                 params.p_observe,
-                params.noise_level,
                 params.max_size,
-                RewriteStrategy::All,
+                params.max_depth,
+                params.strategy,
             );
-            trace.rewrites_to(params.max_steps, rhs)
+            match params.likelihood {
+                // Binary ll: 0 or -\infty
+                Likelihood::Binary => {
+                    if trace.rewrites_to(params.max_steps, rhs, Box::new(|_, _| 0.0))
+                        == NEG_INFINITY
+                    {
+                        NEG_INFINITY
+                    } else {
+                        0.0
+                    }
+                }
+                // Rational Rules ll: 0 or -p_outlier
+                Likelihood::Rational(p_outlier) => {
+                    if trace.rewrites_to(params.max_steps, rhs, Box::new(|_, _| 0.0))
+                        == NEG_INFINITY
+                    {
+                        -p_outlier
+                    } else {
+                        0.0
+                    }
+                }
+                // trace-sensitive ll: 1-p_trace(h,d)
+                // TODO: to be generative, revise to: ll((x,y)|h) = a*(1-p_trace(h,(x,y))) + (1-a)*prior(y)
+                Likelihood::Trace => trace.rewrites_to(params.max_steps, rhs, Box::new(|_, _| 0.0)),
+                // trace-sensitive ll with string edit distance noise model: (1-p_edit(h,d))
+                Likelihood::String { dist, t_max, d_max } => trace.rewrites_to(
+                    params.max_steps,
+                    rhs,
+                    Box::new(move |t1, t2| {
+                        UntypedTRS::p_string(t1, t2, dist, t_max, d_max).unwrap_or(NEG_INFINITY)
+                    }),
+                ),
+                // trace-sensitive ll with string edit distance noise model: (1-p_edit(h,d))
+                Likelihood::List { dist, t_max, d_max } => trace.rewrites_to(
+                    params.max_steps,
+                    rhs,
+                    Box::new(move |t1, t2| UntypedTRS::p_list(t1, t2, dist, t_max, d_max)),
+                ),
+            }
         } else {
             NEG_INFINITY
         }
-        // Partial credit doesn't make sense with softened likelihood
-        //if ll == NEG_INFINITY {
-        //    params.p_partial.ln()
-        //} else {
-        //    (1.0 - params.p_partial).ln() + ll
-        //}
     }
 
     /// Combine [`pseudo_log_prior`] and [`log_likelihood`], failing early if the
@@ -163,11 +247,12 @@ impl TRS {
     /// [`pseudo_log_prior`]: struct.TRS.html#method.pseudo_log_prior
     /// [`log_likelihood`]: struct.TRS.html#method.log_likelihood
     pub fn posterior(&self, data: &[Rule], params: ModelParams) -> f64 {
-        let prior = self.pseudo_log_prior();
+        let prior = self.log_prior(params);
         if prior == NEG_INFINITY {
             NEG_INFINITY
         } else {
-            prior + params.temperature * self.log_likelihood(data, params)
+            let ll = self.log_likelihood(data, params);
+            params.p_temp * prior + params.l_temp * ll
         }
     }
 
@@ -380,7 +465,7 @@ impl TRS {
             let num_rules = self.len();
             let background = &self.lex.0.read().expect("poisoned lexicon").background;
             let num_background = background.len();
-            &self.utrs.rules[num_background..num_rules]
+            &self.utrs.rules[0..(num_rules - num_background)]
         };
         let mut clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
         let idx = (0..clauses.len())

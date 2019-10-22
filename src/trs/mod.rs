@@ -58,14 +58,14 @@ use Task;
 
 use polytype;
 use std::fmt;
-use term_rewriting::{Rule, TRSError};
+use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError};
 
 #[derive(Debug, Clone)]
 /// The error type for type inference.
 pub enum TypeError {
     Unification(polytype::UnificationError),
-    OpNotFound,
-    VarNotFound,
+    NotFound,
+    Malformed,
 }
 impl From<polytype::UnificationError> for TypeError {
     fn from(e: polytype::UnificationError) -> TypeError {
@@ -76,8 +76,8 @@ impl fmt::Display for TypeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             TypeError::Unification(ref e) => write!(f, "unification error: {}", e),
-            TypeError::OpNotFound => write!(f, "operator not found"),
-            TypeError::VarNotFound => write!(f, "variable not found"),
+            TypeError::NotFound => write!(f, "object not found"),
+            TypeError::Malformed => write!(f, "query is nonsense"),
         }
     }
 }
@@ -135,35 +135,73 @@ impl ::std::error::Error for SampleError {
 /// Parameters for a TRS-based probabilistic model.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct ModelParams {
-    /// Multiply the likelihood by this factor. `temperature > 1` biases in
-    /// favor of the likelihood, while `temperature < 1` biases in favor of the
-    /// prior.
-    pub temperature: f64,
-    /// The power to which the goodness of the match between proposed solution
-    /// and correct solution is raised.
-    pub noise_level: f64,
+    pub prior: Prior,
+    pub likelihood: Likelihood,
+    pub strategy: RewriteStrategy,
     /// The (non-log) probability of generating observations at arbitrary
     /// evaluation steps (i.e. not just normal forms). Typically 0.0.
     pub p_observe: f64,
-    /// The number of evaluation steps you would like to explore in the trace.
+    /// The number of evaluation steps you would like to explore in the trace. `None` evaluates the entire trace, which may not terminate.
     pub max_steps: usize,
-    /// The largest term that will be considered for evaluation. `None` will
-    /// evaluate all terms.
+    /// The largest term considered for evaluation. `None` considers all terms.
     pub max_size: Option<usize>,
-    /// The prior probability of adding another rule.
-    pub p_rule: f64,
+    /// The deepest level of the `Trace` considered for evaluation. `None`
+    /// considers all depths.
+    pub max_depth: Option<usize>,
+    /// The weight of the log likelihood in the posterior.
+    pub l_temp: f64,
+    /// The weight of the prior in the posterior.
+    pub p_temp: f64,
 }
-impl Default for ModelParams {
-    fn default() -> ModelParams {
-        ModelParams {
-            temperature: 1.0,
-            noise_level: 1.0,
-            p_observe: 0.0,
-            p_rule: 0.5,
-            max_steps: 50,
-            max_size: Some(500),
-        }
-    }
+
+/// Possible priors for a TRS-based probabilistic model.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum Prior {
+    // size-based prior with a fixed cost per atom
+    Size(f64),
+    // Generative prior based on sampling from the Lexicon
+    SimpleGenerative {
+        p_rule: f64,
+        atom_weights: (f64, f64, f64, f64),
+    },
+    BlockGenerative {
+        p_rule: f64,
+        p_null: f64,
+        n_blocks: usize,
+        atom_weights: (f64, f64, f64, f64),
+    },
+    StringBlockGenerative {
+        p_rule: f64,
+        p_null: f64,
+        n_blocks: usize,
+        atom_weights: (f64, f64, f64, f64),
+        dist: PStringDist,
+        t_max: usize,
+        d_max: usize,
+    },
+}
+
+/// Possible likelihoods for a TRS-based probabilistic model.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum Likelihood {
+    // Binary log-likelihood: 0 or -\infty
+    Binary,
+    // Rational Rules (Goodman, et al., 2008) log-likelihood: 0 or -p_outlier
+    Rational(f64),
+    // trace-based log-likelihood without noise model: 1-p_trace(h,d)
+    Trace,
+    // generative trace-based log-likelihood with string edit distance noise model: (1-p_edit(h,d))
+    String {
+        dist: PStringDist,
+        t_max: usize,
+        d_max: usize,
+    },
+    // generative trace-based log-likelihood with string edit distance noise model: (1-p_edit(h,d))
+    List {
+        dist: PStringDist,
+        t_max: usize,
+        d_max: usize,
+    },
 }
 
 /// Construct a [`Task`] evaluating [`TRS`]s (constructed from a [`Lexicon`])
@@ -184,11 +222,10 @@ pub fn task_by_rewrite<'a, O: Sync>(
     lex: &Lexicon,
     observation: O,
 ) -> Result<Task<'a, Lexicon, TRS, O>, TypeError> {
-    let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
     Ok(Task {
         oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.posterior(data, params)),
         // assuming the data have no variables, we can use the Lexicon's ctx.
-        tp: lex.infer_rules(data, &mut ctx)?,
+        tp: lex.infer_rules(data)?,
         observation,
     })
 }
