@@ -9,7 +9,8 @@ use std::fmt;
 use std::io;
 use term_rewriting::{
     parse_context as parse_untyped_context, parse_rule as parse_untyped_rule,
-    parse_rulecontext as parse_untyped_rulecontext, Atom, Context, Rule, RuleContext, Signature,
+    parse_rulecontext as parse_untyped_rulecontext, parse_term as parse_untyped_term, Atom,
+    Context, Rule, RuleContext, Signature, Term,
 };
 
 #[derive(Debug, PartialEq)]
@@ -115,6 +116,18 @@ pub fn parse_trs(input: &str, lex: &Lexicon) -> Result<TRS, ParseError> {
     } else {
         Err(ParseError)
     }
+}
+
+/// Given a [`Lexicon`], parse and typecheck a [`Term`]. The format of the
+/// [`Term`] is as given in [`term_rewriting`].
+///
+/// [`Lexicon`]: ../struct.Lexicon.html
+/// [`Term`]: ../../../term_rewriting/enum.Term.html
+/// [`term_rewriting`]: ../../../term_rewriting/index.html
+pub fn parse_term(input: &str, lex: &Lexicon) -> Result<Term, ParseError> {
+    typed_term(CompleteStr(input), lex)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
 }
 
 /// Given a [`Lexicon`], parse and typecheck a [`Context`]. The format of the
@@ -332,6 +345,19 @@ fn add_parsed_variables_to_lexicon(lex: &Lexicon) {
             lex.0.write().expect("poisoned lexicon").vars.push(schema);
         }
     }
+}
+fn typed_term<'a>(input: CompleteStr<'a>, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>, Term> {
+    let result = parse_untyped_term(
+        &mut lex.0.write().expect("poisoned lexicon").signature,
+        *input,
+    );
+    if let Ok(term) = result {
+        add_parsed_variables_to_lexicon(lex);
+        if lex.infer_term(&term).drop().is_ok() {
+            return Ok((CompleteStr(""), term));
+        }
+    }
+    Err(Err::Error(Nomtext::Code(input, nom::ErrorKind::Custom(0))))
 }
 fn typed_context<'a>(
     input: CompleteStr<'a>,
