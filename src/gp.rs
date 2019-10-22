@@ -50,7 +50,12 @@ pub enum GPSelection {
     Probabilistic,
     /// `Resample` implies that individuals are selected by sampling from the
     /// offspring *with* replacement, as in a particle filter.
+    #[serde(alias = "resample")]
     Resample,
+    /// `Sample` implies that individuals are selected by sampling from the
+    /// offspring *without* replacement.
+    #[serde(alias = "sample")]
+    Sample,
 }
 
 impl GPSelection {
@@ -69,6 +74,11 @@ impl GPSelection {
             })
             .collect_vec();
         match self {
+            GPSelection::Sample => {
+                let pop_size = population.len();
+                population.extend(scored_children);
+                *population = sample_without_replacement(population, pop_size, rng);
+            }
             GPSelection::Drift(alpha) => {
                 for (p, old_fitness) in population.iter_mut() {
                     let new_fitness = oracle(p);
