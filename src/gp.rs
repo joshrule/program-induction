@@ -59,7 +59,7 @@ pub enum GPSelection {
 }
 
 impl GPSelection {
-    pub(crate) fn update_population<'a, R: Rng, X: Clone + Send + Sync>(
+    pub(crate) fn select<'a, R: Rng, X: Clone + Send + Sync>(
         &self,
         population: &mut Vec<(X, f64)>,
         children: Vec<X>,
@@ -349,7 +349,7 @@ pub trait GP: Send + Sync + Sized {
             children.append(&mut offspring);
         }
         children.truncate(gpparams.n_delta);
-        gpparams.selection.update_population(
+        gpparams.selection.select(
             population,
             children,
             Box::new(|child| (task.oracle)(self, child)),
