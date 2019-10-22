@@ -109,9 +109,8 @@ pub fn parse_lexicon(
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`TRS`]: struct.TRS.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_trs(input: &str, lex: &mut Lexicon) -> Result<TRS, ParseError> {
-    let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
-    if let Ok((CompleteStr(""), t)) = trs(CompleteStr(input), lex, &mut ctx) {
+pub fn parse_trs(input: &str, lex: &Lexicon) -> Result<TRS, ParseError> {
+    if let Ok((CompleteStr(""), t)) = trs(CompleteStr(input), lex) {
         Ok(t)
     } else {
         Err(ParseError)
@@ -124,12 +123,8 @@ pub fn parse_trs(input: &str, lex: &mut Lexicon) -> Result<TRS, ParseError> {
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Context`]: ../../../term_rewriting/enum.Context.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_context(
-    input: &str,
-    lex: &mut Lexicon,
-    ctx: &mut TypeContext,
-) -> Result<Context, ParseError> {
-    if let Ok((CompleteStr(""), t)) = typed_context(CompleteStr(input), lex, ctx) {
+pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseError> {
+    if let Ok((CompleteStr(""), t)) = typed_context(CompleteStr(input), lex) {
         Ok(t)
     } else {
         Err(ParseError)
@@ -142,16 +137,10 @@ pub fn parse_context(
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`RuleContext`]: ../../../term_rewriting/struct.RuleContext.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_rulecontext(
-    input: &str,
-    lex: &mut Lexicon,
-    ctx: &mut TypeContext,
-) -> Result<RuleContext, ParseError> {
-    if let Ok((CompleteStr(""), t)) = typed_rulecontext(CompleteStr(input), lex, ctx) {
-        Ok(t)
-    } else {
-        Err(ParseError)
-    }
+pub fn parse_rulecontext(input: &str, lex: &Lexicon) -> Result<RuleContext, ParseError> {
+    typed_rulecontext(CompleteStr(input), lex)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
 }
 
 /// Given a [`Lexicon`], parse and typecheck a [`Rule`]. The format of the
@@ -160,12 +149,8 @@ pub fn parse_rulecontext(
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Rule`]: ../../../term_rewriting/struct.Rule.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_rule(
-    input: &str,
-    lex: &mut Lexicon,
-    ctx: &mut TypeContext,
-) -> Result<Rule, ParseError> {
-    if let Ok((CompleteStr(""), t)) = typed_rule(input, lex, ctx) {
+pub fn parse_rule(input: &str, lex: &mut Lexicon) -> Result<Rule, ParseError> {
+    if let Ok((CompleteStr(""), t)) = typed_rule(input, lex) {
         Ok(t)
     } else {
         Err(ParseError)
@@ -182,8 +167,7 @@ pub fn parse_rule(
 /// [`parse_lexicon`]: fn.parse_lexicon.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 pub fn parse_templates(input: &str, lex: &mut Lexicon) -> Result<Vec<RuleContext>, ParseError> {
-    let mut ctx = lex.0.write().expect("poisoned lexicon").ctx.clone();
-    if let Ok((CompleteStr(""), t)) = templates(CompleteStr(input), lex, &mut ctx) {
+    if let Ok((CompleteStr(""), t)) = templates(CompleteStr(input), lex) {
         Ok(t)
     } else {
         Err(ParseError)
@@ -291,35 +275,31 @@ fn lexicon<'a>(
     deterministic: bool,
     ctx: TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Lexicon> {
-    let (remaining, mut lex) = simple_lexicon(input, sig, vars, ops, deterministic, ctx)?;
-    let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
-    match trs(bg, &mut lex, &mut ctx)? {
-        (CompleteStr(""), trs) => {
-            lex.0.write().expect("poisoned lexicon").background = trs.utrs.rules;
-        }
+    let (remaining, lex) = simple_lexicon(input, sig, vars, ops, deterministic, ctx)?;
+    let rules = match trs(bg, &lex)? {
+        (CompleteStr(""), trs) => Some(trs.utrs.rules),
+        _ => None,
+    };
+    match rules {
+        Some(rules) => lex.0.write().expect("poisoned lexicon").background = rules,
         _ => return Err(Err::Error(Nomtext::Code(bg, nom::ErrorKind::Custom(0)))),
     }
-    match templates(temp, &mut lex, &mut ctx)? {
+    match templates(temp, &lex)? {
         (CompleteStr(""), templates) => {
             lex.0.write().expect("poisoned lexicon").templates = templates;
-            lex.0.write().expect("poisoned lexicon").ctx = ctx;
             Ok((remaining, lex))
         }
         _ => Err(Err::Error(Nomtext::Code(bg, nom::ErrorKind::Custom(0)))),
     }
 }
-fn typed_rule<'a>(
-    input: &'a str,
-    lex: &mut Lexicon,
-    ctx: &mut TypeContext,
-) -> nom::IResult<CompleteStr<'a>, Rule> {
+fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
     let result = parse_untyped_rule(
         &mut lex.0.write().expect("poisoned lexicon").signature,
         input,
     );
     if let Ok(rule) = result {
-        add_parsed_variables_to_lexicon(lex, ctx);
-        if lex.infer_rule(&rule, ctx, &mut HashMap::new()).is_ok() {
+        add_parsed_variables_to_lexicon(lex);
+        if lex.infer_rule(&rule, &mut HashMap::new()).is_ok() {
             return Ok((CompleteStr(""), rule));
         }
     }
@@ -328,68 +308,68 @@ fn typed_rule<'a>(
         nom::ErrorKind::Custom(0),
     )))
 }
-named_args!(trs<'a>(lex: &mut Lexicon, ctx: &mut TypeContext) <CompleteStr<'a>, TRS>,
-    ws!(do_parse!(rules: many0!(do_parse!(many0!(ws!(comment)) >>
-                                          rule_text: take_until_and_consume!(";") >>
-                                          rule: expr_res!(typed_rule(&rule_text, lex, ctx)) >>
-                                          many0!(ws!(comment)) >>
-                                          (rule.1))) >>
-                  trs: expr_res!(TRS::new(lex, rules, ctx)) >>
-                  (trs)))
+named_args!(trs<'a>(lex: &Lexicon) <CompleteStr<'a>, TRS>,
+            ws!(do_parse!(many0!(ws!(comment)) >>
+                          rules: many0!(do_parse!(many0!(ws!(comment)) >>
+                                                  rule_text: take_until_and_consume!(";") >>
+                                                  rule: expr_res!(typed_rule(&rule_text, lex)) >>
+                                                  many0!(ws!(comment)) >>
+                                                  (rule.1))) >>
+                          trs: expr_res!(TRS::new(lex, rules)) >>
+                          (trs)))
 );
-fn add_parsed_variables_to_lexicon(lex: &Lexicon, ctx: &mut TypeContext) {
-    let n_vars = lex
+fn add_parsed_variables_to_lexicon(lex: &Lexicon) {
+    let mut vars = lex
         .0
         .read()
         .expect("poisoned lexicon")
         .signature
-        .variables()
-        .len();
-    let n_schemas = lex.0.read().expect("poisoned lexicon").vars.len();
-    let diff = n_vars - n_schemas;
-    for _ in 0..diff {
-        let schema = TypeSchema::Monotype(ctx.new_variable());
-        lex.0.write().expect("poisoned lexicon").vars.push(schema);
+        .variables();
+    vars.sort_unstable_by_key(|var| var.id());
+    for var in vars {
+        if var.id() == lex.0.read().expect("poisoned lexicon").vars.len() {
+            let tp = lex.0.write().expect("poisoned lexicon").ctx.new_variable();
+            let schema = TypeSchema::Monotype(tp);
+            lex.0.write().expect("poisoned lexicon").vars.push(schema);
+        }
     }
 }
 fn typed_context<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
-    ctx: &mut TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Context> {
     let result = parse_untyped_context(
         &mut lex.0.write().expect("poisoned lexicon").signature,
         *input,
     );
-    if let Ok(rule) = result {
-        add_parsed_variables_to_lexicon(lex, ctx);
-        if lex.infer_context(&rule, ctx).is_ok() {
-            return Ok((CompleteStr(""), rule));
+    if let Ok(context) = result {
+        add_parsed_variables_to_lexicon(lex);
+        if lex.infer_context(&context).drop().is_ok() {
+            return Ok((CompleteStr(""), context));
         }
     }
     Err(Err::Error(Nomtext::Code(input, nom::ErrorKind::Custom(0))))
 }
 fn typed_rulecontext<'a>(
     input: CompleteStr<'a>,
-    lex: &mut Lexicon,
-    ctx: &mut TypeContext,
+    lex: &Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, RuleContext> {
     let result = parse_untyped_rulecontext(
         &mut lex.0.write().expect("poisoned lexicon").signature,
         *input,
     );
     if let Ok(rule) = result {
-        add_parsed_variables_to_lexicon(lex, ctx);
-        if lex.infer_rulecontext(&rule, ctx).is_ok() {
+        add_parsed_variables_to_lexicon(lex);
+        if lex.infer_rulecontext(&rule).is_ok() {
             return Ok((CompleteStr(""), rule));
         }
     }
     Err(Err::Error(Nomtext::Code(input, nom::ErrorKind::Custom(0))))
 }
-named_args!(templates<'a>(lex: &mut Lexicon, ctx: &mut TypeContext) <CompleteStr<'a>, Vec<RuleContext>>,
+named_args!(templates<'a>(lex: &Lexicon) <CompleteStr<'a>, Vec<RuleContext>>,
             ws!(do_parse!(templates: many0!(do_parse!(many0!(ws!(comment)) >>
                                                       rc_text: take_until_and_consume!(";") >>
-                                                      rc: expr_res!(typed_rulecontext(rc_text, lex, ctx)) >>
+                                                      rc: expr_res!(typed_rulecontext(rc_text, lex)) >>
                                                       many0!(ws!(comment)) >>
                                                       (rc.1))) >>
                           (templates)))
@@ -462,8 +442,7 @@ mod tests {
         )
         .unwrap()
         .1;
-        let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
-        let res = typed_rule("SUCC(x_) = ZERO", &mut lex, &mut ctx);
+        let res = typed_rule("SUCC(x_) = ZERO", &mut lex);
 
         assert_eq!(res.unwrap().1.display(), "SUCC(x_) = ZERO");
     }
@@ -482,11 +461,9 @@ mod tests {
         )
         .unwrap()
         .1;
-        let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
         let res = trs(
             CompleteStr("PLUS(ZERO x_) = ZERO; PLUS(SUCC(x_) y_) = SUCC(PLUS(x_ y_));"),
             &mut lex,
-            &mut ctx,
         );
 
         assert_eq!(
@@ -509,8 +486,7 @@ mod tests {
         )
         .unwrap()
         .1;
-        let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
-        let res = typed_context(CompleteStr("PLUS(x_ [!])"), &mut lex, &mut ctx);
+        let res = typed_context(CompleteStr("PLUS(x_ [!])"), &mut lex);
 
         assert_eq!(res.unwrap().1.display(), "PLUS(x_ [!])");
     }
@@ -529,8 +505,7 @@ mod tests {
         )
         .unwrap()
         .1;
-        let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
-        let res = typed_rulecontext(CompleteStr("PLUS(x_ [!]) = ZERO"), &mut lex, &mut ctx);
+        let res = typed_rulecontext(CompleteStr("PLUS(x_ [!]) = ZERO"), &mut lex);
 
         assert_eq!(res.unwrap().1.display(), "PLUS(x_ [!]) = ZERO");
     }
@@ -549,11 +524,9 @@ mod tests {
         )
         .unwrap()
         .1;
-        let mut ctx = lex.0.read().expect("poisoned lexicon").ctx.clone();
         let res = templates(
             CompleteStr("PLUS(x_ [!]) = ZERO; [!] = SUCC(ZERO);"),
             &mut lex,
-            &mut ctx,
         );
 
         let res_string = res
