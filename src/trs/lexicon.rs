@@ -71,11 +71,11 @@ impl Lexicon {
         let mut ops = Vec::with_capacity(operators.len());
         for (id, name, tp) in operators {
             signature.new_op(id, name);
-            ops.push(tp)
+            ops.push(tp);
         }
         Lexicon(Arc::new(RwLock::new(Lex {
             ops,
-            vars: Vec::new(),
+            vars: vec![],
             signature,
             background: vec![],
             templates: vec![],
