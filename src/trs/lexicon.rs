@@ -642,7 +642,7 @@ impl fmt::Display for Lex {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "Signature:")?;
         for (op, schema) in self.signature.operators().iter().zip(&self.ops) {
-            writeln!(f, "{}: {}", op.display(), schema)?;
+            writeln!(f, "{}/{}: {}", op.display(), op.arity(), schema)?;
         }
         for (var, schema) in self.signature.variables().iter().zip(&self.vars) {
             writeln!(f, "{}: {}", var.display(), schema)?;
