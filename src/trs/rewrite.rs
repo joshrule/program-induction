@@ -237,52 +237,37 @@ impl TRS {
     pub fn add_rule<R: Rng>(
         &self,
         contexts: &[RuleContext],
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
     ) -> Result<TRS, SampleError> {
         let mut trs = self.clone();
         let context = contexts.choose(rng).ok_or(SampleError::OptionsExhausted)?;
-        let rule = trs.lex.sample_rule_from_context(
-            context.clone(),
-            &mut trs.ctx,
-            atom_weights,
-            true,
-            max_size,
-        )?;
+        let rule = trs
+            .lex
+            .sample_rule_from_context(context.clone(), atom_weights, true, max_size)
+            .drop()?;
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }
-        trs.lex.0.write().expect("poisoned lexicon").infer_rule(
-            &rule,
-            &mut trs.ctx,
-            &mut HashMap::new(),
-        )?;
+        trs.lex.infer_rule(&rule, &mut HashMap::new())?;
         trs.utrs.push(rule)?;
         Ok(trs)
     }
     /// Regenerate some portion of a rule
     pub fn regenerate_rule<R: Rng>(
         &self,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
-        // get hold of a single clause
-        let rules = {
-            let num_rules = self.len();
-            let background = &self.lex.0.read().expect("poisoned lexicon").background;
-            let num_background = background.len();
-            &self.utrs.rules[num_background..num_rules]
-        };
-        let clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
-        let clause = clauses.choose(rng).ok_or(SampleError::OptionsExhausted)?;
-        let new_rules = self.regenerate_helper(clause, atom_weights, max_size)?;
+        let clause = self.choose_clause(rng)?;
+        let new_rules = self.regenerate_helper(&clause, atom_weights, max_size)?;
         let new_trss = new_rules
             .into_iter()
             .filter_map(|new_clause| {
                 let mut trs = self.clone();
-                let okay = trs.replace(clause, new_clause).is_ok();
+                let okay = trs.replace(&clause, new_clause).is_ok();
                 if okay {
                     Some(trs)
                 } else {
@@ -299,7 +284,7 @@ impl TRS {
     fn regenerate_helper(
         &self,
         clause: &Rule,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         max_size: usize,
     ) -> Result<Vec<Rule>, SampleError> {
         let rulecontext = RuleContext::from(clause.clone());
@@ -310,14 +295,11 @@ impl TRS {
             // replace it with a hole
             let template = rulecontext.replace(&subcontext.1, Context::Hole).unwrap();
             // sample a term from the context
-            let mut trs = self.clone();
-            let new_result = trs.lex.sample_rule_from_context(
-                template,
-                &mut trs.ctx,
-                atom_weights,
-                true,
-                max_size,
-            );
+            let trs = self.clone();
+            let new_result = trs
+                .lex
+                .sample_rule_from_context(template, atom_weights, true, max_size)
+                .drop();
             if let Ok(new_clause) = new_result {
                 if new_clause.lhs != new_clause.rhs().unwrap() {
                     rules.push(new_clause);
@@ -354,20 +336,21 @@ impl TRS {
     }
     /// Replace a subterm of the rule with a variable.
     pub fn replace_term_with_var<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
-        let mut old_trs = self.clone(); // TODO: cloning is a hack!
+        let old_trs = self.clone(); // TODO: cloning is a hack!
         let clause = self.choose_clause(rng)?;
         let mut types = HashMap::new();
-        old_trs
-            .lex
-            .infer_rule(&clause, &mut old_trs.ctx, &mut types)?;
+        old_trs.lex.infer_rule(&clause, &mut types)?;
         let new_trss = clause
             .lhs
             .subterms()
             .iter()
             .unique_by(|(t, _)| t)
             .filter_map(|(t, p)| {
+                // need to indicate that p is from the LHS
+                let mut real_p = p.clone();
+                real_p.insert(0, 0);
                 let mut trs = self.clone();
-                let term_type = &types[p];
+                let term_type = &types[&real_p];
                 let new_var = trs.lex.invent_variable(term_type);
                 let new_term = Term::Variable(new_var);
                 let new_lhs = clause.lhs.replace_all(t, &new_term);
@@ -407,11 +390,7 @@ impl TRS {
         old_clause: &Rule,
         new_clause: Rule,
     ) -> Result<&mut TRS, SampleError> {
-        self.lex.0.write().expect("poisoned lexicon").infer_rule(
-            &new_clause,
-            &mut self.ctx,
-            &mut HashMap::new(),
-        )?;
+        self.lex.infer_rule(&new_clause, &mut HashMap::new())?;
         self.utrs.replace(0, old_clause, new_clause)?;
         Ok(self)
     }
@@ -549,20 +528,13 @@ impl TRS {
     /// # }
     /// ```
     pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
-        let rules = {
-            let num_rules = self.len();
-            let background = &self.lex.0.read().expect("poisoned lexicon").background;
-            let num_background = background.len();
-            &self.utrs.rules[num_background..num_rules]
-        };
-        let clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
-        let clause = clauses.choose(rng).ok_or(SampleError::OptionsExhausted)?;
-        let new_rules = TRS::local_difference_helper(clause);
+        let clause = self.choose_clause(rng)?;
+        let new_rules = TRS::local_difference_helper(&clause);
         let new_trss = new_rules
             .into_iter()
             .filter_map(|r| {
                 let mut trs = self.clone();
-                if trs.utrs.replace(0, clause, r).is_ok() {
+                if trs.utrs.replace(0, &clause, r).is_ok() {
                     Some(trs)
                 } else {
                     None
