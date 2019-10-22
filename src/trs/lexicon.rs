@@ -1,18 +1,22 @@
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type, TypeSchema, Variable as TypeVar};
 use rand::{distributions::Distribution, distributions::WeightedIndex, Rng};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::f64::NEG_INFINITY;
 use std::fmt;
 use std::iter;
 use std::sync::{Arc, RwLock};
 use term_rewriting::{
-    Atom, Context, Operator, Place, Rule, RuleContext, Signature, Term, Variable, TRS as UntypedTRS,
+    Atom, Context, Operator, PStringDist, Place, Rule, RuleContext, Signature, Term, Variable,
+    TRS as UntypedTRS,
 };
 
 use super::{SampleError, TypeError, TRS};
-use utils::weighted_permutation;
+use utils::{logsumexp, weighted_sample};
 use GP;
+
+type LOpt = (Option<Atom>, Vec<Type>);
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 /// Parameters for [`Lexicon`] genetic programming ([`GP`]).
@@ -29,7 +33,26 @@ pub struct GeneticParams {
     /// The probability of keeping a rule during crossover.
     pub p_keep: f64,
     /// The weight to assign variables, constants, and non-constant operators, respectively.
-    pub atom_weights: (f64, f64, f64),
+    pub atom_weights: (f64, f64, f64, f64),
+}
+
+pub struct ContextPoint<O, E> {
+    result: Result<O, E>,
+    snapshot: usize,
+    lex: Lexicon,
+}
+impl<O, E> ContextPoint<O, E> {
+    pub fn drop(self) -> Result<O, E> {
+        let mut lex = self.lex.0.write().expect("poisoned lexicon");
+        lex.ctx.rollback(self.snapshot);
+        self.result
+    }
+    pub fn keep(self) -> Result<O, E> {
+        self.result
+    }
+    pub fn defer(self) -> (Result<O, E>, usize) {
+        (self.result, self.snapshot)
+    }
 }
 
 /// (representation) Manages the syntax of a term rewriting system.
@@ -260,45 +283,87 @@ impl Lexicon {
     ///
     /// [`polytype::TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`term_rewriting::Context`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Context.html
-    pub fn infer_context(
-        &self,
-        context: &Context,
-        ctx: &mut TypeContext,
-    ) -> Result<TypeSchema, TypeError> {
-        let lex = self.0.write().expect("poisoned lexicon");
-        lex.infer_context(context, ctx)
+    pub fn infer_context(&self, context: &Context) -> ContextPoint<TypeSchema, TypeError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_context(context);
+        ContextPoint {
+            snapshot,
+            result,
+            lex: self.clone(),
+        }
     }
     /// Infer the `TypeSchema` associated with a `RuleContext`.
-    pub fn infer_rulecontext(
-        &self,
-        context: &RuleContext,
-        ctx: &mut TypeContext,
-    ) -> Result<TypeSchema, TypeError> {
-        let lex = self.0.write().expect("poisoned lexicon");
-        lex.infer_rulecontext(context, ctx)
+    pub fn infer_rulecontext(&self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_rulecontext(context);
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Infer the `TypeSchema` associated with a `Rule`.
     pub fn infer_rule(
         &self,
         rule: &Rule,
-        ctx: &mut TypeContext,
         types: &mut HashMap<Place, Type>,
     ) -> Result<TypeSchema, TypeError> {
-        let lex = self.0.write().expect("poisoned lexicon");
-        lex.infer_rule(rule, ctx, types)
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_rule(rule, types);
+        for (_, v) in types.iter_mut() {
+            v.apply_mut(&lex.ctx);
+            v.apply_mut(&lex.ctx);
+        }
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Infer the `TypeSchema` associated with a collection of `Rules`.
-    pub fn infer_rules(
+    pub fn infer_rules(&self, rules: &[Rule]) -> Result<TypeSchema, TypeError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_rules(rules);
+        lex.ctx.rollback(snapshot);
+        result
+    }
+    /// Infer the `TypeSchema` associated with a subterm in a `Rule`.
+    pub fn infer_subrule(
         &self,
-        rules: &[Rule],
-        ctx: &mut TypeContext,
-    ) -> Result<TypeSchema, TypeError> {
-        let lex = self.0.write().expect("poisoned lexicon");
-        lex.infer_rules(rules, ctx)
+        rule: &Rule,
+        subterm: &Term,
+    ) -> ContextPoint<TypeSchema, TypeError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_subrule(rule, subterm);
+        ContextPoint {
+            snapshot,
+            result,
+            lex: self.clone(),
+        }
     }
     /// Infer the `TypeSchema` associated with a `Rule`.
     pub fn infer_op(&self, op: &Operator) -> Result<TypeSchema, TypeError> {
-        self.0.write().expect("poisoned lexicon").op_tp(&op)
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.op_tp(op.clone()).map(|tp| tp.clone());
+        lex.ctx.rollback(snapshot);
+        result
+    }
+    pub fn infer_term(&self, term: &Term) -> ContextPoint<TypeSchema, TypeError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_term(term);
+        ContextPoint {
+            snapshot,
+            result,
+            lex: self.clone(),
+        }
+    }
+    pub fn infer_utrs(&self, utrs: &UntypedTRS) -> Result<(), TypeError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_utrs(utrs);
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Sample a [`term_rewriting::Term`].
     ///
@@ -331,53 +396,67 @@ impl Lexicon {
     ///
     /// [`term_rewriting::Term`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Term.html
     pub fn sample_term(
-        &mut self,
+        &self,
         schema: &TypeSchema,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         max_size: usize,
+        vars: &mut Vec<Variable>,
     ) -> Result<Term, SampleError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
-        lex.sample_term(schema, ctx, atom_weights, invent, variable, max_size, 0)
+        let snapshot = lex.ctx.len();
+        let result = lex.sample_term(schema, atom_weights, invent, variable, max_size, vars);
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Sample a `Term` conditioned on a `Context` rather than a `TypeSchema`.
     pub fn sample_term_from_context(
         &mut self,
         context: &Context,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         max_size: usize,
     ) -> Result<Term, SampleError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
-        lex.sample_term_from_context(context, ctx, atom_weights, invent, variable, max_size, 0)
+        let snapshot = lex.ctx.len();
+        let result =
+            lex.sample_term_from_context(context, atom_weights, invent, variable, max_size);
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Sample a `Rule`.
     pub fn sample_rule(
         &mut self,
         schema: &TypeSchema,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
     ) -> Result<Rule, SampleError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
-        lex.sample_rule(schema, ctx, atom_weights, invent, max_size, 0)
+        let snapshot = lex.ctx.len();
+        let result = lex.sample_rule(schema, atom_weights, invent, max_size);
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Sample a `Rule` conditioned on a `Context` rather than a `TypeSchema`.
     pub fn sample_rule_from_context(
-        &mut self,
+        &self,
         context: RuleContext,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
-    ) -> Result<Rule, SampleError> {
-        let mut lex = self.0.write().expect("posioned lexicon");
-        lex.sample_rule_from_context(context, ctx, atom_weights, invent, max_size, 0)
+    ) -> ContextPoint<Rule, SampleError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.sample_rule_from_context(context, atom_weights, invent, max_size);
+        ContextPoint {
+            snapshot,
+            result,
+            lex: self.clone(),
+        }
+    }
     pub fn enumerate_to_n_terms(
         &mut self,
         schema: &TypeSchema,
@@ -435,37 +514,68 @@ impl Lexicon {
         &self,
         term: &Term,
         schema: &TypeSchema,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let lex = self.0.read().expect("posioned lexicon");
-        lex.logprior_term(term, schema, ctx, atom_weights, invent)
+        let mut lex = self.0.write().expect("posioned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.logprior_term(term, schema, atom_weights, invent);
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Give the log probability of sampling a Rule.
     pub fn logprior_rule(
         &self,
         rule: &Rule,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let lex = self.0.read().expect("poisoned lexicon");
-        lex.logprior_rule(rule, ctx, atom_weights, invent)
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.logprior_rule(rule, atom_weights, invent);
+        lex.ctx.rollback(snapshot);
+        result
     }
     /// Give the log probability of sampling a TRS.
     pub fn logprior_utrs(
         &self,
         utrs: &UntypedTRS,
-        p_rule: f64,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        p_number_of_rules: Box<dyn Fn(usize) -> f64>,
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let lex = self.0.read().expect("poisoned lexicon");
-        lex.logprior_utrs(utrs, p_rule, ctx, atom_weights, invent)
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.logprior_utrs(utrs, p_number_of_rules, atom_weights, invent);
+        lex.ctx.rollback(snapshot);
+        result
     }
-
+    /// Give the log probability of sampling an SRS.
+    #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
+    pub fn logprior_srs(
+        &self,
+        utrs: &UntypedTRS,
+        p_number_of_rules: Box<dyn Fn(usize) -> f64>,
+        atom_weights: (f64, f64, f64, f64),
+        invent: bool,
+        dist: PStringDist,
+        t_max: usize,
+        d_max: usize,
+    ) -> Result<f64, SampleError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.logprior_srs(
+            utrs,
+            p_number_of_rules,
+            atom_weights,
+            invent,
+            dist,
+            t_max,
+            d_max,
+        );
+        lex.ctx.rollback(snapshot);
+        result
+    }
     /// merge two `TRS` into a single `TRS`.
     pub fn combine<R: Rng>(&self, rng: &mut R, trs1: &TRS, trs2: &TRS) -> Result<TRS, TypeError> {
         assert_eq!(trs1.lex, trs2.lex);
@@ -555,58 +665,72 @@ impl Lex {
         var
     }
     fn fit_atom(
-        &self,
+        &mut self,
         atom: &Atom,
         tp: &Type,
-        ctx: &mut TypeContext,
+        rollback: bool,
     ) -> Result<Vec<Type>, SampleError> {
-        let atom_tp = self.instantiate_atom(atom, ctx)?;
-        ctx.unify(atom_tp.returns().or_else(|| Some(&atom_tp)).unwrap(), tp)?;
-        Ok(atom_tp
-            .args()
-            .map(|o| o.into_iter().cloned().collect())
-            .unwrap_or_else(Vec::new))
+        let atom_tp = self.instantiate_atom(atom)?;
+        let rollback_n = self.ctx.len();
+        let unify_tp = match atom {
+            Atom::Operator(o) if o.arity() == 0 => atom_tp.clone(),
+            _ => atom_tp
+                .returns()
+                .map(Type::clone)
+                .or_else(|| Some(atom_tp.clone()))
+                .unwrap(),
+        };
+        let result = self.ctx.unify_fast(unify_tp, tp.clone());
+        if rollback || result.is_err() {
+            self.ctx.rollback(rollback_n);
+        }
+        result
+            .map(|_| match atom {
+                Atom::Operator(o) if o.arity() > 0 => atom_tp
+                    .args()
+                    .map(|o| o.into_iter().cloned().collect())
+                    .unwrap_or_else(Vec::new),
+                _ => Vec::with_capacity(0),
+            })
+            .map_err(|e| SampleError::TypeError(TypeError::Unification(e)))
     }
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
     fn place_atom(
         &mut self,
         atom: &Atom,
         arg_types: Vec<Type>,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
-        size: usize,
         vars: &mut Vec<Variable>,
     ) -> Result<Term, SampleError> {
-        let mut size = size;
         match *atom {
             Atom::Variable(ref v) => Ok(Term::Variable(v.clone())),
             Atom::Operator(ref op) => {
-                // TODO: introduce shortcut in case not enough headroom
-                size += 1;
-                let orig_ctx = ctx.clone(); // for "undo" semantics
+                let mut size = 1;
+                let snapshot = self.ctx.len(); // for "undo" semantics
                 let mut args = Vec::with_capacity(arg_types.len());
-                // subterms can always be variables
-                let can_be_variable = true;
+                let can_be_variable = true; // subterms can always be variables
                 for arg_tp in arg_types {
-                    let subtype = arg_tp.apply(ctx);
-                    let arg_schema = TypeSchema::Monotype(arg_tp);
+                    let subtype = arg_tp.apply(&self.ctx);
+                    let lex_vars = self.free_vars_applied();
+                    let arg_schema = subtype.generalize(&lex_vars);
+                    if size > max_size {
+                        return Err(SampleError::SizeExceeded(size, max_size));
+                    }
                     let result = self
                         .sample_term_internal(
                             &arg_schema,
-                            ctx,
                             atom_weights,
                             invent,
                             can_be_variable,
-                            max_size,
-                            size,
+                            max_size - size,
                             vars,
                         )
                         .map_err(|_| SampleError::Subterm)
                         .and_then(|subterm| {
-                            let tp = self.infer_term(&subterm, ctx)?.instantiate_owned(ctx);
-                            ctx.unify_fast(subtype, tp)?;
+                            let tp = self.infer_term(&subterm)?.instantiate_owned(&mut self.ctx);
+                            self.ctx.unify_fast(subtype, tp)?;
                             Ok(subterm)
                         });
                     match result {
@@ -615,7 +739,7 @@ impl Lex {
                             args.push(subterm);
                         }
                         Err(e) => {
-                            *ctx = orig_ctx;
+                            self.ctx.rollback(snapshot);
                             return Err(e);
                         }
                     }
@@ -627,410 +751,404 @@ impl Lex {
             }
         }
     }
-    fn instantiate_atom(&self, atom: &Atom, ctx: &mut TypeContext) -> Result<Type, TypeError> {
-        let mut tp = self.infer_atom(atom)?.instantiate_owned(ctx);
-        tp.apply_mut(ctx);
+    fn instantiate_atom(&mut self, atom: &Atom) -> Result<Type, TypeError> {
+        let schema = self.infer_atom(atom)?.clone();
+        let mut tp = schema.instantiate_owned(&mut self.ctx);
+        tp.apply_mut(&self.ctx);
         Ok(tp)
     }
-    fn var_tp(&self, v: &Variable) -> Result<TypeSchema, TypeError> {
-        if let Some(idx) = self.signature.variables().iter().position(|x| x == v) {
-            Ok(self.vars[idx].clone())
+    fn var_tp(&self, v: Variable) -> Result<&TypeSchema, TypeError> {
+        let v_id = v.id();
+        if v_id >= self.vars.len() {
+            Err(TypeError::NotFound)
         } else {
-            Err(TypeError::VarNotFound)
+            Ok(&self.vars[v_id])
         }
     }
-    fn op_tp(&self, o: &Operator) -> Result<TypeSchema, TypeError> {
-        if let Some(idx) = self.signature.operators().iter().position(|x| x == o) {
-            Ok(self.ops[idx].clone())
+    fn op_tp(&self, o: Operator) -> Result<&TypeSchema, TypeError> {
+        let o_id = o.id();
+        if o_id >= self.ops.len() {
+            Err(TypeError::NotFound)
         } else {
-            Err(TypeError::OpNotFound)
+            Ok(&self.ops[o_id])
         }
     }
 
-    fn infer_atom(&self, atom: &Atom) -> Result<TypeSchema, TypeError> {
+    fn infer_atom(&self, atom: &Atom) -> Result<&TypeSchema, TypeError> {
         match *atom {
-            Atom::Operator(ref o) => self.op_tp(o),
-            Atom::Variable(ref v) => self.var_tp(v),
+            Atom::Operator(ref o) => self.op_tp(o.clone()),
+            Atom::Variable(ref v) => self.var_tp(v.clone()),
         }
     }
-    pub fn infer_term(&self, term: &Term, ctx: &mut TypeContext) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_term_internal(term, ctx, vec![], &mut HashMap::new())?;
-        let lex_vars = self.free_vars_applied(ctx);
-        Ok(tp.apply(ctx).generalize(&lex_vars))
+    fn infer_term(&mut self, term: &Term) -> Result<TypeSchema, TypeError> {
+        let tp = self.infer_term_internal(term, vec![], &mut HashMap::new())?;
+        let lex_vars = self.free_vars_applied();
+        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
     }
     fn infer_term_internal(
-        &self,
+        &mut self,
         term: &Term,
-        ctx: &mut TypeContext,
         place: Place,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
         let tp = match *term {
-            Term::Variable(ref v) => self.instantiate_atom(&Atom::from(v.clone()), ctx)?,
+            Term::Variable(ref v) => self.instantiate_atom(&Atom::from(v.clone()))?,
             Term::Application { ref op, ref args } => {
-                let head_type = self.instantiate_atom(&Atom::from(op.clone()), ctx)?;
+                let head_type = self.instantiate_atom(&Atom::from(op.clone()))?;
                 let body_type = {
                     let mut pre_types = Vec::with_capacity(args.len() + 1);
                     for (i, a) in args.iter().enumerate() {
                         let mut new_place = place.clone();
                         new_place.push(i);
-                        pre_types.push(self.infer_term_internal(a, ctx, new_place, tps)?);
+                        pre_types.push(self.infer_term_internal(a, new_place, tps)?);
                     }
-                    pre_types.push(ctx.new_variable());
+                    pre_types.push(self.ctx.new_variable());
                     Type::from(pre_types)
                 };
-                ctx.unify(&head_type, &body_type)?;
-                head_type.returns().unwrap_or(&head_type).apply(ctx)
+                self.ctx.unify(&head_type, &body_type)?;
+                if op.arity() > 0 {
+                    head_type.returns().unwrap_or(&head_type).apply(&self.ctx)
+                } else {
+                    head_type.apply(&self.ctx)
+                }
             }
         };
         tps.insert(place, tp.clone());
         Ok(tp)
     }
-    pub fn infer_context(
-        &self,
-        context: &Context,
-        ctx: &mut TypeContext,
-    ) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_context_internal(context, ctx, vec![], &mut HashMap::new())?;
-        let lex_vars = self.free_vars_applied(ctx);
-        Ok(tp.apply(ctx).generalize(&lex_vars))
+    fn infer_context(&mut self, context: &Context) -> Result<TypeSchema, TypeError> {
+        let tp = self.infer_context_internal(context, vec![], &mut HashMap::new())?;
+        let lex_vars = self.free_vars_applied();
+        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
     }
     fn infer_context_internal(
-        &self,
+        &mut self,
         context: &Context,
-        ctx: &mut TypeContext,
         place: Place,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
         let tp = match *context {
-            Context::Hole => ctx.new_variable(),
-            Context::Variable(ref v) => self.instantiate_atom(&Atom::from(v.clone()), ctx)?,
+            Context::Hole => self.ctx.new_variable(),
+            Context::Variable(ref v) => self.instantiate_atom(&Atom::from(v.clone()))?,
             Context::Application { ref op, ref args } => {
-                let head_type = self.instantiate_atom(&Atom::from(op.clone()), ctx)?;
+                let head_type = self.instantiate_atom(&Atom::from(op.clone()))?;
                 let body_type = {
                     let mut pre_types = Vec::with_capacity(args.len() + 1);
                     for (i, a) in args.iter().enumerate() {
                         let mut new_place = place.clone();
                         new_place.push(i);
-                        pre_types.push(self.infer_context_internal(a, ctx, new_place, tps)?);
+                        pre_types.push(self.infer_context_internal(a, new_place, tps)?);
                     }
-                    pre_types.push(ctx.new_variable());
+                    pre_types.push(self.ctx.new_variable());
                     Type::from(pre_types)
                 };
-                ctx.unify(&head_type, &body_type)?;
-                head_type.returns().unwrap_or(&head_type).apply(ctx)
+                self.ctx.unify(&head_type, &body_type)?;
+                if op.arity() == 0 {
+                    head_type.apply(&self.ctx)
+                } else {
+                    head_type.returns().unwrap_or(&head_type).apply(&self.ctx)
+                }
             }
         };
         tps.insert(place, tp.clone());
         Ok(tp)
     }
-    pub fn infer_rule(
-        &self,
+    fn infer_rule(
+        &mut self,
         rule: &Rule,
-        ctx: &mut TypeContext,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_rule_internal(rule, ctx, tps)?;
-        let lex_vars = self.free_vars_applied(&ctx);
-        Ok(tp.apply(ctx).generalize(&lex_vars))
+        let tp = self.infer_rule_internal(rule, tps)?;
+        let lex_vars = self.free_vars_applied();
+        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
     }
     fn infer_rule_internal(
-        &self,
+        &mut self,
         rule: &Rule,
-        ctx: &mut TypeContext,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
-        let lhs_type = self.infer_term_internal(&rule.lhs, ctx, vec![0], tps)?;
+        let lhs_type = self.infer_term_internal(&rule.lhs, vec![0], tps)?;
         let rhs_types = rule
             .rhs
             .iter()
             .enumerate()
-            .map(|(i, rhs)| self.infer_term_internal(&rhs, ctx, vec![i + 1], tps))
+            .map(|(i, rhs)| self.infer_term_internal(&rhs, vec![i + 1], tps))
             .collect::<Result<Vec<Type>, _>>()?;
         // unify to introduce rule-level constraints
         for rhs_type in rhs_types {
-            ctx.unify(&lhs_type, &rhs_type)?;
+            self.ctx.unify(&lhs_type, &rhs_type)?;
         }
-        Ok(lhs_type.apply(ctx))
+        Ok(lhs_type.apply(&self.ctx))
     }
-    pub fn infer_rules(
-        &self,
-        rules: &[Rule],
-        ctx: &mut TypeContext,
-    ) -> Result<TypeSchema, TypeError> {
+    fn infer_rules(&mut self, rules: &[Rule]) -> Result<TypeSchema, TypeError> {
         let rule_tps = rules
             .iter()
             .map(|rule| {
-                self.infer_rule(rule, ctx, &mut HashMap::new())
-                    .map(|rule_tp| rule_tp.instantiate(ctx))
+                self.infer_rule(rule, &mut HashMap::new())
+                    .map(|rule_tp| rule_tp.instantiate(&mut self.ctx))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let tp = ctx.new_variable();
+        let tp = self.ctx.new_variable();
         for rule_tp in rule_tps {
-            ctx.unify(&tp, &rule_tp)?;
+            self.ctx.unify(&tp, &rule_tp)?;
         }
-        let lex_vars = self.free_vars_applied(ctx);
-        Ok(tp.apply(ctx).generalize(&lex_vars))
+        let lex_vars = self.free_vars_applied();
+        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
     }
-    pub fn infer_rulecontext(
-        &self,
-        context: &RuleContext,
-        ctx: &mut TypeContext,
-    ) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_rulecontext_internal(context, ctx, &mut HashMap::new())?;
-        let lex_vars = self.free_vars_applied(&ctx);
-        Ok(tp.apply(ctx).generalize(&lex_vars))
+    fn infer_subrule(&mut self, rule: &Rule, subterm: &Term) -> Result<TypeSchema, TypeError> {
+        // infer the rule
+        let mut tps = HashMap::new();
+        self.infer_rule(&rule, &mut tps)?;
+
+        // find the places where that term occurs in the rules
+        let places = rule
+            .subterms()
+            .into_iter()
+            .filter_map(|(x, p)| if x == subterm { Some(p) } else { None })
+            .collect_vec();
+
+        // unify all of these
+        let tp = self.ctx.new_variable();
+        for place in &places {
+            self.ctx.unify(&tp, &tps[place])?;
+        }
+
+        // compute the final type
+        let lex_vars = self.free_vars_applied();
+        if places.is_empty() {
+            Err(TypeError::Malformed)
+        } else {
+            Ok(tp.apply(&self.ctx).generalize(&lex_vars))
+        }
+    }
+    fn infer_rulecontext(&mut self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
+        let tp = self.infer_rulecontext_internal(context, &mut HashMap::new())?;
+        let lex_vars = self.free_vars_applied();
+        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
     }
     fn infer_rulecontext_internal(
-        &self,
+        &mut self,
         context: &RuleContext,
-        ctx: &mut TypeContext,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
-        let lhs_type = self.infer_context_internal(&context.lhs, ctx, vec![0], tps)?;
+        let lhs_type = self.infer_context_internal(&context.lhs, vec![0], tps)?;
         let rhs_types = context
             .rhs
             .iter()
             .enumerate()
-            .map(|(i, rhs)| self.infer_context_internal(&rhs, ctx, vec![i + 1], tps))
+            .map(|(i, rhs)| self.infer_context_internal(&rhs, vec![i + 1], tps))
             .collect::<Result<Vec<Type>, _>>()?;
         // unify to introduce rule-level constraints
         for rhs_type in rhs_types {
-            ctx.unify(&lhs_type, &rhs_type)?;
+            self.ctx.unify(&lhs_type, &rhs_type)?;
         }
-        Ok(lhs_type.apply(ctx))
+        Ok(lhs_type.apply(&self.ctx))
     }
-    pub fn infer_utrs(&self, utrs: &UntypedTRS, ctx: &mut TypeContext) -> Result<(), TypeError> {
+    fn infer_utrs(&mut self, utrs: &UntypedTRS) -> Result<(), TypeError> {
         // TODO: we assume the variables already exist in the signature. Is that sensible?
         for rule in &utrs.rules {
-            self.infer_rule(rule, ctx, &mut HashMap::new())?;
+            self.infer_rule(rule, &mut HashMap::new())?;
         }
         Ok(())
     }
 
-    #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
-    pub fn sample_term(
+    fn sample_term(
         &mut self,
         schema: &TypeSchema,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         max_size: usize,
-        size: usize,
-    ) -> Result<Term, SampleError> {
-        self.sample_term_internal(
-            schema,
-            ctx,
-            atom_weights,
-            invent,
-            variable,
-            max_size,
-            size,
-            &mut vec![],
-        )
-    }
-    #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
-    pub fn sample_term_internal(
-        &mut self,
-        schema: &TypeSchema,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
-        invent: bool,
-        variable: bool,
-        max_size: usize,
-        size: usize,
         vars: &mut Vec<Variable>,
     ) -> Result<Term, SampleError> {
-        if size >= max_size {
-            return Err(SampleError::SizeExceeded(size, max_size));
-        }
-        let tp = schema.instantiate(ctx);
-        let (atom, arg_types) =
-            self.prepare_option(vars, atom_weights, invent, variable, &tp, ctx)?;
-        self.place_atom(
-            &atom,
-            arg_types,
-            ctx,
-            atom_weights,
-            invent,
-            max_size,
-            size,
-            vars,
-        )
+        self.sample_term_internal(schema, atom_weights, invent, variable, max_size, vars)
+    }
+    fn sample_term_internal(
+        &mut self,
+        schema: &TypeSchema,
+        atom_weights: (f64, f64, f64, f64),
+        invent: bool,
+        variable: bool,
+        max_size: usize,
+        vars: &mut Vec<Variable>,
+    ) -> Result<Term, SampleError> {
+        let tp = schema.instantiate(&mut self.ctx);
+        let (atom, arg_types) = self.prepare_option(vars, atom_weights, invent, variable, &tp)?;
+        self.place_atom(&atom, arg_types, atom_weights, invent, max_size, vars)
     }
     fn prepare_option(
         &mut self,
         vars: &mut Vec<Variable>,
-        (vw, cw, ow): (f64, f64, f64),
+        (vw, cw, ow, iw): (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         tp: &Type,
-        ctx: &mut TypeContext,
     ) -> Result<(Atom, Vec<Type>), SampleError> {
         // create options
         let ops = self.signature.operators();
-        let mut options: Vec<_> = ops.into_iter().map(|o| Some(Atom::Operator(o))).collect();
+        let mut atoms: Vec<_> = ops.into_iter().map(|o| Some(Atom::Operator(o))).collect();
         if variable {
-            options.extend(vars.to_vec().into_iter().map(|v| Some(Atom::Variable(v))));
+            atoms.extend(vars.to_vec().into_iter().map(|v| Some(Atom::Variable(v))));
             if invent {
-                options.push(None);
+                atoms.push(None);
             }
         }
+        let options = atoms
+            .into_iter()
+            .filter_map(|a| match a {
+                None => Some(None),
+                Some(atom) => match self.fit_atom(&atom, &tp, true) {
+                    Err(_) => None,
+                    Ok(_) => Some(Some(atom)),
+                },
+            })
+            .collect_vec();
+        if options.is_empty() {
+            return Err(SampleError::OptionsExhausted);
+        }
+        // normalize the weights
+        let z = vw + cw + ow;
+        let (vlp, clp, olp) = ((vw / z).ln(), (cw / z).ln(), (ow / z).ln());
+        let zs: (f64, f64, f64) = options
+            .iter()
+            .fold((0.0, 0.0, 0.0), |(vz, cz, oz), o| match o {
+                None => (vz + iw, cz, oz),
+                Some(Atom::Variable(_)) => (vz + 1.0, cz, oz),
+                Some(Atom::Operator(ref o)) if o.arity() == 0 => (vz, cz + 1.0, oz),
+                Some(Atom::Operator(_)) => (vz, cz, oz + 1.0),
+            });
         // create weights
         let weights: Vec<_> = options
             .iter()
             .map(|ref o| match o {
-                None | Some(Atom::Variable(_)) => vw,
-                Some(Atom::Operator(ref o)) if o.arity() == 0 => cw,
-                Some(Atom::Operator(_)) => ow,
+                None => vlp + iw.ln() - zs.0.ln(),
+                Some(Atom::Variable(_)) => vlp - zs.0.ln(),
+                Some(Atom::Operator(ref o)) if o.arity() == 0 => clp - zs.1.ln(),
+                Some(Atom::Operator(_)) => olp - zs.2.ln(),
             })
+            .map(|w| w.exp())
             .collect();
-        // iterate through a weighted permutation to find an option that typechecks
-        for option in weighted_permutation(&options, &weights, None) {
-            let atom = option.unwrap_or_else(|| {
-                let new_var = self.invent_variable(tp);
-                vars.push(new_var.clone());
-                Atom::Variable(new_var)
-            });
-            match self.fit_atom(&atom, &tp, ctx) {
-                Ok(arg_types) => return Ok((atom, arg_types)),
-                _ => continue,
-            }
-        }
-        Err(SampleError::OptionsExhausted)
+        // sample an option that typechecks
+        let option = weighted_sample(&options, &weights).clone();
+        let atom = option.unwrap_or_else(|| {
+            let new_var = self.invent_variable(tp);
+            vars.push(new_var.clone());
+            Atom::Variable(new_var)
+        });
+        let arg_types = self.fit_atom(&atom, &tp, false)?;
+        Ok((atom, arg_types))
     }
-    #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
-    pub fn sample_term_from_context(
+    fn sample_term_from_context(
         &mut self,
         context: &Context,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         max_size: usize,
-        size: usize,
     ) -> Result<Term, SampleError> {
+        let mut size = context.size();
+        if size > max_size {
+            return Err(SampleError::SizeExceeded(size, max_size));
+        }
         let mut map = HashMap::new();
         let context = context.clone();
         let hole_places = context.holes();
-        self.infer_context_internal(&context, ctx, vec![], &mut map)?;
-        let lex_vars = self.free_vars_applied(&ctx);
+        self.infer_context_internal(&context, vec![], &mut map)?;
+        let lex_vars = self.free_vars_applied();
         let mut context_vars = context.variables();
         for p in &hole_places {
-            let schema = &map[p].apply(ctx).generalize(&lex_vars);
+            size = context.size();
+            let schema = &map[p].apply(&self.ctx).generalize(&lex_vars);
             let subterm = self.sample_term_internal(
                 &schema,
-                ctx,
                 atom_weights,
                 invent,
                 variable,
-                max_size,
-                size,
+                max_size - size + 1, // + 1 to fill the hole
                 &mut context_vars,
             )?;
             context.replace(&p, Context::from(subterm));
         }
         context.to_term().or(Err(SampleError::Subterm))
     }
-    pub fn sample_rule(
+    fn sample_rule(
         &mut self,
         schema: &TypeSchema,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
-        size: usize,
     ) -> Result<Rule, SampleError> {
-        let orig_self = self.clone();
-        let orig_ctx = ctx.clone();
         loop {
+            let snapshot = self.ctx.len();
             let mut vars = vec![];
             let lhs = self.sample_term_internal(
                 schema,
-                ctx,
                 atom_weights,
                 invent,
                 false,
-                max_size,
-                size,
+                max_size - 1,
                 &mut vars,
             )?;
             let rhs = self.sample_term_internal(
                 schema,
-                ctx,
                 atom_weights,
                 false,
                 true,
-                max_size,
-                size,
+                max_size - lhs.size(),
                 &mut vars,
             )?;
             if let Some(rule) = Rule::new(lhs, vec![rhs]) {
                 return Ok(rule);
             } else {
-                *self = orig_self.clone();
-                *ctx = orig_ctx.clone();
+                self.ctx.rollback(snapshot);
             }
         }
     }
-    pub fn sample_rule_from_context(
+    fn sample_rule_from_context(
         &mut self,
         mut context: RuleContext,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
-        size: usize,
     ) -> Result<Rule, SampleError> {
-        let mut map = HashMap::new();
+        let mut size = context.size();
+        if size > max_size {
+            return Err(SampleError::SizeExceeded(size, max_size));
+        }
+        let mut tps = HashMap::new();
         let hole_places = context.holes();
         let mut context_vars = context.variables();
-        self.infer_rulecontext_internal(&context, ctx, &mut map)?;
+        self.infer_rulecontext_internal(&context, &mut tps)?;
         for p in &hole_places {
-            let schema = TypeSchema::Monotype(map[p].apply(ctx));
+            size = context.size();
+            let schema = TypeSchema::Monotype(tps[p].apply(&self.ctx));
             let can_invent = p[0] == 0 && invent;
-            let can_be_variable = p == &vec![0];
+            let can_be_variable = p != &vec![0];
             let subterm = self.sample_term_internal(
                 &schema,
-                ctx,
                 atom_weights,
                 can_invent,
                 can_be_variable,
-                max_size,
-                size,
+                max_size + 1 - size, // + 1 to fill the hole
                 &mut context_vars,
             )?;
             context = context
                 .replace(&p, Context::from(subterm))
                 .ok_or(SampleError::Subterm)?;
         }
-        context.to_rule().or(Err(SampleError::Subterm))
+        context.to_rule().or({ Err(SampleError::Subterm) })
     }
-
-    fn logprior_term(
-        &self,
-        term: &Term,
+    fn enumerate_to_n_terms(
+        &mut self,
         schema: &TypeSchema,
-        ctx: &mut TypeContext,
-        (vw, cw, ow): (f64, f64, f64),
         invent: bool,
-    ) -> Result<f64, SampleError> {
-        // instantiate the typeschema
-        let tp = schema.instantiate(ctx);
-        // setup the existing options
-        let (mut vs, mut cs, mut os) = (vec![], vec![], vec![]);
-        let atoms = self.signature.atoms();
-        for atom in &atoms {
-            if let Ok(arg_types) = self.fit_atom(atom, &tp, ctx) {
-                match *atom {
-                    Atom::Variable(_) => vs.push((Some(atom.clone()), arg_types)),
-                    Atom::Operator(ref o) if o.arity() == 0 => {
-                        cs.push((Some(atom.clone()), arg_types))
-                    }
-                    Atom::Operator(_) => os.push((Some(atom.clone()), arg_types)),
-                }
-            }
+        associative: bool,
+        n: usize,
+    ) -> Vec<Term> {
+        (0..=n)
+            .flat_map(|n_i| self.enumerate_n_terms(schema, invent, associative, n_i))
+            .collect_vec()
+    }
     fn enumerate_to_n_rules(
         &mut self,
         schema: &TypeSchema,
@@ -1083,81 +1201,260 @@ impl Lex {
             })
             .collect_vec()
     }
-        }
+    fn prepare_options(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        complex: bool,
+        vars: &mut Vec<Variable>,
+    ) -> Vec<Atom> {
+        let tp = schema.instantiate(&mut self.ctx);
+        let ops = self.signature.operators();
+        let mut options: Vec<_> = ops
+            .into_iter()
+            .filter(|o| complex || o.arity() < 2)
+            .map(|o| Some(Atom::Operator(o)))
+            .collect();
+        options.extend(vars.to_vec().into_iter().map(|v| Some(Atom::Variable(v))));
         if invent {
+            options.push(None);
+        }
+        options
+            .into_iter()
+            .filter_map(|option| {
+                let atom = option.unwrap_or_else(|| {
+                    let new_var = self.invent_variable(&tp);
+                    Atom::Variable(new_var)
+                });
+                match self.fit_atom(&atom, &tp, true) {
+                    Ok(_arg_types) => Some(atom),
+                    _ => None,
+                }
+            })
+            .collect_vec()
+    }
+    fn prepare_prior_options(
+        &mut self,
+        tp: &Type,
+        term: &Term,
+        invent: bool,
+        vars: &[Variable],
+    ) -> (Vec<LOpt>, Vec<LOpt>, Vec<LOpt>) {
+        let mut vs = vars
+            .iter()
+            .cloned()
+            .filter_map(|v| {
+                let atom = Atom::Variable(v.clone());
+                if let Ok(arg_types) = self.fit_atom(&atom, &tp, true) {
+                    Some((Some(Atom::Variable(v.clone())), arg_types))
+                } else {
+                    None
+                }
+            })
+            .collect_vec();
+        if invent {
+            // empty arg_types below because variables have no arguments
             if let Term::Variable(ref v) = *term {
-                if !atoms.contains(&Atom::Variable(v.clone())) {
+                if !vars.contains(v) {
                     vs.push((Some(Atom::Variable(v.clone())), vec![]));
+                } else {
+                    vs.push((None, vec![]));
                 }
             } else {
                 vs.push((None, vec![]));
             }
         }
-        // compute the log probability of selecting this head
+        let (mut cs, mut os) = (vec![], vec![]);
+        for op in &self.signature.operators() {
+            let atom = Atom::Operator(op.clone());
+            if let Ok(arg_types) = self.fit_atom(&atom, &tp, true) {
+                if op.arity() == 0 {
+                    // arg_types is empty, but using it avoids allocation
+                    cs.push((Some(atom.clone()), arg_types));
+                } else {
+                    os.push((Some(atom.clone()), arg_types));
+                }
+            }
+        }
+        (vs, cs, os)
+    }
+    fn atom_priors(
+        invent: bool,
+        (vw, cw, ow, iw): (f64, f64, f64, f64),
+        (vs, cs, os): (&[LOpt], &[LOpt], &[LOpt]),
+    ) -> (f64, f64, f64, f64) {
         let z = vw + cw + ow;
-        let (vw, cw, ow) = (vw / z, cw / z, ow / z);
-        let vlp = vw.ln() - (vs.len() as f64).ln();
-        let clp = cw.ln() - (cs.len() as f64).ln();
-        let olp = ow.ln() - (os.len() as f64).ln();
-        let mut options = vec![];
-        options.append(&mut vs);
-        options.append(&mut cs);
-        options.append(&mut os);
-        match options
-            .into_iter()
-            .find(|&(ref o, _)| o == &Some(term.head()))
-            .map(|(o, arg_types)| (o.unwrap(), arg_types))
-        {
+        let (vp, cp, op) = (vw / z, cw / z, ow / z);
+        let vlp = if invent && vs.len() == 1 {
+            // in this case, the only variable is invented, so no mass goes here
+            NEG_INFINITY
+        } else {
+            vp.ln() - ((vs.len() as f64) + (invent as usize as f64) * (-1.0 + iw)).ln()
+        };
+        let ilp = if invent {
+            vp.ln() + iw.ln() - ((vs.len() as f64) - 1.0 + iw).ln()
+        } else {
+            NEG_INFINITY
+        };
+        let clp = if cs.is_empty() {
+            NEG_INFINITY
+        } else {
+            cp.ln() - (cs.len() as f64).ln()
+        };
+        let olp = if os.is_empty() {
+            NEG_INFINITY
+        } else {
+            op.ln() - (os.len() as f64).ln()
+        };
+        let mut lps = vec![];
+        for i in 0..vs.len() {
+            if invent && i == 0 {
+                lps.push(ilp);
+            } else {
+                lps.push(vlp);
+            }
+        }
+        for _ in 0..cs.len() {
+            lps.push(clp);
+        }
+        for _ in 0..os.len() {
+            lps.push(olp);
+        }
+        let log_z = logsumexp(&lps[..]);
+        (vlp - log_z, clp - log_z, olp - log_z, ilp - log_z)
+    }
+    fn logprior_term(
+        &mut self,
+        term: &Term,
+        schema: &TypeSchema,
+        atom_weights: (f64, f64, f64, f64),
+        invent: bool,
+    ) -> Result<f64, SampleError> {
+        let proposed_type = schema.instantiate(&mut self.ctx);
+        let actual_type = self.infer_term(term)?.instantiate_owned(&mut self.ctx);
+        if self.ctx.unify(&proposed_type, &actual_type).is_err() {
+            Ok(NEG_INFINITY)
+        } else {
+            self.logprior_term_internal(term, &proposed_type, atom_weights, invent, &mut vec![])
+        }
+    }
+    fn logprior_term_internal(
+        &mut self,
+        term: &Term,
+        tp: &Type,
+        atom_weights: (f64, f64, f64, f64),
+        invent: bool,
+        variables: &mut Vec<Variable>,
+    ) -> Result<f64, SampleError> {
+        // setup the existing options
+        let (vs, cs, os) = self.prepare_prior_options(tp, term, invent, variables);
+        // compute the log probability of each kind of head
+        let (vlp, clp, olp, ilp) = Lex::atom_priors(invent, atom_weights, (&vs, &cs, &os));
+        // find the selected option
+        let mut options = vs.into_iter().chain(cs).chain(os);
+        let option_option = options.find(|&(ref o, _)| o == &Some(term.head()));
+        let option = option_option.map(|(o, arg_types)| (o.unwrap(), arg_types));
+        // compute the probability of the term
+        match option {
+            None => Ok(NEG_INFINITY),
+            Some((Atom::Variable(ref v), _)) if !variables.contains(v) => {
+                variables.push(v.clone());
+                Ok(ilp)
+            }
             Some((Atom::Variable(_), _)) => Ok(vlp),
             Some((Atom::Operator(_), ref arg_types)) if arg_types.is_empty() => Ok(clp),
             Some((Atom::Operator(_), arg_types)) => {
                 let mut lp = olp;
                 for (subterm, mut arg_tp) in term.args().iter().zip(arg_types) {
-                    arg_tp.apply_mut(ctx);
-                    let arg_schema = TypeSchema::Monotype(arg_tp.clone());
-                    lp += self.logprior_term(subterm, &arg_schema, ctx, (vw, cw, ow), invent)?;
-                    let final_type = self.infer_term(subterm, ctx)?.instantiate_owned(ctx);
-                    if ctx.unify(&arg_tp, &final_type).is_err() {
-                        return Ok(NEG_INFINITY);
-                    }
+                    arg_tp.apply_mut(&self.ctx);
+                    lp += self.logprior_term_internal(
+                        subterm,
+                        &arg_tp,
+                        atom_weights,
+                        invent,
+                        variables,
+                    )?;
                 }
                 Ok(lp)
             }
-            None => Ok(NEG_INFINITY),
         }
     }
     fn logprior_rule(
-        &self,
+        &mut self,
         rule: &Rule,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
+        let schema = self.infer_rule(rule, &mut HashMap::new())?;
+        let tp = schema.instantiate(&mut self.ctx);
+        let mut variables = vec![];
+        let lp_lhs =
+            self.logprior_term_internal(&rule.lhs, &tp, atom_weights, invent, &mut variables)?;
         let mut lp = 0.0;
-        let schema = self.infer_rule(rule, ctx, &mut HashMap::new())?;
-        let lp_lhs = self.logprior_term(&rule.lhs, &schema, ctx, atom_weights, invent)?;
         for rhs in &rule.rhs {
-            lp += lp_lhs + self.logprior_term(&rhs, &schema, ctx, atom_weights, false)?;
+            lp += lp_lhs
+                + self.logprior_term_internal(&rhs, &tp, atom_weights, false, &mut variables)?;
         }
         Ok(lp)
     }
+    fn logprior_string_rule(
+        &mut self,
+        rule: &Rule,
+        atom_weights: (f64, f64, f64, f64),
+        invent: bool,
+        dist: PStringDist,
+        t_max: usize,
+        d_max: usize,
+    ) -> Result<f64, SampleError> {
+        let schema = self.infer_rule(rule, &mut HashMap::new())?;
+        let tp = schema.instantiate(&mut self.ctx);
+        let lp_lhs =
+            self.logprior_term_internal(&rule.lhs, &tp, atom_weights, invent, &mut vec![])?;
+        let mut lp = 0.0;
+        for rhs in &rule.rhs {
+            lp += lp_lhs
+                + UntypedTRS::p_string(&rule.lhs, rhs, dist, t_max, d_max).unwrap_or(NEG_INFINITY);
+        }
+        Ok(lp)
+    }
+    fn n_learned_clauses(&self, utrs: &UntypedTRS) -> usize {
+        let n_clauses: usize = utrs.clauses().len();
+        let n_background_clauses: usize = self.background.iter().map(|x| x.clauses().len()).sum();
+        n_clauses - n_background_clauses
+    }
     fn logprior_utrs(
-        &self,
+        &mut self,
         utrs: &UntypedTRS,
-        p_rule: f64,
-        ctx: &mut TypeContext,
-        atom_weights: (f64, f64, f64),
+        p_number_of_clauses: Box<dyn Fn(usize) -> f64>,
+        atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        // TODO: this geometric dist PDF might not be numerically stable
-        let n_rules: usize = utrs.clauses().len();
-        let n_background_rules: usize = self.background.iter().map(|x| x.clauses().len()).sum();
-        let n_learned_rules: usize = n_rules - n_background_rules;
-        let p_n_rules = p_rule.ln() * ((n_learned_rules as f64) + 1.0);
-
-        let mut p_rules = 0.0;
-        for rule in &utrs.rules[0..n_learned_rules] {
-            p_rules += self.logprior_rule(&rule, ctx, atom_weights, invent)?;
+        let n_learned_clauses = self.n_learned_clauses(utrs);
+        let mut p_clauses = 0.0;
+        for clause in utrs.clauses().iter().take(n_learned_clauses) {
+            p_clauses += self.logprior_rule(clause, atom_weights, invent)?;
+        }
+        Ok(p_number_of_clauses(n_learned_clauses) + p_clauses)
+    }
+    #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
+    fn logprior_srs(
+        &mut self,
+        utrs: &UntypedTRS,
+        p_number_of_clauses: Box<dyn Fn(usize) -> f64>,
+        atom_weights: (f64, f64, f64, f64),
+        invent: bool,
+        dist: PStringDist,
+        t_max: usize,
+        d_max: usize,
+    ) -> Result<f64, SampleError> {
+        let n_learned_clauses = self.n_learned_clauses(utrs);
+        let mut p_clauses = 0.0;
+        for clause in utrs.clauses().iter().take(n_learned_clauses) {
+            p_clauses +=
+                self.logprior_string_rule(clause, atom_weights, invent, dist, t_max, d_max)?;
+        }
+        Ok(p_number_of_clauses(n_learned_clauses) + p_clauses)
+    }
     fn enumerate_n_terms_internal(
         &mut self,
         schema: &TypeSchema,
@@ -1234,7 +1531,6 @@ impl Lex {
                 }
             }
         }
-        Ok(p_n_rules + p_rules)
     }
 }
 impl GP for Lexicon {
