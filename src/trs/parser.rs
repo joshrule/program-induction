@@ -88,7 +88,7 @@ pub fn parse_lexicon(
     deterministic: bool,
     ctx: TypeContext,
 ) -> Result<Lexicon, ParseError> {
-    if let Ok((CompleteStr(""), l)) = lexicon(
+    lexicon(
         CompleteStr(input),
         CompleteStr(background),
         CompleteStr(templates),
@@ -97,11 +97,9 @@ pub fn parse_lexicon(
         vec![],
         deterministic,
         ctx,
-    ) {
-        Ok(l)
-    } else {
-        Err(ParseError)
-    }
+    )
+    .map(|(_, t)| t)
+    .map_err(|_| ParseError)
 }
 
 /// Given a [`Lexicon`], parse and typecheck a [`TRS`]. The format of the
@@ -111,11 +109,9 @@ pub fn parse_lexicon(
 /// [`TRS`]: struct.TRS.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 pub fn parse_trs(input: &str, lex: &Lexicon) -> Result<TRS, ParseError> {
-    if let Ok((CompleteStr(""), t)) = trs(CompleteStr(input), lex) {
-        Ok(t)
-    } else {
-        Err(ParseError)
-    }
+    trs(CompleteStr(input), lex)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
 }
 
 /// Given a [`Lexicon`], parse and typecheck a [`Term`]. The format of the
@@ -137,11 +133,9 @@ pub fn parse_term(input: &str, lex: &Lexicon) -> Result<Term, ParseError> {
 /// [`Context`]: ../../../term_rewriting/enum.Context.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseError> {
-    if let Ok((CompleteStr(""), t)) = typed_context(CompleteStr(input), lex) {
-        Ok(t)
-    } else {
-        Err(ParseError)
-    }
+    typed_context(CompleteStr(input), lex)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
 }
 
 /// Given a [`Lexicon`], parse and typecheck a [`RuleContext`]. The format of the
@@ -162,12 +156,10 @@ pub fn parse_rulecontext(input: &str, lex: &Lexicon) -> Result<RuleContext, Pars
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Rule`]: ../../../term_rewriting/struct.Rule.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_rule(input: &str, lex: &mut Lexicon) -> Result<Rule, ParseError> {
-    if let Ok((CompleteStr(""), t)) = typed_rule(input, lex) {
-        Ok(t)
-    } else {
-        Err(ParseError)
-    }
+pub fn parse_rule(input: &str, lex: &Lexicon) -> Result<Rule, ParseError> {
+    typed_rule(input, lex)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
 }
 
 /// Given a [`Lexicon`], parse and typecheck a list of [`RuleContext`s] (e.g.
@@ -180,11 +172,9 @@ pub fn parse_rule(input: &str, lex: &mut Lexicon) -> Result<Rule, ParseError> {
 /// [`parse_lexicon`]: fn.parse_lexicon.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 pub fn parse_templates(input: &str, lex: &mut Lexicon) -> Result<Vec<RuleContext>, ParseError> {
-    if let Ok((CompleteStr(""), t)) = templates(CompleteStr(input), lex) {
-        Ok(t)
-    } else {
-        Err(ParseError)
-    }
+    templates(CompleteStr(input), lex)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
 }
 
 #[derive(Debug, Clone)]
