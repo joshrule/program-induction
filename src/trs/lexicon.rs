@@ -1149,6 +1149,15 @@ impl Lex {
             .flat_map(|n_i| self.enumerate_n_terms(schema, invent, associative, n_i))
             .collect_vec()
     }
+    fn enumerate_n_terms(
+        &mut self,
+        schema: &TypeSchema,
+        invent: bool,
+        associative: bool,
+        n: usize,
+    ) -> Vec<Term> {
+        self.enumerate_n_terms_internal(schema, invent, associative, n, &mut vec![])
+    }
     fn enumerate_to_n_rules(
         &mut self,
         schema: &TypeSchema,
