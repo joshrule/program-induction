@@ -10,7 +10,7 @@ use Task;
 
 /// The mechanism by which individuals are selected for inclusion in the
 /// population.
-#[derive(Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub enum GPSelection {
     /// `Deterministic` implies a strict survival-of-the-fittest selection
     /// mechanism, in which the best individuals are always retained. An
@@ -117,20 +117,34 @@ impl GPSelection {
     }
 }
 
+/// Weights for various reproduction operators in genetic programming.
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+pub struct GPWeights {
+    /// The weight for [`crossover`].
+    /// [`crossover`]: trait.GP.html#tymethod.crossover
+    pub crossover: usize,
+    /// The weight for [`mutate`].
+    /// [`mutate`]: trait.GP.html#tymethod.mutate
+    pub mutation: usize,
+    /// The weight for [`abiogenesis`].
+    /// [`abiogenesis`]: trait.GP.html#method.abiogenesis
+    pub abiogenesis: usize,
+}
+
 /// Parameters for genetic programming.
-#[derive(Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub struct GPParams {
     /// The mechanism by which individuals are selected for inclusion in the
     /// population.
     pub selection: GPSelection,
     pub population_size: usize,
-    // The number of individuals selected uniformly at random to participate in
-    // a tournament. If 1, a single individual is selected uniformly at random,
-    // as if the population were unweighted. This is useful for mimicking
-    // uniform weights after resampling, as in a particle filter.
+    /// The number of individuals selected uniformly at random to participate in
+    /// a tournament. If 1, a single individual is selected uniformly at random,
+    /// as if the population were unweighted. This is useful for mimicking
+    /// uniform weights after resampling, as in a particle filter.
     pub tournament_size: usize,
-    /// Probability for a mutation. If mutation doesn't happen, the crossover will happen.
-    pub mutation_prob: f64,
+    /// Weights for the various reproduction operators.
+    pub weights: GPWeights,
     /// The number of new children added to the population with each step of evolution.
     /// Traditionally, this would be set to 1. If it is larger than 1, mutations and crossover will
     /// be repeated until the threshold of `n_delta` is met.
@@ -247,7 +261,7 @@ pub trait GP: Send + Sync + Sized {
         tp: &TypeSchema,
     ) -> Vec<Self::Expression>;
 
-    /// Mutate a single program, potentially producing multiple offspring
+    /// Mutate a single program, potentially producing multiple offspring.
     fn mutate<R: Rng>(
         &self,
         params: &Self::Params,
@@ -255,6 +269,16 @@ pub trait GP: Send + Sync + Sized {
         prog: &Self::Expression,
         obs: &Self::Observation,
     ) -> Vec<Self::Expression>;
+
+    /// Create life without parents, potentially producing multiple offspring.
+    fn abiogenesis<R: Rng>(
+        &self,
+        _params: &Self::Params,
+        _rng: &mut R,
+        _obs: &Self::Observation,
+    ) -> Vec<Self::Expression> {
+        Vec::with_capacity(0)
+    }
 
     /// Perform crossover between two programs. There must be at least one child.
     fn crossover<R: Rng>(
@@ -336,14 +360,25 @@ pub trait GP: Send + Sync + Sized {
         population: &mut Vec<(Self::Expression, f64)>,
     ) {
         let mut children = Vec::with_capacity(gpparams.n_delta);
+        let dist = WeightedIndex::new(&[
+            gpparams.weights.mutation,
+            gpparams.weights.crossover,
+            gpparams.weights.abiogenesis,
+        ])
+        .unwrap();
         while children.len() < gpparams.n_delta {
-            let mut offspring = if rng.gen_bool(gpparams.mutation_prob) {
-                let parent = self.tournament(rng, gpparams.tournament_size, population);
-                self.mutate(params, rng, parent, &task.observation)
-            } else {
-                let parent1 = self.tournament(rng, gpparams.tournament_size, population);
-                let parent2 = self.tournament(rng, gpparams.tournament_size, population);
-                self.crossover(params, rng, parent1, parent2, &task.observation)
+            let mut offspring = match dist.sample(rng) {
+                0 => {
+                    let parent = self.tournament(rng, gpparams.tournament_size, population);
+                    self.mutate(params, rng, parent, &task.observation)
+                }
+                1 => {
+                    let parent1 = self.tournament(rng, gpparams.tournament_size, population);
+                    let parent2 = self.tournament(rng, gpparams.tournament_size, population);
+                    self.crossover(params, rng, parent1, parent2, &task.observation)
+                }
+                2 => self.abiogenesis(params, rng, &task.observation),
+                _ => unreachable![],
             };
             self.validate_offspring(params, population, &children, &mut offspring);
             children.append(&mut offspring);
