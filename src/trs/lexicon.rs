@@ -1192,7 +1192,18 @@ impl GP for Lexicon {
             })
             .collect()
     }
-
+    fn abiogenesis<R: Rng>(
+        &self,
+        _params: &Self::Params,
+        _rng: &mut R,
+        obs: &Self::Observation,
+    ) -> Vec<Self::Expression> {
+        if let Ok(trs) = TRS::new(self, obs.clone()) {
+            vec![trs]
+        } else {
+            vec![]
+        }
+    }
     fn validate_offspring(
         &self,
         _params: &Self::Params,
