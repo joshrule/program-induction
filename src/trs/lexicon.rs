@@ -647,15 +647,18 @@ impl fmt::Display for Lex {
     }
 }
 impl Lex {
+    fn variables(&self) -> Vec<Variable> {
+        self.signature.variables()
+    }
     fn free_vars(&self) -> Vec<TypeVar> {
         let vars_fvs = self.vars.iter().flat_map(TypeSchema::free_vars);
         let ops_fvs = self.ops.iter().flat_map(TypeSchema::free_vars);
         vars_fvs.chain(ops_fvs).unique().collect()
     }
-    fn free_vars_applied(&self, ctx: &TypeContext) -> Vec<TypeVar> {
+    fn free_vars_applied(&self) -> Vec<TypeVar> {
         self.free_vars()
             .into_iter()
-            .flat_map(|x| Type::Variable(x).apply(ctx).vars())
+            .flat_map(|x| Type::Variable(x).apply(&self.ctx).vars())
             .unique()
             .collect::<Vec<_>>()
     }
