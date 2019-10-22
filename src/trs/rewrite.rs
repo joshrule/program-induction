@@ -72,24 +72,23 @@ impl TRS {
     /// # }
     /// ```
     /// [`Lexicon`]: struct.Lexicon.html
-    pub fn new(
-        lexicon: &Lexicon,
-        mut rules: Vec<Rule>,
-        ctx: &TypeContext,
-    ) -> Result<TRS, TypeError> {
-        let lexicon = lexicon.clone();
-        let mut ctx = ctx.clone();
+    pub fn new(lexicon: &Lexicon, mut rules: Vec<Rule>) -> Result<TRS, TypeError> {
         let utrs = {
-            let lex = lexicon.0.read().expect("poisoned lexicon");
-            rules.append(&mut lex.background.clone());
-            let utrs = UntypedTRS::new(rules);
-            lex.infer_utrs(&utrs, &mut ctx)?;
+            let utrs = {
+                let lex = lexicon.0.read().expect("poisoned lexicon");
+                rules.append(&mut lex.background.clone());
+                let mut utrs = UntypedTRS::new(rules);
+                if lexicon.0.read().expect("poisoned lexicon").deterministic {
+                    utrs.make_deterministic();
+                }
+                utrs
+            };
+            lexicon.infer_utrs(&utrs)?;
             utrs
         };
         Ok(TRS {
-            lex: lexicon,
+            lex: lexicon.clone(),
             utrs,
-            ctx,
         })
     }
 
