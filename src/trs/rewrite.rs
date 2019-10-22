@@ -64,7 +64,7 @@ impl TRS {
     ///
     /// let ctx = lexicon.context();
     ///
-    /// let trs = TRS::new(&lexicon, rules, &ctx).unwrap();
+    /// let trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// assert_eq!(trs.size(), 12);
     /// # }
@@ -301,7 +301,7 @@ impl TRS {
     /// }
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
     ///
-    /// let mut trs = TRS::new(&lexicon, rules, &lexicon.context()).unwrap();
+    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// assert_eq!(trs.len(), 2);
     ///
@@ -312,7 +312,7 @@ impl TRS {
     ///     }
     /// ];
     /// let mut rng = thread_rng();
-    /// let atom_weights = (0.5, 0.25, 0.25);
+    /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
     /// let max_size = 50;
     ///
     /// if let Ok(new_trs) = trs.add_rule(&contexts, atom_weights, max_size, &mut rng) {
@@ -530,7 +530,7 @@ impl TRS {
     /// let ctx = TypeContext::default();
     /// let lexicon = Lexicon::from_signature(sig.clone(), ops, vars, vec![], vec![], false, ctx);
     ///
-    /// let mut trs = TRS::new(&lexicon, rules, &lexicon.context()).unwrap();
+    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// let pretty_before = trs.to_string();
     ///
@@ -604,7 +604,7 @@ impl TRS {
     /// }
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
     ///
-    /// let mut trs = TRS::new(&lexicon, rules, &lexicon.context()).unwrap();
+    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// assert_eq!(trs.len(), 1);
     ///
@@ -718,7 +718,7 @@ impl TRS {
     ///
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
     ///
-    /// let mut trs = TRS::new(&lexicon, rules, &lexicon.context()).unwrap();
+    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// assert_eq!(trs.len(), 1);
     ///
@@ -755,7 +755,7 @@ impl TRS {
     ///
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
     ///
-    /// let mut trs = TRS::new(&lexicon, rules, &lexicon.context()).unwrap();
+    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// assert!(trs.swap_lhs_and_rhs(&mut rng).is_err());
     /// # }

@@ -273,7 +273,7 @@ impl Lexicon {
     /// };
     /// let mut ctx = lexicon.context();
     ///
-    /// let inferred_schema = lexicon.infer_context(&context, &mut ctx).unwrap();
+    /// let inferred_schema = lexicon.infer_context(&context).drop().unwrap();
     ///
     /// assert_eq!(inferred_schema, ptp![int]);
     /// # }
@@ -385,10 +385,11 @@ impl Lexicon {
     /// let mut ctx = lexicon.context();
     /// let invent = true;
     /// let variable = true;
-    /// let atom_weights = (0.5, 0.25, 0.25);
+    /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
     /// let max_size = 50;
+    /// let mut vars = vec![];
     ///
-    /// let term = lexicon.sample_term(&schema, &mut ctx, atom_weights, invent, variable, max_size).unwrap();
+    /// let term = lexicon.sample_term(&schema, atom_weights, invent, variable, max_size, &mut vars).unwrap();
     /// # }
     /// ```
     ///

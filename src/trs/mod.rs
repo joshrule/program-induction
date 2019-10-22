@@ -41,7 +41,7 @@
 //!
 //! let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
 //!
-//! let trs = TRS::new(&lexicon, rules, &lexicon.context());
+//! let trs = TRS::new(&lexicon, rules);
 //! # }
 //! ```
 

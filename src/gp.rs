@@ -178,7 +178,7 @@ pub struct GPParams {
 /// extern crate programinduction;
 /// extern crate rand;
 /// use programinduction::pcfg::{self, Grammar, Rule};
-/// use programinduction::{GPParams, Task, GP, GPSelection};
+/// use programinduction::{GP, GPParams, GPSelection, GPWeights, Task};
 /// use rand::{rngs::SmallRng, SeedableRng};
 ///
 /// fn evaluator(name: &str, inps: &[i32]) -> Result<i32, ()> {
@@ -216,7 +216,11 @@ pub struct GPParams {
 ///         selection: GPSelection::Deterministic,
 ///         population_size: 10,
 ///         tournament_size: 5,
-///         mutation_prob: 0.6,
+///         weights: GPWeights {
+///             mutation: 6,
+///             crossover: 4,
+///             abiogenesis: 0,
+///         },
 ///         n_delta: 1,
 ///     };
 ///     let params = pcfg::GeneticParams::default();
