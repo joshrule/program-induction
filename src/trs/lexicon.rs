@@ -342,22 +342,7 @@ impl Lexicon {
         lex.ctx.rollback(snapshot);
         result
     }
-    /// Infer the `TypeSchema` associated with a subterm in a `Rule`.
-    pub fn infer_subrule(
-        &self,
-        rule: &Rule,
-        subterm: &Term,
-    ) -> ContextPoint<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.infer_subrule(rule, subterm);
-        ContextPoint {
-            snapshot,
-            result,
-            lex: self.clone(),
-        }
-    }
-    /// Infer the `TypeSchema` associated with a `Rule`.
+    /// Infer the `TypeSchema` associated with an `Operator`.
     pub fn infer_op(&self, op: &Operator) -> Result<TypeSchema, TypeError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
         let snapshot = lex.ctx.len();
@@ -365,16 +350,34 @@ impl Lexicon {
         lex.ctx.rollback(snapshot);
         result
     }
-    pub fn infer_term(&self, term: &Term) -> ContextPoint<TypeSchema, TypeError> {
+    /// Infer the `TypeSchema` associated with a `Variable`.
+    pub fn infer_var(&self, var: &Variable) -> Result<TypeSchema, TypeError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
         let snapshot = lex.ctx.len();
-        let result = lex.infer_term(term);
+        let result = lex.var_tp(var.clone()).map(|tp| tp.clone());
+        lex.ctx.rollback(snapshot);
+        result
+    }
+    /// Infer the `TypeSchema` associated with a `Term`.
+    pub fn infer_term(
+        &self,
+        term: &Term,
+        types: &mut HashMap<Place, Type>,
+    ) -> ContextPoint<TypeSchema, TypeError> {
+        let mut lex = self.0.write().expect("poisoned lexicon");
+        let snapshot = lex.ctx.len();
+        let result = lex.infer_term(term, types);
+        for (_, v) in types.iter_mut() {
+            v.apply_mut(&lex.ctx);
+            v.apply_mut(&lex.ctx);
+        }
         ContextPoint {
             snapshot,
             result,
             lex: self.clone(),
         }
     }
+    /// Infer the `TypeSchema` associated with a `TRS`.
     pub fn infer_utrs(&self, utrs: &UntypedTRS) -> Result<(), TypeError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
         let snapshot = lex.ctx.len();
@@ -769,7 +772,9 @@ impl Lex {
                         )
                         .map_err(|_| SampleError::Subterm)
                         .and_then(|subterm| {
-                            let tp = self.infer_term(&subterm)?.instantiate_owned(&mut self.ctx);
+                            let tp = self
+                                .infer_term(&subterm, &mut HashMap::new())?
+                                .instantiate_owned(&mut self.ctx);
                             self.ctx.unify_fast(subtype, tp)?;
                             Ok(subterm)
                         });
@@ -820,8 +825,12 @@ impl Lex {
             Atom::Variable(ref v) => self.var_tp(v.clone()),
         }
     }
-    fn infer_term(&mut self, term: &Term) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_term_internal(term, vec![], &mut HashMap::new())?;
+    fn infer_term(
+        &mut self,
+        term: &Term,
+        tps: &mut HashMap<Place, Type>,
+    ) -> Result<TypeSchema, TypeError> {
+        let tp = self.infer_term_internal(term, vec![], tps)?;
         let lex_vars = self.free_vars_applied();
         Ok(tp.apply(&self.ctx).generalize(&lex_vars))
     }
@@ -938,32 +947,6 @@ impl Lex {
         }
         let lex_vars = self.free_vars_applied();
         Ok(tp.apply(&self.ctx).generalize(&lex_vars))
-    }
-    fn infer_subrule(&mut self, rule: &Rule, subterm: &Term) -> Result<TypeSchema, TypeError> {
-        // infer the rule
-        let mut tps = HashMap::new();
-        self.infer_rule(&rule, &mut tps)?;
-
-        // find the places where that term occurs in the rules
-        let places = rule
-            .subterms()
-            .into_iter()
-            .filter_map(|(x, p)| if x == subterm { Some(p) } else { None })
-            .collect_vec();
-
-        // unify all of these
-        let tp = self.ctx.new_variable();
-        for place in &places {
-            self.ctx.unify(&tp, &tps[place])?;
-        }
-
-        // compute the final type
-        let lex_vars = self.free_vars_applied();
-        if places.is_empty() {
-            Err(TypeError::Malformed)
-        } else {
-            Ok(tp.apply(&self.ctx).generalize(&lex_vars))
-        }
     }
     fn infer_rulecontext(&mut self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_rulecontext_internal(context, &mut HashMap::new())?;
@@ -1229,7 +1212,7 @@ impl Lex {
         lhss.iter()
             .flat_map(|lhs| {
                 let snapshot = self.ctx.len();
-                let rhss = if let Ok(schema) = self.infer_term(lhs) {
+                let rhss = if let Ok(schema) = self.infer_term(lhs, &mut HashMap::new()) {
                     self.enumerate_n_terms_internal(
                         &schema,
                         false,
@@ -1384,7 +1367,9 @@ impl Lex {
         invent: bool,
     ) -> Result<f64, SampleError> {
         let proposed_type = schema.instantiate(&mut self.ctx);
-        let actual_type = self.infer_term(term)?.instantiate_owned(&mut self.ctx);
+        let actual_type = self
+            .infer_term(term, &mut HashMap::new())?
+            .instantiate_owned(&mut self.ctx);
         if self.ctx.unify(&proposed_type, &actual_type).is_err() {
             Ok(NEG_INFINITY)
         } else {

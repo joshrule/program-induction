@@ -343,7 +343,7 @@ fn typed_term<'a>(input: CompleteStr<'a>, lex: &Lexicon) -> nom::IResult<Complet
     );
     if let Ok(term) = result {
         add_parsed_variables_to_lexicon(lex);
-        if lex.infer_term(&term).drop().is_ok() {
+        if lex.infer_term(&term, &mut HashMap::new()).drop().is_ok() {
             return Ok((CompleteStr(""), term));
         }
     }
