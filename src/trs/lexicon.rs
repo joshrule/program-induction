@@ -202,6 +202,13 @@ impl Lexicon {
             .expect("poisoned lexicon")
             .invent_variable(tp)
     }
+    /// Add a new operator to the `Lexicon`.
+    pub fn invent_operator(&self, name: Option<String>, arity: u32, tp: &Type) -> Operator {
+        self.0
+            .write()
+            .expect("poisoned lexicon")
+            .invent_operator(name, arity, tp)
+    }
     /// Return the `Lexicon`'s [`TypeContext`].
     ///
     /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
@@ -691,6 +698,11 @@ impl Lex {
         let var = self.signature.new_var(None);
         self.vars.push(TypeSchema::Monotype(tp.clone()));
         var
+    }
+    fn invent_operator(&mut self, name: Option<String>, arity: u32, tp: &Type) -> Operator {
+        let op = self.signature.new_op(arity, name);
+        self.ops.push(TypeSchema::Monotype(tp.clone()));
+        op
     }
     fn fit_atom(
         &mut self,
