@@ -132,7 +132,7 @@ pub fn parse_term(input: &str, lex: &Lexicon) -> Result<Term, ParseError> {
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Context`]: ../../../term_rewriting/enum.Context.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseError> {
+pub fn parse_context(input: &str, lex: &Lexicon) -> Result<Context, ParseError> {
     typed_context(CompleteStr(input), lex)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
@@ -301,7 +301,7 @@ fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>
     );
     if let Ok(rule) = result {
         add_parsed_variables_to_lexicon(lex);
-        if lex.infer_rule(&rule, &mut HashMap::new()).is_ok() {
+        if lex.infer_rule(&rule, &mut HashMap::new()).drop().is_ok() {
             return Ok((CompleteStr(""), rule));
         }
     }
@@ -351,7 +351,7 @@ fn typed_term<'a>(input: CompleteStr<'a>, lex: &Lexicon) -> nom::IResult<Complet
 }
 fn typed_context<'a>(
     input: CompleteStr<'a>,
-    lex: &mut Lexicon,
+    lex: &Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, Context> {
     let result = parse_untyped_context(
         &mut lex.0.write().expect("poisoned lexicon").signature,
@@ -359,7 +359,11 @@ fn typed_context<'a>(
     );
     if let Ok(context) = result {
         add_parsed_variables_to_lexicon(lex);
-        if lex.infer_context(&context).drop().is_ok() {
+        if lex
+            .infer_context(&context, &mut HashMap::new())
+            .drop()
+            .is_ok()
+        {
             return Ok((CompleteStr(""), context));
         }
     }

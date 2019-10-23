@@ -196,7 +196,7 @@ impl Lexicon {
         self.0.read().expect("poisoned lexicon").free_vars()
     }
     /// Add a new variable to the `Lexicon`.
-    pub fn invent_variable(&mut self, tp: &Type) -> Variable {
+    pub fn invent_variable(&self, tp: &Type) -> Variable {
         self.0
             .write()
             .expect("poisoned lexicon")
@@ -247,6 +247,7 @@ impl Lexicon {
     /// # use programinduction::trs::Lexicon;
     /// # use term_rewriting::{Context, Signature, parse_rule};
     /// # use polytype::Context as TypeContext;
+    /// # use std::collections::HashMap;
     /// # fn main() {
     /// let mut sig = Signature::default();
     ///
@@ -273,7 +274,7 @@ impl Lexicon {
     /// };
     /// let mut ctx = lexicon.context();
     ///
-    /// let inferred_schema = lexicon.infer_context(&context).drop().unwrap();
+    /// let inferred_schema = lexicon.infer_context(&context, &mut HashMap::new()).drop().unwrap();
     ///
     /// assert_eq!(inferred_schema, ptp![int]);
     /// # }
@@ -281,10 +282,18 @@ impl Lexicon {
     ///
     /// [`polytype::TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`term_rewriting::Context`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Context.html
-    pub fn infer_context(&self, context: &Context) -> ContextPoint<TypeSchema, TypeError> {
+    pub fn infer_context(
+        &self,
+        context: &Context,
+        types: &mut HashMap<Place, Type>,
+    ) -> ContextPoint<TypeSchema, TypeError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
         let snapshot = lex.ctx.len();
-        let result = lex.infer_context(context);
+        let result = lex.infer_context(context, types);
+        for (_, v) in types.iter_mut() {
+            v.apply_mut(&lex.ctx);
+            v.apply_mut(&lex.ctx);
+        }
         ContextPoint {
             snapshot,
             result,
@@ -304,7 +313,7 @@ impl Lexicon {
         &self,
         rule: &Rule,
         types: &mut HashMap<Place, Type>,
-    ) -> Result<TypeSchema, TypeError> {
+    ) -> ContextPoint<TypeSchema, TypeError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
         let snapshot = lex.ctx.len();
         let result = lex.infer_rule(rule, types);
@@ -312,8 +321,11 @@ impl Lexicon {
             v.apply_mut(&lex.ctx);
             v.apply_mut(&lex.ctx);
         }
-        lex.ctx.rollback(snapshot);
-        result
+        ContextPoint {
+            snapshot,
+            result,
+            lex: self.clone(),
+        }
     }
     /// Infer the `TypeSchema` associated with a collection of `Rules`.
     pub fn infer_rules(&self, rules: &[Rule]) -> Result<TypeSchema, TypeError> {
@@ -832,8 +844,12 @@ impl Lex {
         tps.insert(place, tp.clone());
         Ok(tp)
     }
-    fn infer_context(&mut self, context: &Context) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_context_internal(context, vec![], &mut HashMap::new())?;
+    fn infer_context(
+        &mut self,
+        context: &Context,
+        tps: &mut HashMap<Place, Type>,
+    ) -> Result<TypeSchema, TypeError> {
+        let tp = self.infer_context_internal(context, vec![], tps)?;
         let lex_vars = self.free_vars_applied();
         Ok(tp.apply(&self.ctx).generalize(&lex_vars))
     }

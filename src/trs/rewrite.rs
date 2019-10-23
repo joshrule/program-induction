@@ -338,7 +338,7 @@ impl TRS {
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }
-        trs.lex.infer_rule(&rule, &mut HashMap::new())?;
+        trs.lex.infer_rule(&rule, &mut HashMap::new()).drop()?;
         trs.utrs.push(rule)?;
         Ok(trs)
     }
@@ -427,7 +427,7 @@ impl TRS {
         let old_trs = self.clone(); // TODO: cloning is a hack!
         let clause = self.choose_clause(rng)?;
         let mut types = HashMap::new();
-        old_trs.lex.infer_rule(&clause, &mut types)?;
+        old_trs.lex.infer_rule(&clause, &mut types).drop()?;
         let new_trss = clause
             .lhs
             .subterms()
@@ -478,7 +478,9 @@ impl TRS {
         old_clause: &Rule,
         new_clause: Rule,
     ) -> Result<&mut TRS, SampleError> {
-        self.lex.infer_rule(&new_clause, &mut HashMap::new())?;
+        self.lex
+            .infer_rule(&new_clause, &mut HashMap::new())
+            .drop()?;
         self.utrs.replace(0, old_clause, new_clause)?;
         Ok(self)
     }
