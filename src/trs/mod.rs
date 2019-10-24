@@ -223,7 +223,7 @@ pub fn task_by_rewrite<'a, O: Sync>(
     observation: O,
 ) -> Result<Task<'a, Lexicon, TRS, O>, TypeError> {
     Ok(Task {
-        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.posterior(data, params)),
+        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.log_posterior(data, params)),
         // assuming the data have no variables, we can use the Lexicon's ctx.
         tp: lex.infer_rules(data)?,
         observation,

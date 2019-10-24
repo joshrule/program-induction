@@ -1591,7 +1591,7 @@ impl GP for Lexicon {
                 let templates = self.0.read().expect("poisoned lexicon").templates.clone();
                 let mut pop = Vec::with_capacity(pop_size);
                 while pop.len() < pop_size {
-                    if let Ok(new_trs) = trs.clone().add_rule(
+                    if let Ok(new_trs) = trs.clone().sample_rule(
                         &templates,
                         params.atom_weights,
                         params.max_sample_size,
@@ -1634,9 +1634,12 @@ impl GP for Lexicon {
                 // add rule
                 0 => {
                     let templates = self.0.read().expect("poisoned lexicon").templates.clone();
-                    if let Ok(new_trs) =
-                        trs.add_rule(&templates, params.atom_weights, params.max_sample_size, rng)
-                    {
+                    if let Ok(new_trs) = trs.sample_rule(
+                        &templates,
+                        params.atom_weights,
+                        params.max_sample_size,
+                        rng,
+                    ) {
                         return vec![new_trs];
                     }
                 }
@@ -1647,7 +1650,7 @@ impl GP for Lexicon {
                         return new_trss
                             .into_iter()
                             .map(|trs| {
-                                if let Ok(new_trs) = trs.add_rule(
+                                if let Ok(new_trs) = trs.sample_rule(
                                     &templates,
                                     params.atom_weights,
                                     params.max_sample_size,
