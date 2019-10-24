@@ -8,7 +8,7 @@
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type};
 use rand::{seq::IteratorRandom, seq::SliceRandom, Rng};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::f64::NEG_INFINITY;
 use std::fmt;
 use std::iter::once;
@@ -464,8 +464,7 @@ impl TRS {
     fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<Rule, SampleError> {
         let rules = {
             let num_rules = self.len();
-            let background = &self.lex.0.read().expect("poisoned lexicon").background;
-            let num_background = background.len();
+            let num_background = self.num_background_rules();
             &self.utrs.rules[0..(num_rules - num_background)]
         };
         let mut clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
@@ -473,6 +472,17 @@ impl TRS {
             .choose(rng)
             .ok_or(SampleError::OptionsExhausted)?;
         Ok(clauses.swap_remove(idx))
+    }
+    pub fn num_background_rules(&self) -> usize {
+        self.lex
+            .0
+            .read()
+            .expect("poisoned lexicon")
+            .background
+            .len()
+    }
+    pub fn num_learned_rules(&self) -> usize {
+        self.len() - self.num_background_rules()
     }
     pub fn replace(
         &mut self,
@@ -821,24 +831,29 @@ impl TRS {
             Ok(results)
         }
     }
-    pub fn generalize(&self, _data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
-        // TODO: make use of the data
+    pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
         let mut trs = self.clone();
-        let (lhs_context, clauses) = trs.find_lhs_context()?;
+        let mut all_rules = trs.utrs.clauses();
+        all_rules.extend_from_slice(&trs.novel_rules(data));
+        let (lhs_context, clauses) = TRS::find_lhs_context(&all_rules)?;
         let (rhs_context, _) = TRS::find_rhs_context(&clauses)?;
-        let new_clauses = TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
-        // Remove the old clauses.
-        for clause in &clauses {
-            trs.utrs.remove_clauses(clause)?;
-        }
-        trs.utrs.pushes(new_clauses)?;
+        let new_rules = TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
+        trs.remove_clauses(&clauses)?;
+        trs.prepend_clauses(new_rules)?;
         Ok(vec![trs])
     }
-    fn find_lhs_context(&self) -> Result<(Context, Vec<Rule>), SampleError> {
-        TRS::find_shared_context(&self.utrs().clauses(), |c| c.lhs.clone(), 1)
+    fn novel_rules(&self, rules: &[Rule]) -> Vec<Rule> {
+        rules
+            .iter()
+            .cloned()
+            .filter(|r| !self.contains(r))
+            .collect()
+    }
+    fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {
+        TRS::find_shared_context(clauses, |c| c.lhs.clone(), 1)
     }
     fn find_rhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {
-        TRS::find_shared_context(clauses, |c| c.rhs().unwrap(), 3)
+        TRS::find_shared_context(clauses, |c| c.rhs().unwrap(), 3) // constant is a HACK
     }
     fn find_shared_context<T>(
         clauses: &[Rule],
@@ -848,13 +863,15 @@ impl TRS {
     where
         T: Fn(&Rule) -> Term,
     {
-        let mut map: HashMap<&Context, Vec<&Rule>> = HashMap::new();
+        // Collect all contexts and their witnesses.
         let mut contexts: Vec<(Context, &Rule)> = Vec::new();
         for clause in clauses {
             for context in f(clause).contexts(max_holes) {
                 contexts.push((context, &clause));
             }
         }
+        // Dump them into a HashMap.
+        let mut map: HashMap<&Context, Vec<&Rule>> = HashMap::new();
         for (context, clause) in &contexts {
             let key: &Context = map
                 .keys()
@@ -862,72 +879,110 @@ impl TRS {
                 .unwrap_or(&context);
             (*map.entry(key).or_insert_with(|| vec![])).push(clause);
         }
+        // Pick the largest context witnessed by >= 2 clauses.
         map.iter()
             .max_by_key(|(k, v)| ((v.len() > 1) as usize) * (k.size() - k.holes().len()))
             .map(|(&k, v)| (k.clone(), v.iter().map(|&x| x.clone()).collect_vec()))
             .ok_or_else(|| SampleError::OptionsExhausted)
     }
+    // The workhorse behind generalization.
     fn generalize_clauses(
         lex: &Lexicon,
         lhs_context: &Context,
         rhs_context: &Context,
         clauses: &[Rule],
     ) -> Result<Vec<Rule>, SampleError> {
+        // Create the LHS.
         let (lhs, lhs_place, var) =
             TRS::fill_hole_with_variable(lex, &lhs_context).ok_or(SampleError::Subterm)?;
+        // Fill the RHS context and create subproblem rules.
         let mut rhs = rhs_context.clone();
         let mut new_rules: Vec<Rule> = vec![];
-        for place in &rhs_context.holes() {
-            let mut terms = vec![];
-            let mut types = vec![];
-            let mut vars = HashSet::new();
-            vars.insert(var.clone());
-            for clause in clauses {
-                let rhs = clause.rhs().unwrap();
-                let lhs_subterm = clause.lhs.at(&lhs_place).ok_or(SampleError::Subterm)?;
-                let rhs_subterm = rhs.at(place).ok_or(SampleError::Subterm)?;
-                let mut map = HashMap::new();
-                lex.infer_term(&rhs, &mut map).drop()?;
-                types.push(map[place].clone());
-                // TODO: we need to add just those variables which aren't alpha equivalent to other variables we already have...
-                vars.extend(rhs_subterm.variables());
-                terms.push((lhs_subterm, rhs_subterm.clone()));
-            }
-            // Unify all of the types.
-            let the_tp = lex.fresh_type_variable();
-            for tp in &types {
-                lex.unify(&the_tp, tp).map_err(|_| SampleError::Subterm)?;
-            }
-            let return_tp = the_tp.apply(&lex.0.read().expect("poisoned lexicon").ctx);
-            let var_vec = vars.into_iter().collect_vec();
-            let applicative = true; // TODO HACK: make this parameterizable
-            let new_op = TRS::new_operator(lex, applicative, &var_vec, &return_tp)?;
+        for rhs_place in &rhs_context.holes() {
+            // Collect term, type, and variable information from each clause.
+            let (types, terms, vars) =
+                TRS::collect_information(lex, &lhs, &lhs_place, rhs_place, clauses, &var)?;
+            // Infer the type for this place.
+            let return_tp = TRS::compute_place_type(lex, &types)?;
+            // Create the new operator for this place. TODO HACK: make applicative parameterizable.
+            let new_op = TRS::new_operator(lex, true, &vars, &return_tp)?;
+            // Create the rules expressing subproblems for this place.
             for (lhs_term, rhs_term) in &terms {
-                new_rules.push(TRS::new_rule(
-                    lex, &new_op, lhs_term, rhs_term, &var, &var_vec,
-                )?);
+                let new_rule = TRS::new_rule(lex, &new_op, lhs_term, rhs_term, &var, &vars)?;
+                new_rules.push(new_rule);
             }
-            let var_contexts = var_vec
-                .iter()
-                .cloned()
-                .map(|v| Context::from(Atom::from(v)))
-                .collect_vec();
-            let app = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
-            let mut rhs_subterm = Context::from(Atom::from(new_op));
-            for var in &var_contexts {
-                rhs_subterm = Context::Application {
-                    op: app.clone(),
-                    args: vec![rhs_subterm, var.clone()],
-                };
-            }
-            rhs = rhs
-                .replace(place, rhs_subterm)
-                .ok_or(SampleError::Subterm)?;
+            // Fill the hole at this place in the RHS.
+            rhs = TRS::fill_next_hole(lex, &rhs, rhs_place, new_op, vars)?;
         }
         let rhs_term = rhs.to_term().map_err(|_| SampleError::Subterm)?;
+        // Create the generalized rule.
         new_rules.push(Rule::new(lhs, vec![rhs_term]).ok_or(SampleError::Subterm)?);
         Ok(new_rules)
     }
+    fn fill_next_hole(
+        lex: &Lexicon,
+        rhs: &Context,
+        place: &[usize],
+        new_op: Operator,
+        vars: Vec<Variable>,
+    ) -> Result<Context, SampleError> {
+        let app = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
+        let mut subctx = Context::from(Atom::from(new_op));
+        for var in vars {
+            subctx = Context::Application {
+                op: app.clone(),
+                args: vec![subctx, Context::from(Atom::from(var))],
+            };
+        }
+        rhs.replace(place, subctx).ok_or(SampleError::Subterm)
+    }
+    fn collect_information<'a>(
+        lex: &Lexicon,
+        lhs: &Term,
+        lhs_place: &[usize],
+        rhs_place: &[usize],
+        clauses: &'a [Rule],
+        var: &Variable,
+    ) -> Result<(Vec<Type>, Vec<(&'a Term, Term)>, Vec<Variable>), SampleError> {
+        let mut terms = vec![];
+        let mut types = vec![];
+        let mut vars = vec![var.clone()];
+        for clause in clauses {
+            let rhs = clause.rhs().ok_or(SampleError::Subterm)?;
+            println!("rhs: {}", rhs.pretty());
+            let lhs_subterm = clause.lhs.at(lhs_place).ok_or(SampleError::Subterm)?;
+            println!("lhs_subterm: {}", lhs_subterm.pretty());
+            let rhs_subterm = rhs.at(rhs_place).ok_or(SampleError::Subterm)?;
+            println!("rhs_subterm: {}", rhs_subterm.pretty());
+            let mut map = HashMap::new();
+            lex.infer_term(&rhs, &mut map).drop()?;
+            println!("type: {}", map[rhs_place]);
+            types.push(map[rhs_place].clone());
+            println!("master lhs: {}", lhs.pretty());
+            println!("clause lhs: {}", clause.lhs.pretty());
+            let alpha = Term::pmatch(vec![(&lhs, &clause.lhs)]).ok_or(SampleError::Subterm)?;
+            println!("alpha succeeded");
+            for var in &rhs_subterm.variables() {
+                let var_term = Term::Variable(var.clone());
+                if let Some((&k, _)) = alpha.iter().find(|(_, &v)| *v == var_term) {
+                    vars.push(k.clone())
+                } else {
+                    return Err(SampleError::Subterm);
+                }
+            }
+            terms.push((lhs_subterm, rhs_subterm.clone()));
+        }
+        Ok((types, terms, vars))
+    }
+    fn compute_place_type(lex: &Lexicon, types: &[Type]) -> Result<Type, SampleError> {
+        let return_tp = lex.fresh_type_variable();
+        for tp in types {
+            lex.unify(&return_tp, tp)
+                .map_err(|_| SampleError::Subterm)?;
+        }
+        Ok(return_tp.apply(&lex.0.read().expect("poisoned lexicon").ctx))
+    }
+    // Patch a one-hole `Context` with a `Variable`.
     fn fill_hole_with_variable(
         lex: &Lexicon,
         context: &Context,
@@ -938,18 +993,17 @@ impl TRS {
             return None;
         }
         let hole = holes.pop()?;
-        // Type the context and get the type of that hole.
+        // Create a variable whose type matches the hole.
         let mut tps = HashMap::new();
         lex.infer_context(context, &mut tps).drop().ok()?;
-        // create a variable of that type
         let new_var = lex.invent_variable(&tps[&hole]);
-        // replace the hole with the new variable
+        // Replace the hole with the new variable.
         let filled_context = context.replace(&hole, Context::from(Atom::from(new_var.clone())))?;
-        // return
         let term = filled_context.to_term().ok()?;
+        // Return the term, the hole, and its replacement.
         Some((term, hole, new_var))
     }
-    // Create a new operator whose type follows the variables
+    // Create a new `Operator` whose type is consistent with `Vars`.
     fn new_operator(
         lex: &Lexicon,
         applicative: bool,
@@ -969,6 +1023,7 @@ impl TRS {
         // Create the new variable.
         Ok(lex.invent_operator(name, arity, &tp))
     }
+    // Create a new rule setting up a generalization subproblem.
     fn new_rule(
         lex: &Lexicon,
         op: &Operator,
@@ -977,10 +1032,7 @@ impl TRS {
         var: &Variable,
         vars: &[Variable],
     ) -> Result<Rule, SampleError> {
-        let mut lhs = Term::Application {
-            op: op.clone(),
-            args: vec![],
-        };
+        let mut lhs = Term::apply(op.clone(), vec![]).ok_or(SampleError::Subterm)?;
         let app = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
         for v in vars {
             let arg = if v == var {
@@ -988,12 +1040,26 @@ impl TRS {
             } else {
                 Term::Variable(v.clone())
             };
-            lhs = Term::Application {
-                op: app.clone(),
-                args: vec![lhs, arg],
-            }
+            lhs = Term::apply(app.clone(), vec![lhs, arg]).ok_or(SampleError::Subterm)?;
         }
         Rule::new(lhs, vec![rhs.clone()]).ok_or(SampleError::Subterm)
+    }
+    fn contains(&self, rule: &Rule) -> bool {
+        self.utrs.get_clause(rule).is_some()
+    }
+    fn remove_clauses(&mut self, rules: &[Rule]) -> Result<(), SampleError> {
+        for rule in rules {
+            if self.contains(rule) {
+                self.utrs.remove_clauses(&rule)?;
+            }
+        }
+        Ok(())
+    }
+    fn prepend_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
+        self.utrs
+            .pushes(rules)
+            .map(|_| ())
+            .map_err(SampleError::from)
     }
 }
 impl fmt::Display for TRS {
@@ -1050,7 +1116,8 @@ mod tests {
             &lex,
         )
             .expect("parsed trs");
-        let (context, clauses) = trs.find_lhs_context().unwrap();
+        let clauses = trs.utrs.clauses();
+        let (context, clauses) = TRS::find_lhs_context(&clauses).unwrap();
 
         assert_eq!("^(+(x_, [!]), 2)", context.pretty());
         assert_eq!(3, clauses.len());
@@ -1195,7 +1262,8 @@ mod tests {
             &lex,
         )
             .expect("parsed trs");
-        let (lhs_context, clauses) = trs.find_lhs_context().unwrap();
+        let all_clauses = trs.utrs.clauses();
+        let (lhs_context, clauses) = TRS::find_lhs_context(&all_clauses).unwrap();
         let (rhs_context, _) = TRS::find_rhs_context(&clauses).unwrap();
         let rules =
             TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses).unwrap();
