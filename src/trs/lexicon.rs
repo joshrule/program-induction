@@ -1627,7 +1627,8 @@ impl GP for Lexicon {
     ) -> Vec<Self::Expression> {
         // disallow deleting if you have no rules to delete
         let not_empty = !trs.is_empty() as usize;
-        let weights = vec![1, (5 * not_empty), (10 * not_empty), 1, 1, 1, 1];
+        // add, replace, delete, regenerate, exception, local difference, variablization, generalization
+        let weights = vec![1, not_empty, (10 * not_empty), 1, 1, 0, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             match dist.sample(rng) {
@@ -1694,6 +1695,12 @@ impl GP for Lexicon {
                 // replace term with variable
                 6 => {
                     if let Ok(new_trss) = trs.replace_term_with_var(rng) {
+                        return new_trss;
+                    }
+                }
+                // generalization
+                7 => {
+                    if let Ok(new_trss) = trs.generalize(obs) {
                         return new_trss;
                     }
                 }
