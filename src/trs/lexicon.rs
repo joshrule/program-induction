@@ -622,7 +622,7 @@ impl Lexicon {
                 for r1 in &trs.utrs().clauses() {
                     if Rule::alpha(r1, r2).is_some()
                         || (self.0.read().expect("poisoned lexicon").deterministic
-                            && Term::alpha(&r1.lhs, &r2.lhs).is_some())
+                            && Term::alpha(vec![(&r1.lhs, &r2.lhs)]).is_some())
                     {
                         return false;
                     }
@@ -699,14 +699,25 @@ impl Lex {
     fn free_vars(&self) -> Vec<TypeVar> {
         let vars_fvs = self.vars.iter().flat_map(TypeSchema::free_vars);
         let ops_fvs = self.ops.iter().flat_map(TypeSchema::free_vars);
-        vars_fvs.chain(ops_fvs).unique().collect()
+        let mut vars = vars_fvs.chain(ops_fvs).collect_vec();
+        vars.sort();
+        vars.dedup();
+        vars
     }
     fn free_vars_applied(&self) -> Vec<TypeVar> {
-        self.free_vars()
-            .into_iter()
-            .flat_map(|x| Type::Variable(x).apply(&self.ctx).vars())
-            .unique()
-            .collect::<Vec<_>>()
+        let vars_fvs = self.vars.iter().flat_map(TypeSchema::free_vars);
+        let ops_fvs = self.ops.iter().flat_map(TypeSchema::free_vars);
+        let mut vars = vars_fvs
+            .chain(ops_fvs)
+            .flat_map(|x| {
+                let mut v = Type::Variable(x);
+                v.apply_mut(&self.ctx);
+                v.vars()
+            })
+            .collect_vec();
+        vars.sort();
+        vars.dedup();
+        vars
     }
     fn invent_variable(&mut self, tp: &Type) -> Variable {
         let var = self.signature.new_var(None);
@@ -980,13 +991,11 @@ impl Lex {
         Ok(lhs_type.apply(&self.ctx))
     }
     fn infer_utrs(&mut self, utrs: &UntypedTRS) -> Result<(), TypeError> {
-        // TODO: we assume the variables already exist in the signature. Is that sensible?
         for rule in &utrs.rules {
-            self.infer_rule(rule, &mut HashMap::new())?;
+            self.infer_rule_internal(rule, &mut HashMap::new())?;
         }
         Ok(())
     }
-
     fn sample_term(
         &mut self,
         schema: &TypeSchema,
@@ -1762,12 +1771,12 @@ impl GP for Lexicon {
     ) {
         // select alpha-unique individuals that are not yet in the population
         offspring.retain(|ref x| {
-            (!population
+            !population
                 .iter()
-                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs)))
-                & (!children
+                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs))
+                && !children
                     .iter()
-                    .any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs)))
+                    .any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs))
         });
         *offspring = offspring.iter().fold(vec![], |mut acc, ref x| {
             if !acc.iter().any(|a| UntypedTRS::alphas(&a.utrs, &x.utrs)) {

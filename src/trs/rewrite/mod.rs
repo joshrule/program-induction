@@ -19,7 +19,6 @@ mod sample_rule;
 mod swap_lhs_and_rhs;
 
 use itertools::Itertools;
-use polytype::Context as TypeContext;
 use rand::{seq::IteratorRandom, Rng};
 use std::collections::HashMap;
 use std::fmt;
@@ -99,8 +98,8 @@ impl TRS {
         })
     }
 
-    pub fn context(&self) -> TypeContext {
-        self.lex.context()
+    pub fn lexicon(&self) -> Lexicon {
+        self.lex.clone()
     }
 
     /// The size of the underlying [`term_rewriting::TRS`].
@@ -200,14 +199,7 @@ impl TRS {
 }
 impl fmt::Display for TRS {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let true_len = self.utrs.len()
-            - self
-                .lex
-                .0
-                .read()
-                .expect("poisoned lexicon")
-                .background
-                .len();
+        let true_len = self.num_learned_rules();
         let sig = &self.lex.0.read().expect("poisoned lexicon").signature;
         let trs_str = self
             .utrs

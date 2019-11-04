@@ -7,8 +7,15 @@ use super::{Lexicon, SampleError, TRS};
 
 impl TRS {
     pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
+        let n_rules = self.num_learned_rules();
+        if n_rules == 0 {
+            return Err(SampleError::OptionsExhausted);
+        };
         let mut trs = self.clone();
-        let mut all_rules = trs.utrs.clauses();
+        let mut all_rules = trs.utrs.rules[..n_rules]
+            .iter()
+            .flat_map(Rule::clauses)
+            .collect_vec();
         all_rules.extend_from_slice(&trs.novel_rules(data));
         let (lhs_context, clauses) = TRS::find_lhs_context(&all_rules)?;
         let (rhs_context, _) = TRS::find_rhs_context(&clauses)?;
@@ -32,26 +39,32 @@ impl TRS {
         T: Fn(&Rule) -> Term,
     {
         // Collect all contexts and their witnesses.
-        let mut contexts: Vec<(Context, &Rule)> = Vec::new();
-        for clause in clauses {
+        let mut contexts: Vec<(usize, Context, &Rule)> = Vec::new();
+        // TODO HACK! `rev` preserves an invariant for variable identity
+        for clause in clauses.iter().rev() {
             for context in f(clause).contexts(max_holes) {
-                contexts.push((context, &clause));
+                contexts.push((context.size() - context.holes().len(), context, &clause));
             }
         }
-        // Dump them into a HashMap.
-        let mut map: HashMap<&Context, Vec<&Rule>> = HashMap::new();
-        for (context, clause) in &contexts {
-            let key: &Context = map
-                .keys()
-                .find(|k| Context::alpha(context, k).is_some())
-                .unwrap_or(&context);
-            (*map.entry(key).or_insert_with(|| vec![])).push(clause);
+
+        // Find the context with the most non-hole subterms, such that the
+        // context appears at least twice modulo alpha-equivalence.
+        contexts.sort_by_key(|c| c.0);
+        while let Some((ref_size, ref_context, ref_clause)) = contexts.pop() {
+            let mut clauses = vec![ref_clause];
+            for (size, context, clause) in contexts.iter().rev() {
+                if *size == ref_size {
+                    if Context::alpha(vec![(&ref_context, context)]).is_some() {
+                        clauses.push(clause);
+                    }
+                } else if clauses.len() > 1 {
+                    return Ok((ref_context, clauses.iter().map(|c| (*c).clone()).collect()));
+                } else {
+                    break;
+                }
+            }
         }
-        // Pick the largest context witnessed by >= 2 clauses.
-        map.iter()
-            .max_by_key(|(k, v)| ((v.len() > 1) as usize) * (k.size() - k.holes().len()))
-            .map(|(&k, v)| (k.clone(), v.iter().map(|&x| x.clone()).collect_vec()))
-            .ok_or_else(|| SampleError::OptionsExhausted)
+        Err(SampleError::OptionsExhausted)
     }
     // The workhorse behind generalization.
     fn generalize_clauses(
