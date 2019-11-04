@@ -44,10 +44,10 @@ impl TRS {
     /// ];
     ///
     /// for op in sig.operators() {
-    ///     println!("{:?}/{}", op.name(), op.arity())
+    ///     println!("{:?}/{}", op.name(&sig), op.arity())
     /// }
     /// for r in &rules {
-    ///     println!("{:?}", r.pretty());
+    ///     println!("{:?}", r.pretty(&sig));
     /// }
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
     ///

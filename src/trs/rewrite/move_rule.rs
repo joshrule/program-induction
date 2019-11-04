@@ -42,7 +42,7 @@ impl TRS {
     ///
     /// println!("{:?}", sig.operators());
     /// for op in sig.operators() {
-    ///     println!("{:?}/{}", op.name(), op.arity())
+    ///     println!("{:?}/{}", op.name(&sig), op.arity())
     /// }
     /// for r in &rules {
     ///     println!("{:?}", r);

@@ -208,12 +208,13 @@ impl fmt::Display for TRS {
                 .expect("poisoned lexicon")
                 .background
                 .len();
+        let sig = &self.lex.0.read().expect("poisoned lexicon").signature;
         let trs_str = self
             .utrs
             .rules
             .iter()
             .take(true_len)
-            .map(|r| format!("{};", r.display()))
+            .map(|r| format!("{};", r.display(sig)))
             .join("\n");
 
         write!(f, "{}", trs_str)

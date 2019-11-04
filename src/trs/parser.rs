@@ -417,7 +417,7 @@ mod tests {
             &mut ops,
         )
         .unwrap();
-        assert_eq!(a.display(), "SUCC");
+        assert_eq!(a.display(&sig), "SUCC");
         assert_eq!(s.to_string(), "int → int");
     }
 
@@ -428,7 +428,7 @@ mod tests {
         let mut sig = Signature::default();
         let (_, (a, s)) =
             declaration(CompleteStr("x_: int"), &mut sig, &mut vars, &mut ops).unwrap();
-        assert_eq!(a.display(), "x_");
+        assert_eq!(a.display(&sig), "x_");
         assert_eq!(s.to_string(), "int");
     }
 
@@ -462,8 +462,9 @@ mod tests {
         .unwrap()
         .1;
         let res = typed_rule("SUCC(x_) = ZERO", &mut lex);
+        let sig = &lex.0.read().expect("poisoned lexicon").signature;
 
-        assert_eq!(res.unwrap().1.display(), "SUCC(x_) = ZERO");
+        assert_eq!(res.unwrap().1.display(sig), "SUCC(x_) = ZERO");
     }
 
     #[test]
@@ -484,9 +485,10 @@ mod tests {
             CompleteStr("PLUS(ZERO x_) = ZERO; PLUS(SUCC(x_) y_) = SUCC(PLUS(x_ y_));"),
             &mut lex,
         );
+        let sig = &lex.0.read().expect("poisoned lexicon").signature;
 
         assert_eq!(
-            res.unwrap().1.utrs.display(),
+            res.unwrap().1.utrs.display(sig),
             "PLUS(ZERO x_) = ZERO;\nPLUS(SUCC(x_) y_) = SUCC(PLUS(x_ y_));"
         );
     }
@@ -506,8 +508,9 @@ mod tests {
         .unwrap()
         .1;
         let res = typed_context(CompleteStr("PLUS(x_ [!])"), &mut lex);
+        let sig = &lex.0.read().expect("poisoned lexicon").signature;
 
-        assert_eq!(res.unwrap().1.display(), "PLUS(x_ [!])");
+        assert_eq!(res.unwrap().1.display(sig), "PLUS(x_ [!])");
     }
 
     #[test]
@@ -525,8 +528,9 @@ mod tests {
         .unwrap()
         .1;
         let res = typed_rulecontext(CompleteStr("PLUS(x_ [!]) = ZERO"), &mut lex);
+        let sig = &lex.0.read().expect("poisoned lexicon").signature;
 
-        assert_eq!(res.unwrap().1.display(), "PLUS(x_ [!]) = ZERO");
+        assert_eq!(res.unwrap().1.display(sig), "PLUS(x_ [!]) = ZERO");
     }
 
     #[test]
@@ -547,12 +551,13 @@ mod tests {
             CompleteStr("PLUS(x_ [!]) = ZERO; [!] = SUCC(ZERO);"),
             &mut lex,
         );
+        let sig = &lex.0.read().expect("poisoned lexicon").signature;
 
         let res_string = res
             .unwrap()
             .1
             .iter()
-            .map(|rc| format!("{};", rc.display()))
+            .map(|rc| format!("{};", rc.display(sig)))
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(res_string, "PLUS(x_ [!]) = ZERO;\n[!] = SUCC(ZERO);");

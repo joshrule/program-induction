@@ -88,7 +88,7 @@ impl Lexicon {
         deterministic: bool,
         ctx: TypeContext,
     ) -> Lexicon {
-        let mut signature = Signature::default();
+        let signature = Signature::default();
         let mut ops = Vec::with_capacity(operators.len());
         for (id, name, tp) in operators {
             signature.new_op(id, name);
@@ -181,7 +181,8 @@ impl Lexicon {
         sig.operators()
             .into_iter()
             .find(|op| {
-                op.arity() == arity && op.name().as_ref().map(std::string::String::as_str) == name
+                op.arity() == arity
+                    && op.name(sig).as_ref().map(std::string::String::as_str) == name
             })
             .ok_or(())
     }
@@ -214,6 +215,10 @@ impl Lexicon {
     /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
     pub fn context(&self) -> TypeContext {
         self.0.read().expect("poisoned lexicon").ctx.clone()
+    }
+    /// Return the `Lexicon`'s `Signature`.
+    pub fn signature(&self) -> Signature {
+        self.0.read().expect("poisoned lexicon").signature.clone()
     }
     pub fn snapshot(&self) -> usize {
         self.0.read().expect("poisoned lexicon").ctx.len()
@@ -343,18 +348,18 @@ impl Lexicon {
         result
     }
     /// Infer the `TypeSchema` associated with an `Operator`.
-    pub fn infer_op(&self, op: &Operator) -> Result<TypeSchema, TypeError> {
+    pub fn infer_op(&self, op: Operator) -> Result<TypeSchema, TypeError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
         let snapshot = lex.ctx.len();
-        let result = lex.op_tp(op.clone()).map(|tp| tp.clone());
+        let result = lex.op_tp(op).map(|tp| tp.clone());
         lex.ctx.rollback(snapshot);
         result
     }
     /// Infer the `TypeSchema` associated with a `Variable`.
-    pub fn infer_var(&self, var: &Variable) -> Result<TypeSchema, TypeError> {
+    pub fn infer_var(&self, var: Variable) -> Result<TypeSchema, TypeError> {
         let mut lex = self.0.write().expect("poisoned lexicon");
         let snapshot = lex.ctx.len();
-        let result = lex.var_tp(var.clone()).map(|tp| tp.clone());
+        let result = lex.var_tp(var).map(|tp| tp.clone());
         lex.ctx.rollback(snapshot);
         result
     }
@@ -665,18 +670,24 @@ impl fmt::Display for Lex {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "Signature:")?;
         for (op, schema) in self.signature.operators().iter().zip(&self.ops) {
-            writeln!(f, "{}/{}: {}", op.display(), op.arity(), schema)?;
+            writeln!(
+                f,
+                "{}/{}: {}",
+                op.display(&self.signature),
+                op.arity(),
+                schema
+            )?;
         }
         for (var, schema) in self.signature.variables().iter().zip(&self.vars) {
-            writeln!(f, "{}: {}", var.display(), schema)?;
+            writeln!(f, "{}: {}", var.display(&self.signature), schema)?;
         }
         writeln!(f, "\nBackground: {}", self.background.len())?;
         for rule in &self.background {
-            writeln!(f, "{}", rule.pretty())?;
+            writeln!(f, "{}", rule.pretty(&self.signature))?;
         }
         writeln!(f, "\nTemplates: {}", self.templates.len())?;
         for template in &self.templates {
-            writeln!(f, "{}", template.pretty())?;
+            writeln!(f, "{}", template.pretty(&self.signature))?;
         }
         writeln!(f, "\nDeterministic: {}", self.deterministic)
     }
@@ -748,8 +759,8 @@ impl Lex {
         vars: &mut Vec<Variable>,
     ) -> Result<Term, SampleError> {
         match *atom {
-            Atom::Variable(ref v) => Ok(Term::Variable(v.clone())),
-            Atom::Operator(ref op) => {
+            Atom::Variable(v) => Ok(Term::Variable(v)),
+            Atom::Operator(op) => {
                 let mut size = 1;
                 let snapshot = self.ctx.len(); // for "undo" semantics
                 let mut args = Vec::with_capacity(arg_types.len());
@@ -789,10 +800,7 @@ impl Lex {
                         }
                     }
                 }
-                Ok(Term::Application {
-                    op: op.clone(),
-                    args,
-                })
+                Ok(Term::Application { op, args })
             }
         }
     }
@@ -841,9 +849,9 @@ impl Lex {
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
         let tp = match *term {
-            Term::Variable(ref v) => self.instantiate_atom(&Atom::from(v.clone()))?,
-            Term::Application { ref op, ref args } => {
-                let head_type = self.instantiate_atom(&Atom::from(op.clone()))?;
+            Term::Variable(v) => self.instantiate_atom(&Atom::from(v))?,
+            Term::Application { op, ref args } => {
+                let head_type = self.instantiate_atom(&Atom::from(op))?;
                 let body_type = {
                     let mut pre_types = Vec::with_capacity(args.len() + 1);
                     for (i, a) in args.iter().enumerate() {
@@ -882,9 +890,9 @@ impl Lex {
     ) -> Result<Type, TypeError> {
         let tp = match *context {
             Context::Hole => self.ctx.new_variable(),
-            Context::Variable(ref v) => self.instantiate_atom(&Atom::from(v.clone()))?,
-            Context::Application { ref op, ref args } => {
-                let head_type = self.instantiate_atom(&Atom::from(op.clone()))?;
+            Context::Variable(v) => self.instantiate_atom(&Atom::from(v))?,
+            Context::Application { op, ref args } => {
+                let head_type = self.instantiate_atom(&Atom::from(op))?;
                 let body_type = {
                     let mut pre_types = Vec::with_capacity(args.len() + 1);
                     for (i, a) in args.iter().enumerate() {
@@ -1056,10 +1064,10 @@ impl Lex {
             .map(|w| w.exp())
             .collect();
         // sample an option that typechecks
-        let option = weighted_sample(&options, &weights).clone();
+        let option = weighted_sample(&options, &weights);
         let atom = option.unwrap_or_else(|| {
             let new_var = self.invent_variable(tp);
-            vars.push(new_var.clone());
+            vars.push(new_var);
             Atom::Variable(new_var)
         });
         let arg_types = self.fit_atom(&atom, &tp, false)?;
@@ -1278,11 +1286,10 @@ impl Lex {
     ) -> (Vec<LOpt>, Vec<LOpt>, Vec<LOpt>) {
         let mut vs = vars
             .iter()
-            .cloned()
-            .filter_map(|v| {
-                let atom = Atom::Variable(v.clone());
+            .filter_map(|&v| {
+                let atom = Atom::Variable(v);
                 if let Ok(arg_types) = self.fit_atom(&atom, &tp, true) {
-                    Some((Some(Atom::Variable(v.clone())), arg_types))
+                    Some((Some(Atom::Variable(v)), arg_types))
                 } else {
                     None
                 }
@@ -1290,9 +1297,9 @@ impl Lex {
             .collect_vec();
         if invent {
             // empty arg_types below because variables have no arguments
-            if let Term::Variable(ref v) = *term {
-                if !vars.contains(v) {
-                    vs.push((Some(Atom::Variable(v.clone())), vec![]));
+            if let Term::Variable(v) = *term {
+                if !vars.contains(&v) {
+                    vs.push((Some(Atom::Variable(v)), vec![]));
                 } else {
                     vs.push((None, vec![]));
                 }
@@ -1301,14 +1308,14 @@ impl Lex {
             }
         }
         let (mut cs, mut os) = (vec![], vec![]);
-        for op in &self.signature.operators() {
-            let atom = Atom::Operator(op.clone());
+        for &op in &self.signature.operators() {
+            let atom = Atom::Operator(op);
             if let Ok(arg_types) = self.fit_atom(&atom, &tp, true) {
                 if op.arity() == 0 {
                     // arg_types is empty, but using it avoids allocation
-                    cs.push((Some(atom.clone()), arg_types));
+                    cs.push((Some(atom), arg_types));
                 } else {
-                    os.push((Some(atom.clone()), arg_types));
+                    os.push((Some(atom), arg_types));
                 }
             }
         }
@@ -1451,7 +1458,8 @@ impl Lex {
         let mut lp = 0.0;
         for rhs in &rule.rhs {
             lp += lp_lhs
-                + UntypedTRS::p_string(&rule.lhs, rhs, dist, t_max, d_max).unwrap_or(NEG_INFINITY);
+                + UntypedTRS::p_string(&rule.lhs, rhs, dist, t_max, d_max, &self.signature)
+                    .unwrap_or(NEG_INFINITY);
         }
         Ok(lp)
     }
@@ -1612,7 +1620,7 @@ impl GP for Lexicon {
                 let background_trs = UntypedTRS::new(lex.background.clone());
                 panic!(
                     "invalid background knowledge {}: {}",
-                    background_trs.display(),
+                    background_trs.display(&lex.signature),
                     err
                 )
             }
