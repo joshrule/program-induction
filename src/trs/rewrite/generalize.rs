@@ -38,33 +38,111 @@ impl TRS {
     where
         T: Fn(&Rule) -> Term,
     {
-        // Collect all contexts and their witnesses.
-        let mut contexts: Vec<(usize, Context, &Rule)> = Vec::new();
-        // TODO HACK! `rev` preserves an invariant for variable identity
-        for clause in clauses.iter().rev() {
-            for context in f(clause).contexts(max_holes) {
-                contexts.push((context.size() - context.holes().len(), context, &clause));
-            }
-        }
+        // Pair each clause with its term and sort by size.
+        let mut fs = clauses
+            .iter()
+            .map(|c| {
+                let t = f(c);
+                (t.size(), t, c)
+            })
+            .collect_vec();
+        fs.sort_by_key(|x| x.0);
 
-        // Find the context with the most non-hole subterms, such that the
-        // context appears at least twice modulo alpha-equivalence.
-        contexts.sort_by_key(|c| c.0);
-        while let Some((ref_size, ref_context, ref_clause)) = contexts.pop() {
-            let mut clauses = vec![ref_clause];
-            for (size, context, clause) in contexts.iter().rev() {
-                if *size == ref_size {
-                    if Context::alpha(vec![(&ref_context, context)]).is_some() {
-                        clauses.push(clause);
-                    }
-                } else if clauses.len() > 1 {
-                    return Ok((ref_context, clauses.iter().map(|c| (*c).clone()).collect()));
-                } else {
+        // Find the largest contexts that appear in 2 or more terms
+        let mut lscs = vec![Context::Hole];
+        let mut lsc_size = lscs[0].size();
+        while let Some((ref_size, ref_term, _)) = fs.pop() {
+            // if t1 is smaller than lsc, you're done
+            if ref_size <= lsc_size {
+                break;
+            }
+            for (size, term, _) in fs.iter().rev() {
+                // If t2 is smaller than lsc, break (could drop t2 and remaining items).
+                if *size <= lsc_size {
                     break;
+                }
+                // Find c, the largest shared context between t1 and t2.
+                let c = TRS::largest_shared_context(&ref_term, term, max_holes)
+                    .ok_or(SampleError::OptionsExhausted)?;
+                let c_size = c.size();
+                // Conditionally update lsc and sharers.
+                if c_size > lsc_size {
+                    lscs = vec![c];
+                    lsc_size = lscs[0].size();
+                } else if c_size == lsc_size {
+                    if !lscs.contains(&c) {
+                        lscs.push(c);
+                    }
                 }
             }
         }
-        Err(SampleError::OptionsExhausted)
+
+        // Now, find the context which shares the most clauses.
+        lscs.into_iter()
+            .map(|lsc| {
+                let sharers = clauses
+                    .iter()
+                    .filter(|c| Context::generalize(vec![(&lsc, &Context::from(f(c)))]).is_some())
+                    .cloned()
+                    .collect_vec();
+                (lsc, sharers)
+            })
+            .max_by_key(|(_, sharers)| sharers.len())
+            .ok_or(SampleError::OptionsExhausted)
+    }
+    fn largest_shared_context(t1: &Term, t2: &Term, max_holes: usize) -> Option<Context> {
+        // TODO: This fn craps out if max_holes == 0.
+        let mut context = TRS::lsc_helper(t1, t2, &mut HashMap::new());
+        let mut holes = context.holes();
+        if max_holes == 0 && !holes.is_empty() {
+            return None;
+        }
+        while holes.len() > max_holes {
+            holes.sort_by_key(|p| p.len());
+            let deepest = holes.pop().unwrap();
+            if deepest.is_empty() {
+                return None;
+            }
+            context = context.replace(&deepest[..(deepest.len() - 1)], Context::Hole)?;
+            holes = context.holes();
+        }
+        Some(context)
+    }
+    fn lsc_helper(t1: &Term, t2: &Term, map: &mut HashMap<Variable, Variable>) -> Context {
+        match (t1, t2) {
+            (Term::Variable(v1), Term::Variable(v2)) => {
+                let v = map.entry(*v1).or_insert(*v2);
+                if v == v2 {
+                    Context::Variable(*v1)
+                } else {
+                    Context::Hole
+                }
+            }
+            (
+                Term::Application {
+                    op: op1,
+                    args: ref args1,
+                },
+                Term::Application {
+                    op: op2,
+                    args: ref args2,
+                },
+            ) => {
+                if op1 != op2 {
+                    Context::Hole
+                } else {
+                    Context::Application {
+                        op: *op1,
+                        args: args1
+                            .iter()
+                            .zip(args2)
+                            .map(|(st1, st2)| TRS::lsc_helper(st1, st2, map))
+                            .collect_vec(),
+                    }
+                }
+            }
+            _ => Context::Hole,
+        }
     }
     // The workhorse behind generalization.
     fn generalize_clauses(
@@ -405,7 +483,7 @@ mod tests {
             .expect("parsed trs");
         let all_clauses = trs.utrs.clauses();
         let (lhs_context, clauses) = TRS::find_lhs_context(&all_clauses).unwrap();
-        let (rhs_context, _) = TRS::find_rhs_context(&clauses).unwrap();
+        let (rhs_context, clauses) = TRS::find_rhs_context(&clauses).unwrap();
         let rules =
             TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses).unwrap();
         let sig = &lex.0.read().expect("poisoned lexicon").signature;
