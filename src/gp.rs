@@ -434,7 +434,7 @@ fn sample_without_replacement<R: Rng, T: Clone>(
 ) -> Vec<(T, f64)> {
     let mut weights = options
         .iter()
-        .map(|(_, weight)| (-weight).exp())
+        .map(|(_, weight)| (-weight).exp() + 1e-6)
         .collect_vec();
     let mut sample = Vec::with_capacity(sample_size);
     for _ in 0..sample_size {
