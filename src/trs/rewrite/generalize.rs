@@ -18,7 +18,7 @@ impl TRS {
             .collect_vec();
         all_rules.extend_from_slice(&trs.novel_rules(data));
         let (lhs_context, clauses) = TRS::find_lhs_context(&all_rules)?;
-        let (rhs_context, _) = TRS::find_rhs_context(&clauses)?;
+        let (rhs_context, clauses) = TRS::find_rhs_context(&clauses)?;
         let new_rules = TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
         trs.remove_clauses(&clauses)?;
         trs.prepend_clauses(new_rules)?;
@@ -418,16 +418,16 @@ mod tests {
     }
 
     #[test]
-    fn generalize_test() {
+    fn generalize_test_1() {
         let lex = parse_lexicon(
             &[
-                "+/2: INT -> INT -> INT;",
-                " */2: INT -> INT -> INT;",
-                " ^/2: INT -> INT -> INT;",
+                "+/2: int -> int -> int;",
+                " */2: int -> int -> int;",
+                " ^/2: int -> int -> int;",
                 "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-                " 0/0: INT; 1/0: INT; 2/0: INT;",
-                " 3/0: INT; 4/0: INT; 6/0: INT;",
-                " 9/0: INT;",
+                " 0/0: int; 1/0: int; 2/0: int;",
+                " 3/0: int; 4/0: int; 6/0: int;",
+                " 9/0: int;",
             ]
             .join(" "),
             "",
@@ -447,6 +447,43 @@ mod tests {
 
         assert_eq!(
             "op11 1 = 2\nop11 2 = 4\nop11 3 = 6\nop12 1 = 1\nop12 2 = 4\nop12 3 = 9\n^(+(x_, var5_), 2) = +(^(x_, 2), +(*(op11 var5_, x_), op12 var5_))\n+(x_, 0) = x_\n+(0, x_) = x_",
+            rule_string
+        );
+    }
+
+    #[test]
+    fn generalize_test_2() {
+        let lex = parse_lexicon(
+            &[
+                "C/0: list -> list;",
+                "CONS/0: nat -> list -> list;",
+                "NIL/0: list;",
+                "DECC/0: nat -> int -> nat;",
+                "DIGIT/0: int -> nat;",
+                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+                "0/0: int; 1/0: int; 2/0: int;",
+                "3/0: int; 4/0: int; 5/0: int;",
+                "6/0: int; 7/0: int; 8/0: int;",
+                "9/0: int;",
+            ]
+            .join(" "),
+            "",
+            "",
+            true,
+            TypeContext::default(),
+        )
+        .unwrap();
+        let trs = parse_trs(
+            "4 = 5; C (CONS (DIGIT 3) NIL) = (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) NIL)); C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 1) (CONS (DIGIT 3) NIL))) = (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) NIL));",
+            &lex,
+        )
+            .expect("parsed trs");
+        let trs = trs.generalize(&[]).unwrap().pop().unwrap();
+        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let rule_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
+
+        assert_eq!(
+            "C var0_ = CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) [])\n4 = 5",
             rule_string
         );
     }
