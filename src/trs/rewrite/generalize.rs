@@ -7,16 +7,8 @@ use super::{Lexicon, SampleError, TRS};
 
 impl TRS {
     pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
-        let n_rules = self.num_learned_rules();
-        if n_rules == 0 {
-            return Err(SampleError::OptionsExhausted);
-        };
+        let all_rules = self.clauses_for_learning(data)?;
         let mut trs = self.clone();
-        let mut all_rules = trs.utrs.rules[..n_rules]
-            .iter()
-            .flat_map(Rule::clauses)
-            .collect_vec();
-        all_rules.extend_from_slice(&trs.novel_rules(data));
         let (lhs_context, clauses) = TRS::find_lhs_context(&all_rules)?;
         let (rhs_context, clauses) = TRS::find_rhs_context(&clauses)?;
         let new_rules = TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;

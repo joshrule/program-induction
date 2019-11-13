@@ -605,13 +605,7 @@ impl Lexicon {
     /// merge two `TRS` into a single `TRS`.
     pub fn combine(&self, trs1: &TRS, trs2: &TRS) -> Result<TRS, TypeError> {
         assert_eq!(trs1.lex, trs2.lex);
-        let background_size = trs1
-            .lex
-            .0
-            .read()
-            .expect("poisoned lexicon")
-            .background
-            .len();
+        let background_size = trs1.num_background_rules();
         let rules1 = trs1.utrs.rules[..(trs1.utrs.len() - background_size)].to_vec();
         let rules2 = trs2.utrs.rules[..(trs2.utrs.len() - background_size)].to_vec();
         let mut trs = TRS::new(&trs1.lex, rules1)?;
@@ -1642,86 +1636,27 @@ impl GP for Lexicon {
         trs: &Self::Expression,
         obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
-        // disallow deleting if you have no rules to delete
-        let not_empty = !trs.is_empty() as usize;
         // add, replace, delete, regenerate, exception, local difference, variablization, generalization
-        let weights = vec![1, not_empty, (10 * not_empty), 1, 1, 0, 1, 1];
+        let weights = vec![1, 1, 1, 0, 1, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
-            match dist.sample(rng) {
-                // add rule
+            let new_trss = match dist.sample(rng) {
                 0 => {
+                    // add rule
                     let templates = self.0.read().expect("poisoned lexicon").templates.clone();
-                    if let Ok(new_trs) = trs.sample_rule(
-                        &templates,
-                        params.atom_weights,
-                        params.max_sample_size,
-                        rng,
-                    ) {
-                        return vec![new_trs];
-                    }
+                    trs.sample_rule(&templates, params.atom_weights, params.max_sample_size, rng)
+                        .map(|trs| vec![trs])
                 }
-                // replace rule
-                1 => {
-                    let templates = self.0.read().expect("poisoned lexicon").templates.clone();
-                    if let Ok(new_trss) = trs.delete_rule() {
-                        return new_trss
-                            .into_iter()
-                            .map(|trs| {
-                                if let Ok(new_trs) = trs.sample_rule(
-                                    &templates,
-                                    params.atom_weights,
-                                    params.max_sample_size,
-                                    rng,
-                                ) {
-                                    vec![new_trs]
-                                } else {
-                                    vec![]
-                                }
-                            })
-                            .flatten()
-                            .collect_vec();
-                    }
-                }
-                // delete rule
-                2 => {
-                    if let Ok(new_trss) = trs.delete_rule() {
-                        return new_trss;
-                    }
-                }
-                // regenerate rule
-                3 => {
-                    if let Ok(new_trss) =
-                        trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng)
-                    {
-                        return new_trss;
-                    }
-                }
-                // add exception
-                4 => {
-                    if let Ok(new_trss) = trs.add_exception(obs) {
-                        return new_trss;
-                    }
-                }
-                // local difference
-                5 => {
-                    if let Ok(new_trss) = trs.local_difference(rng) {
-                        return new_trss;
-                    }
-                }
-                // replace term with variable
-                6 => {
-                    if let Ok(new_trss) = trs.replace_term_with_var(rng) {
-                        return new_trss;
-                    }
-                }
-                // generalization
-                7 => {
-                    if let Ok(new_trss) = trs.generalize(obs) {
-                        return new_trss;
-                    }
-                }
+                1 => trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng),
+                2 => trs.add_exception(obs),
+                3 => trs.local_difference(rng),
+                4 => trs.replace_term_with_var(rng),
+                5 => trs.generalize(obs),
+                6 => trs.recurse(obs),
                 _ => unreachable!(),
+            };
+            if let Ok(trss) = new_trss.and_then(TRS::delete_ruless) {
+                return trss;
             }
         }
     }

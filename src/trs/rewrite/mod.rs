@@ -13,6 +13,7 @@ mod log_likelihood;
 mod log_posterior;
 mod log_prior;
 mod move_rule;
+mod recurse;
 mod regenerate_rule;
 mod replace_term_with_var;
 mod sample_rule;
@@ -175,6 +176,20 @@ impl TRS {
             .cloned()
             .filter(|r| !self.contains(r))
             .collect()
+    }
+
+    fn clauses_for_learning(&self, data: &[Rule]) -> Result<Vec<Rule>, SampleError> {
+        let n_rules = self.num_learned_rules();
+        let mut all_rules = self.utrs.rules[..n_rules]
+            .iter()
+            .flat_map(Rule::clauses)
+            .collect_vec();
+        all_rules.extend_from_slice(&self.novel_rules(data));
+        if all_rules.len() == 0 {
+            Err(SampleError::OptionsExhausted)
+        } else {
+            Ok(all_rules)
+        }
     }
 
     fn contains(&self, rule: &Rule) -> bool {
