@@ -50,14 +50,14 @@ impl TRS {
                 // trace-sensitive ll with string edit distance noise model: (1-p_edit(h,d))
                 Likelihood::String { dist, t_max, d_max } => {
                     trace.rewrites_to(params.max_steps, rhs, move |t1, t2| {
-                        UntypedTRS::p_string(t1, t2, dist, t_max, d_max, sig)
+                        UntypedTRS::p_string(t1, t2, dist, t_max, d_max, &sig)
                             .unwrap_or(NEG_INFINITY)
                     })
                 }
                 // trace-sensitive ll with string edit distance noise model: (1-p_edit(h,d))
                 Likelihood::List { dist, t_max, d_max } => {
                     trace.rewrites_to(params.max_steps, rhs, move |t1, t2| {
-                        UntypedTRS::p_list(t1, t2, dist, t_max, d_max, sig)
+                        UntypedTRS::p_list(t1, t2, dist, t_max, d_max, &sig)
                     })
                 }
             }
