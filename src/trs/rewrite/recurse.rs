@@ -27,24 +27,27 @@ impl TRS {
         map: &HashMap<Place, Type>,
         lex: &Lexicon,
         rule: &'a Rule,
-    ) -> Vec<(&'a Term, Type)> {
-        map.iter()
-            .filter_map(|(k, v)| {
-                if k.is_empty() || k[0] != 0 {
-                    return None;
+    ) -> Vec<(&'a Term, Place, Type)> {
+        let mut headmost = vec![0];
+        while map.contains_key(&headmost) {
+            headmost.push(0);
+        }
+        headmost.pop();
+        let mut fns = vec![];
+        for i_place in 1..=headmost.len() {
+            let k = &headmost[0..i_place];
+            let v = &map[k];
+            if let Some(tp) = v.returns() {
+                let tps = v.args().unwrap();
+                let snapshot = lex.snapshot();
+                if tps.len() == 1 && lex.unify(tp, tps[0]).is_ok() {
+                    let new_tp = tp.apply(&lex.0.read().expect("poisoned lexicon").ctx);
+                    fns.push((rule.at(k).unwrap(), k.to_vec(), new_tp));
                 }
-                v.returns().and_then(|tp| {
-                    let tps = v.args().unwrap();
-                    if tps.len() == 1 && lex.unify(tp, tps[0]).is_ok() {
-                        let new_tp = tp.apply(&lex.0.read().expect("poisoned lexicon").ctx);
-                        Some((rule.at(k).unwrap(), new_tp))
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unique()
-            .collect_vec()
+                lex.rollback(snapshot);
+            }
+        }
+        fns
     }
     fn partition_subrules(rule: &Rule) -> (Vec<Place>, Vec<Place>) {
         rule.subterms()
@@ -66,10 +69,10 @@ impl TRS {
         let fs = TRS::collect_recursive_fns(&map, lex, rule);
         let (lhss, rhss) = TRS::partition_subrules(rule);
         let mut transforms = vec![];
-        for (f, tp) in fs {
+        for (f, place, tp) in fs {
             for lhs_place in &lhss {
                 let outer_snapshot = lex.snapshot();
-                if lex.unify(&tp, &map[lhs_place]).is_ok() {
+                if place != *lhs_place && lex.unify(&tp, &map[lhs_place]).is_ok() {
                     for rhs_place in &rhss {
                         let inner_snapshot = lex.snapshot();
                         if lex.unify(&tp, &map[rhs_place]).is_ok() {
@@ -197,8 +200,11 @@ mod tests {
         )
             .expect("parsed rule");
         let transforms = TRS::find_transforms(&rule, &lex);
+        for (t, p1, p2, _) in &transforms {
+            println!("{} {:?} {:?}", t.pretty(&lex.signature()), p1, p2);
+        }
 
-        assert_eq!(100, transforms.len());
+        assert_eq!(20, transforms.len());
     }
 
     #[test]
