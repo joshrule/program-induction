@@ -1599,20 +1599,17 @@ impl GP for Lexicon {
                 if self.0.read().expect("poisoned lexicon").deterministic {
                     trs.utrs.make_deterministic();
                 }
-                let templates = self.0.read().expect("poisoned lexicon").templates.clone();
                 let mut pop = Vec::with_capacity(pop_size);
                 while pop.len() < pop_size {
-                    if let Ok(new_trs) = trs.clone().sample_rule(
-                        &templates,
-                        params.atom_weights,
-                        params.max_sample_size,
-                        rng,
-                    ) {
+                    if let Ok(mut new_trs) =
+                        trs.clone()
+                            .sample_rule(params.atom_weights, params.max_sample_size, rng)
+                    {
                         if !pop
                             .iter()
-                            .any(|p: &TRS| UntypedTRS::alphas(&p.utrs, &new_trs.utrs))
+                            .any(|p: &TRS| UntypedTRS::alphas(&p.utrs, &new_trs[0].utrs))
                         {
-                            pop.push(new_trs);
+                            pop.append(&mut new_trs);
                         }
                     }
                 }
@@ -1640,13 +1637,9 @@ impl GP for Lexicon {
         let weights = vec![1, 1, 1, 0, 1, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
-            let new_trss = match dist.sample(rng) {
-                0 => {
-                    // add rule
-                    let templates = self.0.read().expect("poisoned lexicon").templates.clone();
-                    trs.sample_rule(&templates, params.atom_weights, params.max_sample_size, rng)
-                        .map(|trs| vec![trs])
-                }
+            let choice = dist.sample(rng);
+            let mut new_trss = match choice {
+                0 => trs.sample_rule(params.atom_weights, params.max_sample_size, rng),
                 1 => trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng),
                 2 => trs.add_exception(obs),
                 3 => trs.local_difference(rng),
