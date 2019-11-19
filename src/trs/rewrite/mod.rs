@@ -216,6 +216,13 @@ impl TRS {
             .map(|_| ())
             .map_err(SampleError::from)
     }
+
+    fn append_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
+        self.utrs
+            .inserts_idx(self.num_learned_rules(), rules)
+            .map(|_| ())
+            .map_err(SampleError::from)
+    }
 }
 impl fmt::Display for TRS {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
