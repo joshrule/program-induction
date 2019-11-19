@@ -96,6 +96,13 @@ impl GPSelection {
             }
             GPSelection::Deterministic => {
                 population.truncate(pop_size);
+                while population.len() < pop_size {
+                    if let Some(child) = scored_children.pop() {
+                        population.push(child);
+                    } else {
+                        return;
+                    }
+                }
                 for child in scored_children {
                     sorted_place(child, population);
                 }
