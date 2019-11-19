@@ -13,8 +13,10 @@ impl TRS {
         let (rhs_context, clauses) = TRS::find_rhs_context(&clauses)?;
         let new_rules = TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
         trs.remove_clauses(&clauses)?;
-        trs.prepend_clauses(new_rules)?;
-        Ok(vec![trs])
+        let start = trs.num_learned_rules();
+        trs.append_clauses(new_rules.clone())?;
+        let stop = trs.num_learned_rules();
+        trs.smart_delete(start, stop)
     }
     fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {
         TRS::find_shared_context(clauses, |c| c.lhs.clone(), 1)
@@ -516,7 +518,7 @@ mod tests {
         let rule_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
 
         assert_eq!(
-            "op11 1 = 2\nop11 2 = 4\nop11 3 = 6\nop12 1 = 1\nop12 2 = 4\nop12 3 = 9\n^(+(x_, var5_), 2) = +(^(x_, 2), +(*(op11 var5_, x_), op12 var5_))\n+(x_, 0) = x_\n+(0, x_) = x_",
+            "+(x_, 0) = x_\n+(0, x_) = x_\nop11 1 = 2\nop11 2 = 4\nop11 3 = 6\nop12 1 = 1\nop12 2 = 4\nop12 3 = 9\n^(+(x_, var5_), 2) = +(^(x_, 2), +(*(op11 var5_, x_), op12 var5_))",
             rule_string
         );
     }
@@ -553,7 +555,7 @@ mod tests {
         let rule_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
 
         assert_eq!(
-            "C var0_ = CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) [])\n4 = 5",
+            "4 = 5\nC var0_ = CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) [])",
             rule_string
         );
     }

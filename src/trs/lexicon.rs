@@ -1655,7 +1655,10 @@ impl GP for Lexicon {
                 6 => trs.recurse(obs),
                 _ => unreachable!(),
             };
-            if let Ok(trss) = new_trss.and_then(TRS::delete_ruless) {
+            if choice < 4 {
+                new_trss = new_trss.and_then(TRS::delete_ruless)
+            }
+            if let Ok(trss) = new_trss {
                 return trss;
             }
         }
