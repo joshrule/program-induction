@@ -12,13 +12,13 @@ impl TRS {
         max_size: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
-        let clause = self.choose_clause(rng)?;
+        let (n, clause) = self.choose_clause(rng)?;
         let new_rules = self.regenerate_helper(&clause, atom_weights, max_size)?;
         let new_trss = new_rules
             .into_iter()
             .filter_map(|new_clause| {
                 let mut trs = self.clone();
-                let okay = trs.replace(&clause, new_clause).is_ok();
+                let okay = trs.replace(n, &clause, new_clause).is_ok();
                 if okay {
                     Some(trs)
                 } else {

@@ -63,17 +63,14 @@ impl TRS {
     /// # }
     /// ```
     pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
-        let clause = self.choose_clause(rng)?;
+        let (n, clause) = self.choose_clause(rng)?;
         let new_rules = TRS::local_difference_helper(&clause);
         let new_trss = new_rules
             .into_iter()
             .filter_map(|r| {
                 let mut trs = self.clone();
-                if trs.utrs.replace(0, &clause, r).is_ok() {
-                    Some(trs)
-                } else {
-                    None
-                }
+                trs.replace(n, &clause, r).ok()?;
+                Some(trs)
             })
             .collect_vec();
         if new_trss.is_empty() {

@@ -146,24 +146,29 @@ impl TRS {
 
     pub fn replace(
         &mut self,
+        n: usize,
         old_clause: &Rule,
         new_clause: Rule,
     ) -> Result<&mut TRS, SampleError> {
         self.lex
             .infer_rule(&new_clause, &mut HashMap::new())
             .drop()?;
-        self.utrs.replace(0, old_clause, new_clause)?;
+        self.utrs.replace(n, old_clause, new_clause)?;
         Ok(self)
     }
 
     /// pick a single clause
-    fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<Rule, SampleError> {
+    fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<(usize, Rule), SampleError> {
         let rules = {
             let num_rules = self.len();
             let num_background = self.num_background_rules();
             &self.utrs.rules[0..(num_rules - num_background)]
         };
-        let mut clauses = rules.iter().flat_map(Rule::clauses).collect_vec();
+        let mut clauses = rules
+            .iter()
+            .enumerate()
+            .flat_map(|(i, rule)| rule.clauses().into_iter().map(move |r| (i, r)))
+            .collect_vec();
         let idx = (0..clauses.len())
             .choose(rng)
             .ok_or(SampleError::OptionsExhausted)?;
