@@ -40,6 +40,7 @@ fn gp_sum_arith() {
     let gpparams = GPParams {
         selection: GPSelection::Deterministic,
         population_size: 10,
+        species_size: 10,
         tournament_size: 5,
         weights: GPWeights {
             mutation: 6,

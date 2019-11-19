@@ -59,13 +59,18 @@ pub enum GPSelection {
 }
 
 impl GPSelection {
-    pub(crate) fn select<'a, R: Rng, X: Clone + Send + Sync>(
+    pub(crate) fn select<'a, R, X, F>(
         &self,
         population: &mut Vec<(X, f64)>,
         children: Vec<X>,
-        oracle: Box<dyn Fn(&X) -> f64 + Send + Sync + 'a>,
+        oracle: F,
         rng: &mut R,
-    ) {
+        pop_size: usize,
+    ) where
+        R: Rng,
+        X: Clone + Send + Sync,
+        F: Fn(&X) -> f64 + Send + Sync + 'a,
+    {
         let mut scored_children = children
             .into_iter()
             .map(|child| {
@@ -75,7 +80,6 @@ impl GPSelection {
             .collect_vec();
         match self {
             GPSelection::Sample => {
-                let pop_size = population.len();
                 population.extend(scored_children);
                 *population = sample_without_replacement(population, pop_size, rng);
             }
@@ -84,21 +88,19 @@ impl GPSelection {
                     let new_fitness = oracle(p);
                     *old_fitness = *alpha * *old_fitness + (1.0 - alpha) * new_fitness;
                 }
-                let pop_size = population.len();
                 population.extend(scored_children);
                 *population = sample_without_replacement(population, pop_size, rng);
             }
             GPSelection::Resample => {
-                let pop_size = population.len();
                 *population = sample_with_replacement(&mut scored_children, pop_size, rng);
             }
             GPSelection::Deterministic => {
+                population.truncate(pop_size);
                 for child in scored_children {
                     sorted_place(child, population);
                 }
             }
             _ => {
-                let pop_size = population.len();
                 let mut options = Vec::with_capacity(pop_size + scored_children.len());
                 options.append(population);
                 options.append(&mut scored_children);
@@ -138,6 +140,7 @@ pub struct GPParams {
     /// population.
     pub selection: GPSelection,
     pub population_size: usize,
+    pub species_size: usize,
     /// The number of individuals selected uniformly at random to participate in
     /// a tournament. If 1, a single individual is selected uniformly at random,
     /// as if the population were unweighted. This is useful for mimicking
@@ -215,6 +218,7 @@ pub struct GPParams {
 ///     let gpparams = GPParams {
 ///         selection: GPSelection::Deterministic,
 ///         population_size: 10,
+///         species_size: 10,
 ///         tournament_size: 5,
 ///         weights: GPWeights {
 ///             mutation: 6,
@@ -346,7 +350,96 @@ pub trait GP: Send + Sync + Sized {
         _population: &[(Self::Expression, f64)],
         _children: &[Self::Expression],
         _offspring: &mut Vec<Self::Expression>,
+        _n: usize,
     ) {
+    }
+
+    fn generate_offspring<D, R>(
+        &self,
+        dist: &D,
+        rng: &mut R,
+        params: &Self::Params,
+        gpparams: &GPParams,
+        task: &Task<Self, Self::Expression, Self::Observation>,
+        population: &mut Vec<(Self::Expression, f64)>,
+    ) -> Vec<Self::Expression>
+    where
+        D: Distribution<usize>,
+        R: Rng,
+    {
+        match dist.sample(rng) {
+            0 => {
+                let parent = self.tournament(rng, gpparams.tournament_size, population);
+                self.mutate(params, rng, parent, &task.observation)
+            }
+            1 => {
+                let parent1 = self.tournament(rng, gpparams.tournament_size, population);
+                let parent2 = self.tournament(rng, gpparams.tournament_size, population);
+                self.crossover(params, rng, parent1, parent2, &task.observation)
+            }
+            2 => self.abiogenesis(params, rng, &task.observation),
+            _ => unreachable![],
+        }
+    }
+
+    fn speciate<R: Rng>(
+        &self,
+        params: &Self::Params,
+        rng: &mut R,
+        gpparams: &GPParams,
+        task: &Task<Self, Self::Expression, Self::Observation>,
+        population: &mut Vec<(Self::Expression, f64)>,
+    ) {
+        let dist = WeightedIndex::new(&[
+            gpparams.weights.mutation,
+            gpparams.weights.crossover,
+            gpparams.weights.abiogenesis,
+        ])
+        .unwrap();
+        let mut children = vec![];
+        let mut prepop = vec![];
+        // Create a species for each member of the population
+        while let Some(p) = population.pop() {
+            let mut species = Vec::with_capacity(gpparams.species_size);
+            let mut species_children = Vec::with_capacity(gpparams.species_size);
+            species_children.push(p.0.clone());
+            species.push(p);
+            while species.len() < gpparams.species_size {
+                let mut offspring =
+                    self.generate_offspring(&dist, rng, params, gpparams, task, &mut species);
+                self.validate_offspring(
+                    params,
+                    &species,
+                    &children,
+                    &mut offspring,
+                    children.len() + gpparams.species_size - species.len(),
+                );
+                let mut subspecies: Vec<_> = offspring
+                    .iter()
+                    .map(|i| (i.clone(), (task.oracle)(self, &i)))
+                    .collect();
+                species.append(&mut subspecies);
+                species_children.append(&mut offspring);
+                println!("{} {} {}", population.len(), children.len(), species.len());
+            }
+            children.append(&mut species_children);
+            // Combine all the species together indiscriminately.
+
+            // I may want the # of individuals from each species that make it
+            // into the pre-selection population to be smaller than the
+            // post-selection population size.
+            prepop.append(&mut species);
+        }
+        population.append(&mut prepop);
+        population.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Select the new population.
+        gpparams.selection.select(
+            population,
+            vec![],
+            |child| (task.oracle)(self, child),
+            rng,
+            gpparams.population_size,
+        );
     }
 
     /// Evolves a population. This will repeatedly run a Bernoulli trial with parameter
@@ -371,28 +464,24 @@ pub trait GP: Send + Sync + Sized {
         ])
         .unwrap();
         while children.len() < gpparams.n_delta {
-            let mut offspring = match dist.sample(rng) {
-                0 => {
-                    let parent = self.tournament(rng, gpparams.tournament_size, population);
-                    self.mutate(params, rng, parent, &task.observation)
-                }
-                1 => {
-                    let parent1 = self.tournament(rng, gpparams.tournament_size, population);
-                    let parent2 = self.tournament(rng, gpparams.tournament_size, population);
-                    self.crossover(params, rng, parent1, parent2, &task.observation)
-                }
-                2 => self.abiogenesis(params, rng, &task.observation),
-                _ => unreachable![],
-            };
-            self.validate_offspring(params, population, &children, &mut offspring);
+            let mut offspring =
+                self.generate_offspring(&dist, rng, params, gpparams, task, population);
+            self.validate_offspring(
+                params,
+                population,
+                &children,
+                &mut offspring,
+                gpparams.n_delta,
+            );
             children.append(&mut offspring);
         }
         children.truncate(gpparams.n_delta);
         gpparams.selection.select(
             population,
             children,
-            Box::new(|child| (task.oracle)(self, child)),
+            |child| (task.oracle)(self, child),
             rng,
+            gpparams.population_size,
         );
     }
 }

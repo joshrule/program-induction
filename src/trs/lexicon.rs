@@ -1699,21 +1699,29 @@ impl GP for Lexicon {
         population: &[(Self::Expression, f64)],
         children: &[Self::Expression],
         offspring: &mut Vec<Self::Expression>,
+        n: usize,
     ) {
         // select alpha-unique individuals that are not yet in the population
-        offspring.retain(|ref x| {
-            !population
+        let mut validated = 0;
+        let n_children = children.len();
+        while n_children + validated < n && validated < offspring.len() {
+            let x = &offspring[validated];
+            let pop_unique = !population
                 .iter()
-                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs))
-                && !children
-                    .iter()
-                    .any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs))
-        });
-        *offspring = offspring.iter().fold(vec![], |mut acc, ref x| {
-            if !acc.iter().any(|a| UntypedTRS::alphas(&a.utrs, &x.utrs)) {
-                acc.push((*x).clone());
+                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs));
+            let chi_unique = !children
+                .iter()
+                .any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs));
+            let mut off_unique = true;
+            for i_off in 0..validated {
+                off_unique = off_unique && !UntypedTRS::alphas(&offspring[i_off].utrs, &x.utrs);
             }
-            acc
-        });
+            if pop_unique && chi_unique && off_unique {
+                validated += 1;
+            } else {
+                offspring.swap_remove(validated);
+            }
+        }
+        offspring.truncate(validated);
     }
 }
