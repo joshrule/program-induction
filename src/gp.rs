@@ -368,7 +368,7 @@ pub trait GP: Send + Sync + Sized {
         params: &Self::Params,
         gpparams: &GPParams,
         task: &Task<Self, Self::Expression, Self::Observation>,
-        population: &mut Vec<(Self::Expression, f64)>,
+        population: &[(Self::Expression, f64)],
     ) -> Vec<Self::Expression>
     where
         D: Distribution<usize>,
@@ -397,42 +397,70 @@ pub trait GP: Send + Sync + Sized {
         task: &Task<Self, Self::Expression, Self::Observation>,
         population: &mut Vec<(Self::Expression, f64)>,
     ) {
-        let dist = WeightedIndex::new(&[
-            gpparams.weights.mutation,
-            gpparams.weights.crossover,
-            gpparams.weights.abiogenesis,
-        ])
-        .unwrap();
+        let dist = WeightedIndex::new(&[1, 0, 0]).unwrap();
         let mut children = vec![];
-        // Create a species for each member of the population
+        // HACK: 3 is a constant but not a magic number.
+        let n_gens = 3;
         while let Some(p) = population.pop() {
+            println!("###### pop_len: {}", population.len());
+            let mut offsprings = Vec::with_capacity(n_gens);
+            offsprings.push(vec![p]);
             let mut species = Vec::with_capacity(gpparams.species_size);
-            let mut species_children = Vec::with_capacity(gpparams.species_size);
-            species_children.push(p.0.clone());
-            species.push((p.0.clone(), 1.0));
-            while species.len() < gpparams.species_size {
-                let mut offspring =
-                    self.generate_offspring(&dist, rng, params, gpparams, task, &mut species);
-                self.validate_offspring(
-                    params,
-                    &species,
-                    &children,
-                    &mut offspring,
-                    children.len() + gpparams.species_size - species.len(),
-                );
-                let mut subspecies: Vec<_> = offspring.iter().map(|i| (i.clone(), 1.0)).collect();
-                species.append(&mut subspecies);
-                species_children.append(&mut offspring);
-                println!("{} {} {}", population.len(), children.len(), species.len());
+            for run in 0..gpparams.species_size {
+                println!("#### run: {}", run);
+                offsprings.truncate(1);
+                for gen in 0..n_gens {
+                    offsprings.push(vec![]);
+                    println!("## gen: {} {}", gen, offsprings[gen].len());
+                    for parent in 0..offsprings[gen].len() {
+                        print!("{}. ", parent);
+                        let offspring = self.generate_offspring(
+                            &dist,
+                            rng,
+                            params,
+                            gpparams,
+                            task,
+                            &offsprings[gen][parent..parent + 1],
+                        );
+                        let mut offspring = offspring
+                            .into_iter()
+                            .map(|child| {
+                                let score = (task.oracle)(self, &child);
+                                (child, score)
+                            })
+                            .collect_vec();
+                        offsprings[gen + 1].append(&mut offspring);
+                    }
+                }
+                // From the entire pool, select the best **novel** individual
+                let mut all = offsprings.concat();
+                all.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+                all.reverse();
+                while let Some(best) = all.pop() {
+                    let mut best_vec = vec![best.0.clone()];
+                    let childs = children
+                        .iter()
+                        .map(|(x, _): &(Self::Expression, f64)| x.clone())
+                        .collect_vec();
+                    self.validate_offspring(
+                        params,
+                        &species,
+                        &childs,
+                        &mut best_vec,
+                        species.len() + 1,
+                    );
+                    if !best_vec.is_empty() {
+                        species.push(best);
+                    }
+                }
             }
-            // Combine all the species together indiscriminately.
-            // TODO: select fewer from each species than the post-selection population size?
-            children.append(&mut species_children);
+            children.append(&mut species);
         }
         // Select the new population.
+        population.append(&mut children);
         gpparams.selection.select(
             population,
-            children,
+            vec![],
             |child| (task.oracle)(self, child),
             rng,
             gpparams.population_size,
