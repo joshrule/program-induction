@@ -93,7 +93,7 @@ impl TRS {
             Ok(vec![self])
         } else {
             let mut trss = vec![];
-            for n in 1..deletable.len() {
+            for n in 1..=deletable.len() {
                 for rules in deletable.iter().combinations(n) {
                     let mut trs = self.clone();
                     for rule in &rules {
