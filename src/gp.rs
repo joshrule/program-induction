@@ -404,13 +404,12 @@ pub trait GP: Send + Sync + Sized {
         ])
         .unwrap();
         let mut children = vec![];
-        let mut prepop = vec![];
         // Create a species for each member of the population
         while let Some(p) = population.pop() {
             let mut species = Vec::with_capacity(gpparams.species_size);
             let mut species_children = Vec::with_capacity(gpparams.species_size);
             species_children.push(p.0.clone());
-            species.push(p);
+            species.push((p.0.clone(), 1.0));
             while species.len() < gpparams.species_size {
                 let mut offspring =
                     self.generate_offspring(&dist, rng, params, gpparams, task, &mut species);
@@ -421,28 +420,19 @@ pub trait GP: Send + Sync + Sized {
                     &mut offspring,
                     children.len() + gpparams.species_size - species.len(),
                 );
-                let mut subspecies: Vec<_> = offspring
-                    .iter()
-                    .map(|i| (i.clone(), (task.oracle)(self, &i)))
-                    .collect();
+                let mut subspecies: Vec<_> = offspring.iter().map(|i| (i.clone(), 1.0)).collect();
                 species.append(&mut subspecies);
                 species_children.append(&mut offspring);
                 println!("{} {} {}", population.len(), children.len(), species.len());
             }
-            children.append(&mut species_children);
             // Combine all the species together indiscriminately.
-
-            // I may want the # of individuals from each species that make it
-            // into the pre-selection population to be smaller than the
-            // post-selection population size.
-            prepop.append(&mut species);
+            // TODO: select fewer from each species than the post-selection population size?
+            children.append(&mut species_children);
         }
-        population.append(&mut prepop);
-        population.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal));
         // Select the new population.
         gpparams.selection.select(
             population,
-            vec![],
+            children,
             |child| (task.oracle)(self, child),
             rng,
             gpparams.population_size,
