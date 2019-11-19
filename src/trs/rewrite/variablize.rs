@@ -42,3 +42,43 @@ impl TRS {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use polytype::Context as TypeContext;
+    use rand::thread_rng;
+    use trs::parser::{parse_lexicon, parse_trs};
+
+    #[test]
+    fn variablize_test() {
+        let lex = parse_lexicon(
+            &[
+                "+/2: INT -> INT -> INT;",
+                " */2: INT -> INT -> INT;",
+                " ^/2: INT -> INT -> INT;",
+                " 0/0: INT; 1/0: INT; 2/0: INT;",
+                " 3/0: INT; 4/0: INT; 6/0: INT;",
+                " 9/0: INT;",
+            ]
+            .join(" "),
+            "",
+            "",
+            true,
+            TypeContext::default(),
+        )
+        .unwrap();
+        let trs = parse_trs(
+            "^(+(x_ 1) 2) = +(^(x_ 2) +(*(2 x_) 1)); ^(+(x_ 2) 2) = +(^(x_ 2) +(*(4 x_) 4)); ^(+(x_ 3) 2) = +(^(x_ 2) +(*(6 x_) 9));",
+            &lex,
+        )
+            .expect("parsed trs");
+        let mut rng = thread_rng();
+        let trss = trs.variablize(&mut rng).unwrap();
+
+        for trs in &trss {
+            println!("{}\n", trs);
+        }
+
+        assert!(trss.len() == 4 || trss.len() == 5 || trss.len() == 8);
+    }
+}
