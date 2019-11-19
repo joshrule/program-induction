@@ -3,8 +3,7 @@ use rand::{
     distributions::{Distribution, Uniform},
     thread_rng,
 };
-use std::f64;
-use std::iter::repeat;
+use std::{cmp, f64, iter::repeat};
 
 #[inline(always)]
 pub fn logsumexp(lps: &[f64]) -> f64 {
@@ -72,25 +71,25 @@ pub fn block_generative_logpdf(a: f64, p: f64, n_items: usize, n_blocks: usize) 
     }
 }
 
-// pub fn weighted_permutation<T: Clone>(xs: &[T], ws: &[f64], n: Option<usize>) -> Vec<T> {
-//     let mut ws = ws.to_vec();
-//     let mut idxs: Vec<_> = (0..(ws.len())).collect();
-//     let mut permutation = vec![];
-//     let length = cmp::min(n.unwrap_or_else(|| xs.len()), xs.len());
-//     while permutation.len() < length {
-//         let jidxs: Vec<_> = idxs.iter().cloned().enumerate().collect();
-//         let &(jdx, idx): &(usize, usize) = weighted_sample(&jidxs, &ws);
-//         permutation.push(xs[idx].clone());
-//         idxs.remove(jdx);
-//         ws.remove(jdx);
-//     }
-//     permutation
-// }
+pub fn weighted_permutation<T: Clone>(xs: &[T], ws: &[f64], n: Option<usize>) -> Vec<T> {
+    let mut ws = ws.to_vec();
+    let mut idxs: Vec<_> = (0..(ws.len())).collect();
+    let mut permutation = vec![];
+    let length = cmp::min(n.unwrap_or_else(|| xs.len()), xs.len());
+    while permutation.len() < length {
+        let jidxs: Vec<_> = idxs.iter().cloned().enumerate().collect();
+        let &(jdx, idx): &(usize, usize) = weighted_sample(&jidxs, &ws);
+        permutation.push(xs[idx].clone());
+        idxs.remove(jdx);
+        ws.remove(jdx);
+    }
+    permutation
+}
 
 /// Samples an item from `xs` given the weights `ws`.
 pub fn weighted_sample<'a, T>(xs: &'a [T], ws: &[f64]) -> &'a T {
     assert_eq!(xs.len(), ws.len(), "weighted sample given invalid inputs");
-    let total = ws.iter().fold(0f64, |acc, x| acc + x);
+    let total: f64 = ws.iter().sum();
     let threshold: f64 = Uniform::new(0f64, total).sample(&mut thread_rng());
     let mut cum = 0f64;
     for (wp, x) in ws.iter().zip(xs) {

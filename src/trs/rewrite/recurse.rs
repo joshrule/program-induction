@@ -1,27 +1,46 @@
+use super::{Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
-use term_rewriting::{Place, Rule, Term};
-
-use super::{Lexicon, SampleError, TRS};
+use term_rewriting::{Operator, Place, Rule, Term};
+use utils::weighted_permutation;
 
 impl TRS {
     pub fn recurse(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
         let all_rules = self.clauses_for_learning(data)?;
         let snapshot = self.lex.snapshot();
-        let trss = all_rules
+        let op = self
+            .lex
+            .has_op(Some("."), 2)
+            .map_err(|_| SampleError::OptionsExhausted)?;
+        let transforms = all_rules
             .iter()
             .flat_map(|r| TRS::find_transforms(r, &self.lex))
+            .collect_vec();
+        let (trss, ns): (Vec<_>, Vec<_>) = transforms
+            .into_iter()
             .filter_map(|(f, lhs_place, rhs_place, rule)| {
-                let new_rules = TRS::transform(&f, &lhs_place, &rhs_place, rule, &self.lex).ok()?;
+                let new_rules =
+                    TRS::transform(&f, &lhs_place, &rhs_place, op, rule, &self.lex).ok()?;
+                let n = new_rules.len();
+                if n == 1 {
+                    return None;
+                }
                 let mut trs = self.clone();
                 trs.remove_clauses(&[rule.clone()]).ok()?;
-                trs.prepend_clauses(new_rules).ok()?;
-                Some(trs)
+                trs.prepend_clauses(new_rules.clone()).ok()?;
+                let trss = trs.smart_delete(0, new_rules.len()).ok()?;
+                let final_trss = trss
+                    .into_iter()
+                    .map(|t| (t, (1.5 as f64).powi(n as i32)))
+                    .collect_vec();
+                Some(final_trss)
             })
-            .collect_vec();
+            .flatten()
+            .unzip();
         self.lex.rollback(snapshot);
-        Ok(trss)
+        // HACK: 20 is a constant but not a magic number.
+        Ok(weighted_permutation(&trss, &ns, Some(20)))
     }
     fn collect_recursive_fns<'a>(
         map: &HashMap<Place, Type>,
@@ -95,6 +114,7 @@ impl TRS {
         f: &Term,
         lhs_place: &[usize],
         rhs_place: &[usize],
+        op: Operator,
         rule: &Rule,
         lex: &Lexicon,
     ) -> Result<Vec<Rule>, SampleError> {
@@ -106,19 +126,30 @@ impl TRS {
             f,
             lhs_place,
             rhs_place,
+            op,
             &new_rules[new_rules.len() - 1],
             lex,
             &map,
         ) {
-            new_rules.pop();
-            let mut break_it = false;
-            if new_rules.contains(&new_rule1) || new_rules.contains(&new_rule2) {
-                break_it = true;
+            // exit early if the LHS == the RHS
+            if new_rule1.lhs == new_rule1.rhs().unwrap() {
+                break;
             }
-            new_rules.push(new_rule1);
+            if let Some(old_rule) = new_rules.pop() {
+                if Rule::alpha(&old_rule, &new_rule2).is_some() {
+                    break;
+                }
+            }
+            // only add new recursive cases if they're alpha-unique
+            let unique = new_rules
+                .iter()
+                .all(|r| Rule::alpha(r, &new_rule1).is_none());
+            if unique {
+                new_rules.push(new_rule1);
+            }
             new_rules.push(new_rule2);
-            // TODO: HACK
-            if break_it || new_rules.len() > 10 {
+            // HACK: 12 is a constant, but not a magic number
+            if new_rules.len() > 12 {
                 break;
             }
         }
@@ -134,13 +165,13 @@ impl TRS {
         f: &Term,
         lhs_place: &[usize],
         rhs_place: &[usize],
+        op: Operator,
         rule: &Rule,
         lex: &Lexicon,
         map: &HashMap<Place, Type>,
     ) -> Result<(Rule, Rule), SampleError> {
         let lhs_structure = rule.at(lhs_place).ok_or(SampleError::Subterm)?.clone();
         let rhs_structure = rule.at(rhs_place).ok_or(SampleError::Subterm)?.clone();
-        let op = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
         let new_var = lex.invent_variable(&map[lhs_place]);
         // Swap lhs_structure for: new_var.
         let mut new_rule1 = rule
@@ -229,6 +260,7 @@ mod tests {
             TypeContext::default(),
         )
         .unwrap();
+        let op = lex.has_op(Some("."), 2).unwrap();
         let rule = parse_rule(
             "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)))",
             &lex,
@@ -239,7 +271,7 @@ mod tests {
         let rhs_place = vec![1, 1];
         let mut map = HashMap::new();
         lex.infer_rule(&rule, &mut map);
-        let result = TRS::transform_inner(&f, &lhs_place, &rhs_place, &rule, &lex, &map);
+        let result = TRS::transform_inner(&f, &lhs_place, &rhs_place, op, &rule, &lex, &map);
         assert!(result.is_ok());
         let (new_rule1, new_rule2) = result.unwrap();
         let sig = &lex.0.read().expect("poisoned lexicon").signature;
@@ -276,8 +308,9 @@ mod tests {
             TypeContext::default(),
         )
         .unwrap();
+        let op = lex.has_op(Some("."), 2).unwrap();
         let rule = parse_rule(
-            "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)))",
+            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))))",
             &lex,
         )
             .expect("parsed rule");
@@ -286,24 +319,43 @@ mod tests {
         let rhs_place = vec![1, 1];
         let mut map = HashMap::new();
         lex.infer_rule(&rule, &mut map);
-        let result = TRS::transform(&f, &lhs_place, &rhs_place, &rule, &lex);
+        let result = TRS::transform(&f, &lhs_place, &rhs_place, op, &rule, &lex);
         assert!(result.is_ok());
         let new_rules = result.unwrap();
         let sig = &lex.0.read().expect("poisoned lexicon").signature;
 
-        assert_eq!(4, new_rules.len());
-        assert_eq!("C (CONS (DIGIT 0) []) = []", new_rules[0].pretty(sig),);
+        assert_eq!(8, new_rules.len());
         assert_eq!(
-            "C (CONS (DECC (DIGIT 3) 2) var2_) = CONS (DECC (DIGIT 3) 2) (C var2_)",
+            "C (CONS (DECC (DIGIT 5) 4) []) = []",
+            new_rules[0].pretty(sig),
+        );
+        assert_eq!(
+            "C (CONS (DIGIT 0) var7_) = CONS (DIGIT 0) (C var7_)",
             new_rules[1].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DECC (DIGIT 1) 6) var1_) = CONS (DECC (DIGIT 1) 6) (C var1_)",
+            "C (CONS (DECC (DIGIT 7) 7) var6_) = CONS (DECC (DIGIT 7) 7) (C var6_)",
             new_rules[2].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 9) var0_) = CONS (DIGIT 9) (C var0_)",
+            "C (CONS (DECC (DIGIT 2) 0) var4_) = CONS (DECC (DIGIT 2) 0) (C var4_)",
             new_rules[3].pretty(sig),
+        );
+        assert_eq!(
+            "C (CONS (DIGIT 9) var3_) = CONS (DIGIT 9) (C var3_)",
+            new_rules[4].pretty(sig),
+        );
+        assert_eq!(
+            "C (CONS (DECC (DIGIT 1) 0) var2_) = CONS (DECC (DIGIT 1) 0) (C var2_)",
+            new_rules[5].pretty(sig),
+        );
+        assert_eq!(
+            "C (CONS (DIGIT 3) var1_) = CONS (DIGIT 3) (C var1_)",
+            new_rules[6].pretty(sig),
+        );
+        assert_eq!(
+            "C (CONS (DIGIT 2) var0_) = CONS (DIGIT 2) (C var0_)",
+            new_rules[7].pretty(sig),
         );
     }
 }
