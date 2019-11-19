@@ -15,9 +15,9 @@ mod log_prior;
 mod move_rule;
 mod recurse;
 mod regenerate_rule;
-mod replace_term_with_var;
 mod sample_rule;
 mod swap_lhs_and_rhs;
+mod variablize;
 
 use itertools::Itertools;
 use rand::{seq::IteratorRandom, Rng};

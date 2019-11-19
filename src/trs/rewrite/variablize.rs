@@ -7,8 +7,8 @@ use super::{SampleError, TRS};
 
 impl TRS {
     /// Replace a subterm of the rule with a variable.
-    pub fn replace_term_with_var<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
         let clause = self.choose_clause(rng)?;
+    pub fn variablize<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
         let mut types = HashMap::new();
         self.lex.infer_rule(&clause, &mut types).drop()?;
         let new_trss = clause

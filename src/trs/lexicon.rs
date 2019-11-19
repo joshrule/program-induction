@@ -1650,7 +1650,7 @@ impl GP for Lexicon {
                 1 => trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng),
                 2 => trs.add_exception(obs),
                 3 => trs.local_difference(rng),
-                4 => trs.replace_term_with_var(rng),
+                4 => trs.variablize(rng),
                 5 => trs.generalize(obs),
                 6 => trs.recurse(obs),
                 _ => unreachable!(),
