@@ -1,5 +1,4 @@
 use super::{Lexicon, SampleError, TRS};
-use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term};
@@ -13,12 +12,9 @@ impl TRS {
             .lex
             .has_op(Some("."), 2)
             .map_err(|_| SampleError::OptionsExhausted)?;
-        let transforms = all_rules
+        let (trss, ns): (Vec<_>, Vec<_>) = all_rules
             .iter()
             .flat_map(|r| TRS::find_transforms(r, &self.lex))
-            .collect_vec();
-        let (trss, ns): (Vec<_>, Vec<_>) = transforms
-            .into_iter()
             .filter_map(|(f, lhs_place, rhs_place, rule)| {
                 let new_rules =
                     TRS::transform(&f, &lhs_place, &rhs_place, op, rule, &self.lex).ok()?;
@@ -29,14 +25,9 @@ impl TRS {
                 let mut trs = self.clone();
                 trs.remove_clauses(&[rule.clone()]).ok()?;
                 trs.prepend_clauses(new_rules.clone()).ok()?;
-                let trss = trs.smart_delete(0, new_rules.len()).ok()?;
-                let final_trss = trss
-                    .into_iter()
-                    .map(|t| (t, (1.5 as f64).powi(n as i32)))
-                    .collect_vec();
-                Some(final_trss)
+                let trs = trs.smart_delete(0, new_rules.len()).ok()?;
+                Some((trs, (1.5 as f64).powi(n as i32)))
             })
-            .flatten()
             .unzip();
         self.lex.rollback(snapshot);
         // HACK: 20 is a constant but not a magic number.
@@ -82,7 +73,7 @@ impl TRS {
     /// - rule: a rule containing all these elements
     fn find_transforms<'a>(rule: &'a Rule, lex: &Lexicon) -> Vec<(Term, Place, Place, &'a Rule)> {
         let mut map = HashMap::new();
-        if let Err(_) = lex.infer_rule(rule, &mut map).keep() {
+        if lex.infer_rule(rule, &mut map).keep().is_err() {
             return vec![];
         }
         let fs = TRS::collect_recursive_fns(&map, lex, rule);
@@ -91,7 +82,11 @@ impl TRS {
         for (f, place, tp) in fs {
             for lhs_place in &lhss {
                 let outer_snapshot = lex.snapshot();
-                if place != *lhs_place && lex.unify(&tp, &map[lhs_place]).is_ok() {
+                let diff_place = place != *lhs_place;
+                let trivial = lhs_place.starts_with(&place[0..place.len() - 1])
+                    && lhs_place.ends_with(&[1])
+                    && lhs_place.len() == place.len();
+                if diff_place && !trivial && lex.unify(&tp, &map[lhs_place]).is_ok() {
                     for rhs_place in &rhss {
                         let inner_snapshot = lex.snapshot();
                         if lex.unify(&tp, &map[rhs_place]).is_ok() {
@@ -235,7 +230,7 @@ mod tests {
             println!("{} {:?} {:?}", t.pretty(&lex.signature()), p1, p2);
         }
 
-        assert_eq!(20, transforms.len());
+        assert_eq!(16, transforms.len());
     }
 
     #[test]

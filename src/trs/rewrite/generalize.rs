@@ -16,7 +16,7 @@ impl TRS {
         let start = trs.num_learned_rules();
         trs.append_clauses(new_rules.clone())?;
         let stop = trs.num_learned_rules();
-        trs.smart_delete(start, stop)
+        Ok(vec![trs.smart_delete(start, stop)?])
     }
     fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {
         TRS::find_shared_context(clauses, |c| c.lhs.clone(), 1)
@@ -63,10 +63,8 @@ impl TRS {
                 if c_size > lsc_size {
                     lscs = vec![c];
                     lsc_size = lscs[0].size();
-                } else if c_size == lsc_size {
-                    if !lscs.contains(&c) {
-                        lscs.push(c);
-                    }
+                } else if c_size == lsc_size && !lscs.contains(&c) {
+                    lscs.push(c);
                 }
             }
         }
@@ -189,6 +187,7 @@ impl TRS {
         }
         rhs.replace(place, subctx).ok_or(SampleError::Subterm)
     }
+    #[allow(clippy::type_complexity)]
     fn collect_information<'a>(
         lex: &Lexicon,
         lhs: &Term,

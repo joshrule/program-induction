@@ -157,18 +157,19 @@ impl TRS {
         Ok(self)
     }
 
-    /// pick a single clause
-    fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<(usize, Rule), SampleError> {
-        let rules = {
-            let num_rules = self.len();
-            let num_background = self.num_background_rules();
-            &self.utrs.rules[0..(num_rules - num_background)]
-        };
-        let mut clauses = rules
+    fn clauses(&self) -> Vec<(usize, Rule)> {
+        self.utrs
+            .rules
             .iter()
+            .take(self.num_learned_rules())
             .enumerate()
             .flat_map(|(i, rule)| rule.clauses().into_iter().map(move |r| (i, r)))
-            .collect_vec();
+            .collect_vec()
+    }
+
+    /// pick a single clause
+    fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<(usize, Rule), SampleError> {
+        let mut clauses = self.clauses();
         let idx = (0..clauses.len())
             .choose(rng)
             .ok_or(SampleError::OptionsExhausted)?;
@@ -190,7 +191,7 @@ impl TRS {
             .flat_map(Rule::clauses)
             .collect_vec();
         all_rules.extend_from_slice(&self.novel_rules(data));
-        if all_rules.len() == 0 {
+        if all_rules.is_empty() {
             Err(SampleError::OptionsExhausted)
         } else {
             Ok(all_rules)
