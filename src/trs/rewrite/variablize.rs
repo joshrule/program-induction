@@ -1,5 +1,4 @@
 use itertools::Itertools;
-use rand::Rng;
 use std::collections::HashMap;
 use term_rewriting::{Rule, Term, TRS as UntypedTRS};
 
@@ -7,11 +6,24 @@ use super::{SampleError, TRS};
 
 impl TRS {
     /// Replace a subterm of the rule with a variable.
-    pub fn variablize<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
-        let (n, clause) = self.choose_clause(rng)?;
+    pub fn variablize(&self) -> Result<Vec<TRS>, SampleError> {
+        let new_trss = self
+            .clauses()
+            .into_iter()
+            .flat_map(|(n, clause)| self.variablize_once(n, clause))
+            .collect_vec();
+        if new_trss.is_empty() {
+            Err(SampleError::OptionsExhausted)
+        } else {
+            Ok(new_trss)
+        }
+    }
+    pub fn variablize_once(&self, n: usize, clause: Rule) -> Vec<TRS> {
         let mut types = HashMap::new();
-        self.lex.infer_rule(&clause, &mut types).drop()?;
-        let new_trss = clause
+        if self.lex.infer_rule(&clause, &mut types).drop().is_err() {
+            return vec![];
+        }
+        clause
             .lhs
             .subterms()
             .iter()
@@ -33,20 +45,13 @@ impl TRS {
                     None
                 }
             })
-            .flatten()
-            .collect_vec();
-        if new_trss.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(new_trss)
-        }
+            .collect_vec()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use polytype::Context as TypeContext;
-    use rand::thread_rng;
     use trs::parser::{parse_lexicon, parse_trs};
 
     #[test]
@@ -72,8 +77,7 @@ mod tests {
             &lex,
         )
             .expect("parsed trs");
-        let mut rng = thread_rng();
-        let trss = trs.variablize(&mut rng).unwrap();
+        let trss = trs.variablize().unwrap();
 
         for trs in &trss {
             println!("{}\n", trs);
