@@ -398,17 +398,18 @@ pub trait GP: Send + Sync + Sized {
         population: &mut Vec<(Self::Expression, f64)>,
     ) {
         let dist = WeightedIndex::new(&[1, 0, 0]).unwrap();
-        let mut children = vec![];
         let n_gens = 3; // HACK: 3 is a constant but not a magic number
+        let mut species = Vec::with_capacity(population.len() * gpparams.species_size);
+        let mut seen = 0;
 
         // For each member, P, of the population
         while let Some(p) = population.pop() {
+            seen += 1;
             println!("###### pop_len: {}", population.len());
             // Create a species and a stack.
-            let mut species = Vec::with_capacity(gpparams.species_size);
             let mut stack: Vec<((Self::Expression, f64), usize)> = vec![];
             // Until we have S members of our species
-            while species.len() < gpparams.species_size {
+            while species.len() < seen * gpparams.species_size {
                 print!("{} ", species.len());
                 // Pop a parent off the stack (assume the initial stack contains infinitely many copies of P)
                 let (parent, gen) = stack.pop().unwrap_or((p.clone(), 0));
@@ -417,40 +418,29 @@ pub trait GP: Send + Sync + Sized {
                 let offspring =
                     self.generate_offspring(&dist, rng, params, gpparams, task, &parents);
                 // Add the parent to the species.
-                let mut parents = parents.into_iter().map(|(x, y)| (x, Some(y))).collect_vec();
-                self.validate_offspring(params, &children, &species, &mut parents, 1);
+                let mut parents = parents.into_iter().map(|(x, _)| (x, None)).collect_vec();
+                self.validate_offspring(params, &[], &species, &mut parents, task, 1);
                 species.append(&mut parents);
                 if gen + 1 == n_gens {
                     // After N generations, select the best and add it to the species. Forget the rest.
-                    let best = offspring
-                        .into_iter()
-                        .map(|o| {
-                            let score = (task.oracle)(self, &o);
-                            (o, score)
-                        })
-                        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
-                    if let Some((best, score)) = best {
-                        let mut best_vec = vec![(best, Some(score))];
-                        self.validate_offspring(params, &children, &species, &mut best_vec, 1);
-                        species.append(&mut best_vec);
+                    if let Some(chosen) = offspring.into_iter().choose(rng) {
+                        let mut chosen_vec = vec![(chosen, None)];
+                        self.validate_offspring(params, &[], &species, &mut chosen_vec, task, 1);
+                        species.append(&mut chosen_vec);
                     }
                 } else {
                     // After M < N generations, score each and add them to the stack.
                     for o in offspring {
-                        let score = (task.oracle)(self, &o);
-                        stack.push(((o, score), gen + 1));
+                        stack.push(((o, 0.0), gen + 1));
                     }
                 }
             }
-            // Given an entire validated species, add it to the children.
-            children.extend(species.into_iter().map(|(x, y)| (x, y.unwrap())));
         }
         // Given all children from all species, select the new population.
-        population.append(&mut children);
-        population.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        let species = species.into_iter().map(|x| x.0).collect_vec();
         gpparams.selection.select(
             population,
-            vec![],
+            species,
             |child| (task.oracle)(self, child),
             rng,
             gpparams.population_size,
