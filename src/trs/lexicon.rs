@@ -1721,33 +1721,46 @@ impl GP for Lexicon {
         _params: &Self::Params,
         population: &[(Self::Expression, f64)],
         children: &[(Self::Expression, Option<f64>)],
+        seen: &mut Vec<Self::Expression>,
         offspring: &mut Vec<(Self::Expression, Option<f64>)>,
         task: &Task<Self, Self::Expression, Self::Observation>,
         max_validated: usize,
     ) {
-        // TODO: novelty search?
-        // select alpha-unique individuals that are not yet in the population
         let mut valids = Vec::with_capacity(max_validated);
         'outer: while let Some((trs, _)) = offspring.pop() {
-            let mut xs = trs.minimize(|child| (task.oracle)(self, child));
-            while let Some(x) = xs.pop() {
+            let mut candidates = vec![];
+            let mut stack = vec![trs];
+            let mut best_score = std::f64::INFINITY;
+            while let Some(x) = stack.pop() {
                 let pop_unique = !population
                     .iter()
                     .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs));
-                let chi_unique = !children
+                let see_unique = !children
                     .iter()
                     .any(|c| UntypedTRS::alphas(&c.0.utrs, &x.utrs));
-                let val_unique = valids
-                    .iter()
-                    .all(|(o, _): &(TRS, Option<f64>)| !UntypedTRS::alphas(&o.utrs, &x.utrs));
-                if pop_unique && chi_unique && val_unique {
-                    valids.push((x, None));
+                if pop_unique && see_unique {
+                    let score = (task.oracle)(self, &x);
+                    if score < best_score {
+                        best_score = score;
+                        candidates.push((x.clone(), score));
+                    }
+                    stack.append(&mut x.delete_rule().unwrap_or_else(|_| vec![]));
+                    seen.push(x);
+                }
+            }
+            let mut best = candidates.clone();
+            if !best.is_empty() {
+                best.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                let best_score = best[0].1;
+                best.retain(|o| o.1 <= best_score);
+                while let Some(item) = best.pop() {
+                    valids.push(item);
                     if valids.len() >= max_validated {
                         break 'outer;
                     }
                 }
             }
         }
-        *offspring = valids;
+        *offspring = valids.into_iter().map(|(x, y)| (x, Some(y))).collect_vec();
     }
 }

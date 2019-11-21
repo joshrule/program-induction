@@ -356,6 +356,7 @@ pub trait GP: Send + Sync + Sized {
         _params: &Self::Params,
         _population: &[(Self::Expression, f64)],
         _children: &[(Self::Expression, Option<f64>)],
+        _seen: &mut Vec<Self::Expression>,
         _offspring: &mut Vec<(Self::Expression, Option<f64>)>,
         _task: &Task<Self, Self::Expression, Self::Observation>,
         _max_validated: usize,
@@ -396,21 +397,22 @@ pub trait GP: Send + Sync + Sized {
         rng: &mut R,
         gpparams: &GPParams,
         task: &Task<Self, Self::Expression, Self::Observation>,
+        seen: &mut Vec<Self::Expression>,
         population: &mut Vec<(Self::Expression, f64)>,
     ) {
         let dist = WeightedIndex::new(&[1, 0, 0]).unwrap();
         let n_gens = 3; // HACK: 3 is a constant but not a magic number
         let mut species = Vec::with_capacity(population.len() * gpparams.species_size);
-        let mut seen = 0;
+        let mut n_seen = 0;
 
         // For each member, P, of the population
         while let Some(p) = population.pop() {
-            seen += 1;
+            n_seen += 1;
             println!("###### pop_len: {}", population.len());
             // Create a species and a stack.
             let mut stack: Vec<((Self::Expression, f64), usize)> = vec![];
             // Until we have S members of our species
-            while species.len() < seen * gpparams.species_size {
+            while species.len() < n_seen * gpparams.species_size {
                 print!("{} ", species.len());
                 // Pop a parent off the stack (assume the initial stack contains infinitely many copies of P)
                 let (parent, gen) = stack.pop().unwrap_or((p.clone(), 0));
@@ -420,13 +422,21 @@ pub trait GP: Send + Sync + Sized {
                     self.generate_offspring(&dist, rng, params, gpparams, task, &parents);
                 // Add the parent to the species.
                 let mut parents = parents.into_iter().map(|(x, _)| (x, None)).collect_vec();
-                self.validate_offspring(params, &[], &species, &mut parents, task, 1);
+                self.validate_offspring(params, &[], &species, seen, &mut parents, task, 1);
                 species.append(&mut parents);
                 if gen + 1 == n_gens {
                     // After N generations, select the best and add it to the species. Forget the rest.
                     if let Some(chosen) = offspring.into_iter().choose(rng) {
                         let mut chosen_vec = vec![(chosen, None)];
-                        self.validate_offspring(params, &[], &species, &mut chosen_vec, task, 1);
+                        self.validate_offspring(
+                            params,
+                            &[],
+                            &species,
+                            seen,
+                            &mut chosen_vec,
+                            task,
+                            1,
+                        );
                         species.append(&mut chosen_vec);
                     }
                 } else {
@@ -460,6 +470,7 @@ pub trait GP: Send + Sync + Sized {
         rng: &mut R,
         gpparams: &GPParams,
         task: &Task<Self, Self::Expression, Self::Observation>,
+        seen: &mut Vec<Self::Expression>,
         population: &mut Vec<(Self::Expression, f64)>,
     ) {
         let mut children = Vec::with_capacity(gpparams.n_delta);
@@ -479,6 +490,7 @@ pub trait GP: Send + Sync + Sized {
                 params,
                 population,
                 &children,
+                seen,
                 &mut offspring,
                 task,
                 gpparams.n_delta - children.len(),
