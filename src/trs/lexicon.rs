@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type, TypeSchema, Variable as TypeVar};
-use rand::{distributions::Distribution, distributions::WeightedIndex, Rng};
+use rand::{distributions::Distribution, distributions::WeightedIndex, seq::SliceRandom, Rng};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::f64::NEG_INFINITY;
@@ -1634,23 +1634,46 @@ impl GP for Lexicon {
         obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // add, replace, delete, regenerate, exception, local difference, variablization, generalization
-        let weights = vec![1, 1, 1, 0, 1, 1, 1];
+        let weights = vec![2, 2, 0, 4, 4, 4, 4, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             let choice = dist.sample(rng);
-            let mut new_trss = match choice {
+            let new_trss = match choice {
                 0 => trs.sample_rule(params.atom_weights, params.max_sample_size, rng),
                 1 => trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng),
-                2 => trs.add_exception(obs),
-                3 => trs.local_difference(rng),
-                4 => trs.variablize(rng),
+                2 => trs.local_difference(rng),
+                3 => trs.add_exception(obs),
+                4 => trs.variablize(),
                 5 => trs.generalize(obs),
                 6 => trs.recurse(obs),
+                7 => trs.recurse(obs).and_then(|new_trss| {
+                    let mut trss = new_trss
+                        .into_iter()
+                        .filter_map(|trs| trs.variablize().ok())
+                        .flatten()
+                        .collect_vec();
+                    trss.shuffle(rng);
+                    if trss.is_empty() {
+                        Err(SampleError::OptionsExhausted)
+                    } else {
+                        Ok(trss)
+                    }
+                }),
+                8 => trs.recurse(obs).and_then(|new_trss| {
+                    let mut trss = new_trss
+                        .into_iter()
+                        .filter_map(|trs| trs.generalize(obs).ok())
+                        .flatten()
+                        .collect_vec();
+                    trss.shuffle(rng);
+                    if trss.is_empty() {
+                        Err(SampleError::OptionsExhausted)
+                    } else {
+                        Ok(trss)
+                    }
+                }),
                 _ => unreachable!(),
             };
-            if choice < 4 {
-                new_trss = new_trss.and_then(TRS::delete_ruless);
-            }
             if let Ok(trss) = new_trss {
                 return trss;
             }
