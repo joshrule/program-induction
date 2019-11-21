@@ -357,6 +357,7 @@ pub trait GP: Send + Sync + Sized {
         _population: &[(Self::Expression, f64)],
         _children: &[(Self::Expression, Option<f64>)],
         _offspring: &mut Vec<(Self::Expression, Option<f64>)>,
+        _task: &Task<Self, Self::Expression, Self::Observation>,
         _max_validated: usize,
     ) {
     }
@@ -479,7 +480,8 @@ pub trait GP: Send + Sync + Sized {
                 population,
                 &children,
                 &mut offspring,
-                gpparams.n_delta,
+                task,
+                gpparams.n_delta - children.len(),
             );
             children.append(&mut offspring);
         }

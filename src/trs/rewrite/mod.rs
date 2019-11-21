@@ -224,6 +224,32 @@ impl TRS {
             .map(|_| ())
             .map_err(SampleError::from)
     }
+
+    pub(crate) fn minimize<F>(&self, f: F) -> Vec<TRS>
+    where
+        F: Fn(&Self) -> f64,
+    {
+        let mut options = vec![(self.clone(), f(self))];
+        for rules in self.utrs.rules[..self.num_learned_rules()].windows(1) {
+            let mut new_options = Vec::with_capacity(options.len());
+            for (option, score) in &options {
+                let mut candidate = option.clone();
+                if candidate.remove_clauses(rules).is_ok() {
+                    let candidate_score = f(&candidate);
+                    if candidate_score <= *score {
+                        new_options.push((candidate, candidate_score));
+                    }
+                }
+            }
+            options.append(&mut new_options);
+        }
+        options.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        if !options.is_empty() {
+            let best = options[0].1;
+            options.retain(|o| o.1 <= best);
+        }
+        options.into_iter().map(|o| o.0).collect_vec()
+    }
 }
 impl fmt::Display for TRS {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

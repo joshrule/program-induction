@@ -14,7 +14,7 @@ use term_rewriting::{
 
 use super::{SampleError, TypeError, TRS};
 use utils::{logsumexp, weighted_sample};
-use GP;
+use {Task, GP};
 
 type LOpt = (Option<Atom>, Vec<Type>);
 
@@ -1722,29 +1722,32 @@ impl GP for Lexicon {
         population: &[(Self::Expression, f64)],
         children: &[(Self::Expression, Option<f64>)],
         offspring: &mut Vec<(Self::Expression, Option<f64>)>,
+        task: &Task<Self, Self::Expression, Self::Observation>,
         max_validated: usize,
     ) {
+        // TODO: novelty search?
         // select alpha-unique individuals that are not yet in the population
-        let mut validated = 0;
-        while validated < max_validated && validated < offspring.len() {
-            // TODO: novelty search?
-            let (x, _) = &offspring[validated];
-            let pop_unique = !population
-                .iter()
-                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs));
-            let chi_unique = !children
-                .iter()
-                .any(|c| UntypedTRS::alphas(&c.0.utrs, &x.utrs));
-            let off_unique = offspring
-                .iter()
-                .take(validated)
-                .all(|o| !UntypedTRS::alphas(&o.0.utrs, &x.utrs));
-            if pop_unique && chi_unique && off_unique {
-                validated += 1;
-            } else {
-                offspring.swap_remove(validated);
+        let mut valids = Vec::with_capacity(max_validated);
+        'outer: while let Some((trs, _)) = offspring.pop() {
+            let mut xs = trs.minimize(|child| (task.oracle)(self, child));
+            while let Some(x) = xs.pop() {
+                let pop_unique = !population
+                    .iter()
+                    .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs));
+                let chi_unique = !children
+                    .iter()
+                    .any(|c| UntypedTRS::alphas(&c.0.utrs, &x.utrs));
+                let val_unique = valids
+                    .iter()
+                    .all(|(o, _): &(TRS, Option<f64>)| !UntypedTRS::alphas(&o.utrs, &x.utrs));
+                if pop_unique && chi_unique && val_unique {
+                    valids.push((x, None));
+                    if valids.len() >= max_validated {
+                        break 'outer;
+                    }
+                }
             }
         }
-        offspring.truncate(validated);
+        *offspring = valids;
     }
 }
