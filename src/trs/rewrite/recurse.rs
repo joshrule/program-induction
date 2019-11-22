@@ -237,7 +237,7 @@ mod tests {
     use super::TRS;
     use polytype::Context as TypeContext;
     use std::collections::HashMap;
-    use trs::parser::{parse_lexicon, parse_rule, parse_term};
+    use trs::parser::{parse_lexicon, parse_rule, parse_term, parse_trs};
 
     #[test]
     fn find_transforms_test() {
@@ -267,7 +267,7 @@ mod tests {
         )
             .expect("parsed rule");
         let transforms = TRS::find_transforms(&rule, &lex);
-        for (t, p1, p2, _) in &transforms {
+        for (t, p1, p2) in &transforms {
             println!("{} {:?} {:?}", t.pretty(&lex.signature()), p1, p2);
         }
 
@@ -393,5 +393,80 @@ mod tests {
             "C (CONS (DIGIT 2) var0_) = CONS (DIGIT 2) (C var0_)",
             new_rules[7].pretty(sig),
         );
+    }
+    #[test]
+    fn recurse_1_test() {
+        let lex = parse_lexicon(
+            &[
+                "C/0: list -> list;",
+                "CONS/0: nat -> list -> list;",
+                "NIL/0: list;",
+                "DECC/0: nat -> int -> nat;",
+                "DIGIT/0: int -> nat;",
+                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+                "0/0: int; 1/0: int; 2/0: int;",
+                "3/0: int; 4/0: int; 5/0: int;",
+                "6/0: int; 7/0: int; 8/0: int;",
+                "9/0: int;",
+            ]
+            .join(" "),
+            "",
+            "",
+            true,
+            TypeContext::default(),
+        )
+        .unwrap();
+        let trs = parse_trs(
+            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))));",
+            &lex,
+        )
+            .expect("parsed TRS");
+        let result = trs.recurse(&[]);
+        assert!(result.is_ok());
+        let trss = result.unwrap();
+
+        for trs in &trss {
+            println!("##\n{}\n##", trs);
+        }
+
+        assert_eq!(19, trss.len());
+    }
+    #[test]
+    fn recurse_2_test() {
+        let lex = parse_lexicon(
+            &[
+                "C/0: list -> list;",
+                "CONS/0: nat -> list -> list;",
+                "NIL/0: list;",
+                "DECC/0: nat -> int -> nat;",
+                "DIGIT/0: int -> nat;",
+                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+                "0/0: int; 1/0: int; 2/0: int;",
+                "3/0: int; 4/0: int; 5/0: int;",
+                "6/0: int; 7/0: int; 8/0: int;",
+                "9/0: int;",
+            ]
+            .join(" "),
+            "",
+            "",
+            true,
+            TypeContext::default(),
+        )
+        .unwrap();
+        let trs = parse_trs(
+            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))));C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)));",
+            &lex,
+        )
+            .expect("parsed TRS");
+        let result = trs.recurse(&[]);
+        assert!(result.is_ok());
+        let trss = result.unwrap();
+
+        for trs in &trss {
+            println!("##\n{}\n##", trs);
+        }
+
+        assert_eq!(8, trss.len());
+        assert_eq!(8, 7);
     }
 }
