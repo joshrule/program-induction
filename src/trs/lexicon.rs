@@ -210,6 +210,10 @@ impl Lexicon {
             .expect("poisoned lexicon")
             .invent_operator(name, arity, tp)
     }
+    /// Shrink the universe of symbols.
+    pub fn contract(&self, ids: &[usize]) -> usize {
+        self.0.write().expect("poisoned lexicon").contract(ids)
+    }
     /// Return the `Lexicon`'s [`TypeContext`].
     ///
     /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
@@ -723,6 +727,11 @@ impl Lex {
         self.ops.push(TypeSchema::Monotype(tp.clone()));
         op
     }
+    fn contract(&mut self, ids: &[usize]) -> usize {
+        let n = self.signature.contract(ids);
+        self.ops.truncate(n + 1);
+        n
+    }
     fn fit_atom(
         &mut self,
         atom: &Atom,
@@ -732,23 +741,18 @@ impl Lex {
         let atom_tp = self.instantiate_atom(atom)?;
         let rollback_n = self.ctx.len();
         let unify_tp = match atom {
-            Atom::Operator(o) if o.arity() == 0 => atom_tp.clone(),
-            _ => atom_tp
-                .returns()
-                .map(Type::clone)
-                .or_else(|| Some(atom_tp.clone()))
-                .unwrap(),
+            Atom::Operator(o) if o.arity() == 0 => &atom_tp,
+            _ => atom_tp.returns().unwrap_or(&atom_tp),
         };
-        let result = self.ctx.unify_fast(unify_tp, tp.clone());
-        if rollback || result.is_err() {
+        let result = self.ctx.unify(unify_tp, tp);
+        if rollback {
             self.ctx.rollback(rollback_n);
         }
         result
             .map(|_| match atom {
-                Atom::Operator(o) if o.arity() > 0 => atom_tp
-                    .args()
-                    .map(|o| o.into_iter().cloned().collect())
-                    .unwrap_or_else(Vec::new),
+                Atom::Operator(o) if o.arity() > 0 => {
+                    atom_tp.args_destruct().unwrap_or_else(Vec::new)
+                }
                 _ => Vec::with_capacity(0),
             })
             .map_err(|e| SampleError::TypeError(TypeError::Unification(e)))
