@@ -54,8 +54,9 @@ fn gp_sum_arith() {
     let rng = &mut SmallRng::from_seed([1u8; 16]);
 
     let mut pop = g.init(&params, rng, &gpparams, &task);
+    let mut seen = vec![];
     for _ in 0..generations {
-        g.evolve(&params, rng, &gpparams, &task, &mut pop)
+        g.evolve(&params, rng, &gpparams, &task, &mut seen, &mut pop)
     }
 
     // perfect winner is found!
