@@ -1,4 +1,5 @@
 use super::{Lexicon, SampleError, TRS};
+use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term};
@@ -15,23 +16,68 @@ impl TRS {
         let (trss, ns): (Vec<_>, Vec<_>) = all_rules
             .iter()
             .flat_map(|r| TRS::find_transforms(r, &self.lex))
-            .filter_map(|(f, lhs_place, rhs_place, rule)| {
-                let new_rules =
-                    TRS::transform(&f, &lhs_place, &rhs_place, op, rule, &self.lex).ok()?;
+            .unique()
+            .filter_map(|(f, lhs_place, rhs_place)| {
+                let mut trs = self.clone();
+                let new_ruless: Vec<_> = all_rules
+                    .windows(1)
+                    .filter_map(|rules| {
+                        let sub_new_rules =
+                            TRS::transform(&f, &lhs_place, &rhs_place, op, &rules[0], &self.lex)
+                                .unwrap_or_else(|_| vec![]);
+                        if sub_new_rules.len() == 1 {
+                            None
+                        } else {
+                            trs.remove_clauses(rules).unwrap();
+                            Some(sub_new_rules)
+                        }
+                    })
+                    .collect();
+                let mut new_bases = vec![];
+                let mut new_recursives = vec![];
+                for mut new_rules in new_ruless {
+                    // put base case in  new bases
+                    let new_base = new_rules.swap_remove(0);
+                    if new_bases
+                        .iter()
+                        .all(|c| Rule::alpha(&c, &new_base).is_none())
+                    {
+                        new_bases.push(new_base);
+                    }
+                    // put each recursive in new recursive
+                    for new_recursive in new_rules {
+                        if new_recursives
+                            .iter()
+                            .all(|c| Rule::alpha(&c, &new_recursive).is_none())
+                        {
+                            new_recursives.push(new_recursive);
+                        }
+                    }
+                }
+                let mut new_rules = vec![];
+                new_rules.append(&mut new_bases);
+                new_rules.append(&mut new_recursives);
                 let n = new_rules.len();
                 if n == 1 {
                     return None;
                 }
-                let mut trs = self.clone();
-                trs.remove_clauses(&[rule.clone()]).ok()?;
                 trs.prepend_clauses(new_rules.clone()).ok()?;
-                let trs = trs.smart_delete(0, new_rules.len()).ok()?;
-                Some((trs, (1.5 as f64).powi(n as i32)))
+                let trs = trs.smart_delete(0, n).ok()?;
+                let trs2 = TRS::new(&self.lex, new_rules).unwrap();
+                Some(vec![
+                    (trs, (1.5 as f64).powi(n as i32)),
+                    (trs2, (1.5 as f64).powi(n as i32)),
+                ])
             })
+            .flatten()
             .unzip();
         self.lex.rollback(snapshot);
         // HACK: 20 is a constant but not a magic number.
-        Ok(weighted_permutation(&trss, &ns, Some(20)))
+        let new_trss = weighted_permutation(&trss, &ns, Some(20));
+        // for trs in &trss {
+        //     println!("##\n{}\n##", trs);
+        // }
+        Ok(new_trss)
     }
     fn collect_recursive_fns<'a>(
         map: &HashMap<Place, Type>,
@@ -71,7 +117,7 @@ impl TRS {
     /// - lhs_place: some LHS subterm which could be f's input (lhs_place: a)
     /// - rhs_place: some RHS subterm which could be f's output (rhs_place: a)
     /// - rule: a rule containing all these elements
-    fn find_transforms<'a>(rule: &'a Rule, lex: &Lexicon) -> Vec<(Term, Place, Place, &'a Rule)> {
+    fn find_transforms(rule: &Rule, lex: &Lexicon) -> Vec<(Term, Place, Place)> {
         let mut map = HashMap::new();
         if lex.infer_rule(rule, &mut map).keep().is_err() {
             return vec![];
@@ -90,12 +136,7 @@ impl TRS {
                     for rhs_place in &rhss {
                         let inner_snapshot = lex.snapshot();
                         if lex.unify(&tp, &map[rhs_place]).is_ok() {
-                            transforms.push((
-                                f.clone(),
-                                lhs_place.clone(),
-                                rhs_place.clone(),
-                                rule,
-                            ));
+                            transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone()));
                         }
                         lex.rollback(inner_snapshot);
                     }
