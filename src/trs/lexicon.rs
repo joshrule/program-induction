@@ -1634,7 +1634,7 @@ impl GP for Lexicon {
         obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // add, replace, delete, regenerate, exception, local difference, variablization, generalization
-        let weights = vec![2, 2, 0, 4, 4, 4, 4, 1, 1];
+        let weights = vec![2, 2, 0, 4, 4, 4, 4, 4, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             let choice = dist.sample(rng);
@@ -1643,10 +1643,11 @@ impl GP for Lexicon {
                 1 => trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng),
                 2 => trs.local_difference(rng),
                 3 => trs.add_exception(obs),
-                4 => trs.variablize(),
-                5 => trs.generalize(obs),
-                6 => trs.recurse(obs),
-                7 => trs.recurse(obs).and_then(|new_trss| {
+                4 => trs.delete_rule(),
+                5 => trs.variablize(),
+                6 => trs.generalize(obs),
+                7 => trs.recurse(obs),
+                8 => trs.recurse(obs).and_then(|new_trss| {
                     let mut trss = new_trss
                         .into_iter()
                         .filter_map(|trs| trs.variablize().ok())
@@ -1659,7 +1660,7 @@ impl GP for Lexicon {
                         Ok(trss)
                     }
                 }),
-                8 => trs.recurse(obs).and_then(|new_trss| {
+                9 => trs.recurse(obs).and_then(|new_trss| {
                     let mut trss = new_trss
                         .into_iter()
                         .filter_map(|trs| trs.generalize(obs).ok())
@@ -1720,47 +1721,26 @@ impl GP for Lexicon {
         &self,
         _params: &Self::Params,
         population: &[(Self::Expression, f64)],
-        children: &[(Self::Expression, Option<f64>)],
+        _children: &[(Self::Expression, Option<f64>)],
         seen: &mut Vec<Self::Expression>,
         offspring: &mut Vec<(Self::Expression, Option<f64>)>,
-        task: &Task<Self, Self::Expression, Self::Observation>,
+        _task: &Task<Self, Self::Expression, Self::Observation>,
         max_validated: usize,
     ) {
-        let mut valids = Vec::with_capacity(max_validated);
-        'outer: while let Some((trs, _)) = offspring.pop() {
-            let mut candidates = vec![];
-            let mut stack = vec![trs];
-            let mut best_score = std::f64::INFINITY;
-            while let Some(x) = stack.pop() {
-                let pop_unique = !population
-                    .iter()
-                    .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs));
-                let see_unique = !children
-                    .iter()
-                    .any(|c| UntypedTRS::alphas(&c.0.utrs, &x.utrs));
-                if pop_unique && see_unique {
-                    let score = (task.oracle)(self, &x);
-                    if score < best_score {
-                        best_score = score;
-                        candidates.push((x.clone(), score));
-                    }
-                    stack.append(&mut x.delete_rule().unwrap_or_else(|_| vec![]));
-                    seen.push(x);
-                }
-            }
-            let mut best = candidates.clone();
-            if !best.is_empty() {
-                best.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                let best_score = best[0].1;
-                best.retain(|o| o.1 <= best_score);
-                while let Some(item) = best.pop() {
-                    valids.push(item);
-                    if valids.len() >= max_validated {
-                        break 'outer;
-                    }
-                }
+        let mut validated = 0;
+        while validated < max_validated && validated < offspring.len() {
+            let (x, _) = &offspring[validated];
+            let pop_unique = !population
+                .iter()
+                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs));
+            let see_unique = !seen.iter().any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs));
+            if pop_unique && see_unique {
+                validated += 1;
+                seen.push(x.clone());
+            } else {
+                offspring.swap_remove(validated);
             }
         }
-        *offspring = valids.into_iter().map(|(x, y)| (x, Some(y))).collect_vec();
+        offspring.truncate(validated);
     }
 }
