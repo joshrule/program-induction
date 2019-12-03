@@ -56,10 +56,8 @@ impl TRS {
     /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
     /// let max_size = 50;
     ///
-    /// if let Ok(new_trs) = trs.sample_rule(atom_weights, max_size, &mut rng) {
-    ///     assert_eq!(new_trs.len(), 3);
-    /// } else {
-    ///     assert_eq!(trs.len(), 2);
+    /// if let Ok(new_trss) = trs.sample_rule(atom_weights, max_size, &mut rng) {
+    ///     assert_eq!(new_trss[0].len(), 3);
     /// }
     /// # }
     /// ```
@@ -69,6 +67,7 @@ impl TRS {
         max_size: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
+        // TODO: fail if you sample an existing rule?
         let mut trs = self.clone();
         let context = {
             let contexts = &self.lex.0.read().expect("poisoned lexicon").templates;

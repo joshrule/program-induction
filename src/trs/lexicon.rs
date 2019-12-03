@@ -94,15 +94,21 @@ impl Lexicon {
             signature.new_op(id, name);
             ops.push(tp);
         }
-        Lexicon(Arc::new(RwLock::new(Lex {
+        let lex = Lexicon(Arc::new(RwLock::new(Lex {
             ops,
             vars: vec![],
+            free_vars: vec![],
             signature,
             background: vec![],
             templates: vec![],
             deterministic,
             ctx,
-        })))
+        })));
+        lex.0
+            .write()
+            .expect("poisoned lexicon")
+            .recompute_free_vars();
+        lex
     }
     /// Convert a [`term_rewriting::Signature`] into a `Lexicon`:
     /// - `ops` are types for the [`term_rewriting::Operator`]s
@@ -165,15 +171,21 @@ impl Lexicon {
         deterministic: bool,
         ctx: TypeContext,
     ) -> Lexicon {
-        Lexicon(Arc::new(RwLock::new(Lex {
+        let lex = Lexicon(Arc::new(RwLock::new(Lex {
             ops,
             vars,
+            free_vars: vec![],
             signature,
             background,
             templates,
             deterministic,
             ctx,
-        })))
+        })));
+        lex.0
+            .write()
+            .expect("poisoned lexicon")
+            .recompute_free_vars();
+        lex
     }
     /// Return the specified operator if possible.
     pub fn has_op(&self, name: Option<&str>, arity: u32) -> Result<Operator, ()> {
@@ -194,7 +206,11 @@ impl Lexicon {
     }
     /// All the free type variables in the `Lexicon`.
     pub fn free_vars(&self) -> Vec<TypeVar> {
-        self.0.read().expect("poisoned lexicon").free_vars()
+        self.0
+            .read()
+            .expect("poisoned lexicon")
+            .free_vars()
+            .to_vec()
     }
     /// Add a new variable to the `Lexicon`.
     pub fn invent_variable(&self, tp: &Type) -> Variable {
@@ -307,8 +323,8 @@ impl Lexicon {
         let snapshot = lex.ctx.len();
         let result = lex.infer_context(context, types);
         for (_, v) in types.iter_mut() {
-            v.apply_mut(&lex.ctx);
-            v.apply_mut(&lex.ctx);
+            v.apply_mut_compress(&mut lex.ctx);
+            v.apply_mut_compress(&mut lex.ctx);
         }
         ContextPoint {
             snapshot,
@@ -334,8 +350,8 @@ impl Lexicon {
         let snapshot = lex.ctx.len();
         let result = lex.infer_rule(rule, types);
         for (_, v) in types.iter_mut() {
-            v.apply_mut(&lex.ctx);
-            v.apply_mut(&lex.ctx);
+            v.apply_mut_compress(&mut lex.ctx);
+            v.apply_mut_compress(&mut lex.ctx);
         }
         ContextPoint {
             snapshot,
@@ -377,8 +393,8 @@ impl Lexicon {
         let snapshot = lex.ctx.len();
         let result = lex.infer_term(term, types);
         for (_, v) in types.iter_mut() {
-            v.apply_mut(&lex.ctx);
-            v.apply_mut(&lex.ctx);
+            v.apply_mut_compress(&mut lex.ctx);
+            v.apply_mut_compress(&mut lex.ctx);
         }
         ContextPoint {
             snapshot,
@@ -656,6 +672,7 @@ impl fmt::Display for Lexicon {
 pub(crate) struct Lex {
     pub(crate) ops: Vec<TypeSchema>,
     pub(crate) vars: Vec<TypeSchema>,
+    free_vars: Vec<TypeVar>,
     pub(crate) signature: Signature,
     pub(crate) background: Vec<Rule>,
     /// Rule templates to use when sampling rules.
@@ -694,25 +711,16 @@ impl Lex {
     fn variables(&self) -> Vec<Variable> {
         self.signature.variables()
     }
-    fn free_vars(&self) -> Vec<TypeVar> {
-        let vars_fvs = self.vars.iter().flat_map(TypeSchema::free_vars);
-        let ops_fvs = self.ops.iter().flat_map(TypeSchema::free_vars);
-        let mut vars = vars_fvs.chain(ops_fvs).collect_vec();
-        vars.sort();
-        vars.dedup();
-        vars
+    fn free_vars(&self) -> &[TypeVar] {
+        &self.free_vars
     }
-    fn free_vars_applied(&self) -> Vec<TypeVar> {
-        let vars_fvs = self.vars.iter().flat_map(TypeSchema::free_vars);
-        let ops_fvs = self.ops.iter().flat_map(TypeSchema::free_vars);
-        let mut vars = vars_fvs
-            .chain(ops_fvs)
-            .flat_map(|x| {
-                let mut v = Type::Variable(x);
-                v.apply_mut(&self.ctx);
-                v.vars()
-            })
-            .collect_vec();
+    fn free_vars_applied(&mut self) -> Vec<TypeVar> {
+        let mut vars = vec![];
+        for x in &self.free_vars {
+            let mut v = Type::Variable(*x);
+            v.apply_mut_compress(&mut self.ctx);
+            vars.append(&mut v.vars());
+        }
         vars.sort();
         vars.dedup();
         vars
@@ -720,17 +728,36 @@ impl Lex {
     fn invent_variable(&mut self, tp: &Type) -> Variable {
         let var = self.signature.new_var(None);
         self.vars.push(TypeSchema::Monotype(tp.clone()));
+        self.free_vars.append(&mut tp.vars());
+        self.free_vars.sort_unstable();
+        self.free_vars.dedup();
         var
     }
     fn invent_operator(&mut self, name: Option<String>, arity: u32, tp: &Type) -> Operator {
         let op = self.signature.new_op(arity, name);
         self.ops.push(TypeSchema::Monotype(tp.clone()));
+        self.free_vars.append(&mut tp.vars());
+        self.free_vars.sort_unstable();
+        self.free_vars.dedup();
         op
     }
     fn contract(&mut self, ids: &[usize]) -> usize {
         let n = self.signature.contract(ids);
         self.ops.truncate(n + 1);
+        self.recompute_free_vars();
         n
+    }
+    fn recompute_free_vars(&mut self) -> &[TypeVar] {
+        self.free_vars.clear();
+        for op in &self.ops {
+            self.free_vars.append(&mut op.free_vars())
+        }
+        for var in &self.vars {
+            self.free_vars.append(&mut var.free_vars())
+        }
+        self.free_vars.sort_unstable();
+        self.free_vars.dedup();
+        &self.free_vars
     }
     fn fit_atom(
         &mut self,
@@ -775,7 +802,7 @@ impl Lex {
                 let mut args = Vec::with_capacity(arg_types.len());
                 let can_be_variable = true; // subterms can always be variables
                 for arg_tp in arg_types {
-                    let subtype = arg_tp.apply(&self.ctx);
+                    let subtype = arg_tp.apply_compress(&mut self.ctx);
                     let lex_vars = self.free_vars_applied();
                     let arg_schema = subtype.generalize(&lex_vars);
                     if size > max_size {
@@ -816,7 +843,7 @@ impl Lex {
     fn instantiate_atom(&mut self, atom: &Atom) -> Result<Type, TypeError> {
         let schema = self.infer_atom(atom)?.clone();
         let mut tp = schema.instantiate_owned(&mut self.ctx);
-        tp.apply_mut(&self.ctx);
+        tp.apply_mut_compress(&mut self.ctx);
         Ok(tp)
     }
     fn var_tp(&self, v: Variable) -> Result<&TypeSchema, TypeError> {
@@ -849,7 +876,7 @@ impl Lex {
     ) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_term_internal(term, vec![], tps)?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
+        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
     }
     fn infer_term_internal(
         &mut self,
@@ -873,9 +900,12 @@ impl Lex {
                 };
                 self.ctx.unify(&head_type, &body_type)?;
                 if op.arity() > 0 {
-                    head_type.returns().unwrap_or(&head_type).apply(&self.ctx)
+                    head_type
+                        .returns()
+                        .unwrap_or(&head_type)
+                        .apply_compress(&mut self.ctx)
                 } else {
-                    head_type.apply(&self.ctx)
+                    head_type.apply_compress(&mut self.ctx)
                 }
             }
         };
@@ -889,7 +919,7 @@ impl Lex {
     ) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_context_internal(context, vec![], tps)?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
+        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
     }
     fn infer_context_internal(
         &mut self,
@@ -914,9 +944,12 @@ impl Lex {
                 };
                 self.ctx.unify(&head_type, &body_type)?;
                 if op.arity() == 0 {
-                    head_type.apply(&self.ctx)
+                    head_type.apply_compress(&mut self.ctx)
                 } else {
-                    head_type.returns().unwrap_or(&head_type).apply(&self.ctx)
+                    head_type
+                        .returns()
+                        .unwrap_or(&head_type)
+                        .apply_compress(&mut self.ctx)
                 }
             }
         };
@@ -930,7 +963,7 @@ impl Lex {
     ) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_rule_internal(rule, tps)?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
+        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
     }
     fn infer_rule_internal(
         &mut self,
@@ -948,7 +981,7 @@ impl Lex {
         for rhs_type in rhs_types {
             self.ctx.unify(&lhs_type, &rhs_type)?;
         }
-        Ok(lhs_type.apply(&self.ctx))
+        Ok(lhs_type.apply_compress(&mut self.ctx))
     }
     fn infer_rules(&mut self, rules: &[Rule]) -> Result<TypeSchema, TypeError> {
         let rule_tps = rules
@@ -963,12 +996,12 @@ impl Lex {
             self.ctx.unify(&tp, &rule_tp)?;
         }
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
+        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
     }
     fn infer_rulecontext(&mut self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_rulecontext_internal(context, &mut HashMap::new())?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply(&self.ctx).generalize(&lex_vars))
+        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
     }
     fn infer_rulecontext_internal(
         &mut self,
@@ -986,7 +1019,7 @@ impl Lex {
         for rhs_type in rhs_types {
             self.ctx.unify(&lhs_type, &rhs_type)?;
         }
-        Ok(lhs_type.apply(&self.ctx))
+        Ok(lhs_type.apply_compress(&mut self.ctx))
     }
     fn infer_utrs(&mut self, utrs: &UntypedTRS) -> Result<(), TypeError> {
         for rule in &utrs.rules {
@@ -1100,7 +1133,7 @@ impl Lex {
         let mut context_vars = context.variables();
         for p in &hole_places {
             size = context.size();
-            let schema = &map[p].apply(&self.ctx).generalize(&lex_vars);
+            let schema = &map[p].apply_compress(&mut self.ctx).generalize(&lex_vars);
             let subterm = self.sample_term_internal(
                 &schema,
                 atom_weights,
@@ -1163,7 +1196,7 @@ impl Lex {
         self.infer_rulecontext_internal(&context, &mut tps)?;
         for p in &hole_places {
             size = context.size();
-            let schema = TypeSchema::Monotype(tps[p].apply(&self.ctx));
+            let schema = TypeSchema::Monotype(tps[p].apply_compress(&mut self.ctx));
             let can_invent = p[0] == 0 && invent;
             let can_be_variable = p != &vec![0];
             let subterm = self.sample_term_internal(
@@ -1418,7 +1451,7 @@ impl Lex {
             Some((Atom::Operator(_), arg_types)) => {
                 let mut lp = olp;
                 for (subterm, mut arg_tp) in term.args().iter().zip(arg_types) {
-                    arg_tp.apply_mut(&self.ctx);
+                    arg_tp.apply_mut_compress(&mut self.ctx);
                     lp += self.logprior_term_internal(
                         subterm,
                         &arg_tp,
@@ -1559,7 +1592,9 @@ impl Lex {
                         return vec![];
                     }
                     let lex_vars = self.free_vars_applied();
-                    let schema = tps[hole].apply(&self.ctx).generalize(&lex_vars);
+                    let schema = tps[hole]
+                        .apply_compress(&mut self.ctx)
+                        .generalize(&lex_vars);
                     // find all the atoms that could fill that hole; recursively try each
                     self.prepare_options(&schema, invent, complex, variables)
                         .into_iter()

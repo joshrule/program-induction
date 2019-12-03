@@ -17,15 +17,16 @@ impl TRS {
             .iter()
             .flat_map(|r| TRS::find_transforms(r, &self.lex))
             .unique()
-            .filter_map(|(f, lhs_place, rhs_place)| {
+            .filter_map(|(f, lhs_place, rhs_place, tp)| {
                 let mut trs = self.clone();
                 let new_ruless: Vec<_> = all_rules
                     .windows(1)
                     .filter_map(|rules| {
-                        let sub_new_rules =
-                            TRS::transform(&f, &lhs_place, &rhs_place, op, &rules[0], &self.lex)
-                                .unwrap_or_else(|_| vec![]);
-                        if sub_new_rules.len() == 1 {
+                        let sub_new_rules = TRS::transform(
+                            &f, &lhs_place, &rhs_place, op, &rules[0], &self.lex, &tp,
+                        )
+                        .unwrap_or_else(|_| vec![]);
+                        if sub_new_rules.len() <= 1 {
                             None
                         } else {
                             trs.remove_clauses(rules).unwrap();
@@ -112,12 +113,11 @@ impl TRS {
             .map(|x| x.1)
             .partition(|x| x[0] == 0)
     }
-    /// This function returns a `Vec` of (f, lhs_place, rhs_place, rule)
+    /// This function returns a `Vec` of (f, lhs_place, rhs_place)
     /// - f: some potentially recursive function (i.e. f: a -> a)
     /// - lhs_place: some LHS subterm which could be f's input (lhs_place: a)
     /// - rhs_place: some RHS subterm which could be f's output (rhs_place: a)
-    /// - rule: a rule containing all these elements
-    fn find_transforms(rule: &Rule, lex: &Lexicon) -> Vec<(Term, Place, Place)> {
+    fn find_transforms(rule: &Rule, lex: &Lexicon) -> Vec<(Term, Place, Place, Type)> {
         let mut map = HashMap::new();
         if lex.infer_rule(rule, &mut map).keep().is_err() {
             return vec![];
@@ -136,7 +136,8 @@ impl TRS {
                     for rhs_place in &rhss {
                         let inner_snapshot = lex.snapshot();
                         if lex.unify(&tp, &map[rhs_place]).is_ok() {
-                            transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone()));
+                            let tp = tp.apply(&lex.0.read().expect("poisoned lexicon").ctx);
+                            transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone(), tp));
                         }
                         lex.rollback(inner_snapshot);
                     }
@@ -153,9 +154,8 @@ impl TRS {
         op: Operator,
         rule: &Rule,
         lex: &Lexicon,
+        tp: &Type,
     ) -> Result<Vec<Rule>, SampleError> {
-        let mut map = HashMap::new();
-        lex.infer_rule(rule, &mut map).keep()?;
         let mut new_rules = vec![rule.clone()];
         // Iterate until failure.
         while let Ok((new_rule1, new_rule2)) = TRS::transform_inner(
@@ -165,18 +165,17 @@ impl TRS {
             op,
             &new_rules[new_rules.len() - 1],
             lex,
-            &map,
+            tp,
         ) {
-            // exit early if the LHS == the RHS
+            // Exit early if the LHS == the RHS; or the base case hasn't changed.
             if new_rule1.lhs == new_rule1.rhs().unwrap() {
                 break;
-            }
-            if let Some(old_rule) = new_rules.pop() {
+            } else if let Some(old_rule) = new_rules.pop() {
                 if Rule::alpha(&old_rule, &new_rule2).is_some() {
                     break;
                 }
             }
-            // only add new recursive cases if they're alpha-unique
+            // Only add new recursive cases if they're alpha-unique.
             let unique = new_rules
                 .iter()
                 .all(|r| Rule::alpha(r, &new_rule1).is_none());
@@ -204,11 +203,23 @@ impl TRS {
         op: Operator,
         rule: &Rule,
         lex: &Lexicon,
-        map: &HashMap<Place, Type>,
+        var_type: &Type,
     ) -> Result<(Rule, Rule), SampleError> {
-        let lhs_structure = rule.at(lhs_place).ok_or(SampleError::Subterm)?.clone();
-        let rhs_structure = rule.at(rhs_place).ok_or(SampleError::Subterm)?.clone();
-        let new_var = lex.invent_variable(&map[lhs_place]);
+        // Perform necessary checks:
+        // 0. the rule typechecks;
+        let snapshot = lex.snapshot();
+        let mut map = HashMap::new();
+        if let Err(e) = lex.infer_rule(rule, &mut map).keep() {
+            lex.rollback(snapshot);
+            return Err(SampleError::from(e));
+        }
+        // 1. f is at the head of the LHS;
+        TRS::leftmost_symbol_matches(&rule, f, lex, &map)?;
+        // 2. lhs_place exists and has the appropriate type; and
+        let lhs_structure = TRS::check_place(rule, lhs_place, var_type, lex, &map)?;
+        // 3. rhs_place exists and has the appropriate type.
+        let rhs_structure = TRS::check_place(rule, rhs_place, var_type, lex, &map)?;
+        let new_var = lex.invent_variable(var_type);
         // Swap lhs_structure for: new_var.
         let mut new_rule1 = rule
             .replace(lhs_place, Term::Variable(new_var))
@@ -224,11 +235,37 @@ impl TRS {
         // Create the rule: f lhs_structure = rhs_structure.
         let new_lhs = Term::Application {
             op,
-            args: vec![f.clone(), lhs_structure],
+            args: vec![f.clone(), lhs_structure.clone()],
         };
-        let new_rule2 = Rule::new(new_lhs, vec![rhs_structure]).ok_or(SampleError::Subterm)?;
+        let new_rule2 =
+            Rule::new(new_lhs, vec![rhs_structure.clone()]).ok_or(SampleError::Subterm)?;
         // Return.
+        lex.rollback(snapshot);
         Ok((new_rule1, new_rule2))
+    }
+    fn leftmost_symbol_matches(
+        rule: &Rule,
+        f: &Term,
+        lex: &Lexicon,
+        map: &HashMap<Place, Type>,
+    ) -> Result<(), SampleError> {
+        TRS::collect_recursive_fns(map, lex, rule)
+            .iter()
+            .find(|(term, _, _)| Term::alpha(vec![(term, f)]).is_some())
+            .map(|_| ())
+            .ok_or(SampleError::Subterm)
+    }
+    fn check_place<'a>(
+        rule: &'a Rule,
+        place: &[usize],
+        tp: &Type,
+        lex: &Lexicon,
+        map: &HashMap<Place, Type>,
+    ) -> Result<&'a Term, SampleError> {
+        map.get(place)
+            .and_then(|place_tp| lex.unify(tp, place_tp).ok())
+            .and_then(|_| rule.at(place))
+            .ok_or(SampleError::Subterm)
     }
 }
 
@@ -267,11 +304,46 @@ mod tests {
         )
             .expect("parsed rule");
         let transforms = TRS::find_transforms(&rule, &lex);
-        for (t, p1, p2) in &transforms {
-            println!("{} {:?} {:?}", t.pretty(&lex.signature()), p1, p2);
+        for (t, p1, p2, tp) in &transforms {
+            println!("{} {:?} {:?} {}", t.pretty(&lex.signature()), p1, p2, tp);
         }
 
         assert_eq!(16, transforms.len());
+    }
+
+    #[test]
+    fn find_transforms_test_2() {
+        let lex = parse_lexicon(
+            &[
+                "C/0: list -> list;",
+                "CONS/0: nat -> list -> list;",
+                "NIL/0: list;",
+                "DECC/0: nat -> int -> nat;",
+                "DIGIT/0: int -> nat;",
+                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+                "0/0: int; 1/0: int; 2/0: int;",
+                "3/0: int; 4/0: int; 5/0: int;",
+                "6/0: int; 7/0: int; 8/0: int;",
+                "9/0: int;",
+            ]
+            .join(" "),
+            "",
+            "",
+            true,
+            TypeContext::default(),
+        )
+        .unwrap();
+        let rule = parse_rule(
+            "C (CONS (DIGIT 6) (CONS (DECC (DIGIT 6) 3) (CONS (DECC (DIGIT 8) 6 ) (CONS (DIGIT 8) (CONS (DIGIT 9) (CONS (DIGIT 4) (CONS (DIGIT 7) NIL))))))) = (CONS (DIGIT 6) (CONS (DIGIT 6) (CONS (DIGIT 6) (CONS (DIGIT 6) (CONS (DECC (DIGIT 6) 3) (CONS (DECC (DIGIT 8) 6 ) (CONS (DIGIT 8) (CONS (DIGIT 9) (CONS (DIGIT 4) (CONS (DIGIT 7) NIL))))))))))",
+            &lex,
+        )
+            .expect("parsed rule");
+        let transforms = TRS::find_transforms(&rule, &lex);
+        for (t, p1, p2, tp) in &transforms {
+            println!("{} {:?} {:?} {}", t.pretty(&lex.signature()), p1, p2, tp);
+        }
+
+        assert_eq!(77, transforms.len());
     }
 
     #[test]
@@ -307,7 +379,15 @@ mod tests {
         let rhs_place = vec![1, 1];
         let mut map = HashMap::new();
         lex.infer_rule(&rule, &mut map);
-        let result = TRS::transform_inner(&f, &lhs_place, &rhs_place, op, &rule, &lex, &map);
+        let result = TRS::transform_inner(
+            &f,
+            &lhs_place,
+            &rhs_place,
+            op,
+            &rule,
+            &lex,
+            &map[&lhs_place],
+        );
         assert!(result.is_ok());
         let (new_rule1, new_rule2) = result.unwrap();
         let sig = &lex.0.read().expect("poisoned lexicon").signature;
@@ -353,9 +433,8 @@ mod tests {
         let f = parse_term("C", &lex).expect("parsed term");
         let lhs_place = vec![0, 1, 1];
         let rhs_place = vec![1, 1];
-        let mut map = HashMap::new();
-        lex.infer_rule(&rule, &mut map);
-        let result = TRS::transform(&f, &lhs_place, &rhs_place, op, &rule, &lex);
+        let tp = tp![list];
+        let result = TRS::transform(&f, &lhs_place, &rhs_place, op, &rule, &lex, &tp);
         assert!(result.is_ok());
         let new_rules = result.unwrap();
         let sig = &lex.0.read().expect("poisoned lexicon").signature;
@@ -429,7 +508,7 @@ mod tests {
             println!("##\n{}\n##", trs);
         }
 
-        assert_eq!(19, trss.len());
+        assert_eq!(20, trss.len());
     }
     #[test]
     fn recurse_2_test() {
@@ -466,7 +545,6 @@ mod tests {
             println!("##\n{}\n##", trs);
         }
 
-        assert_eq!(8, trss.len());
-        assert_eq!(8, 7);
+        assert_eq!(20, trss.len());
     }
 }
