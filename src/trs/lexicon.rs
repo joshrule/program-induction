@@ -1759,11 +1759,7 @@ impl GP for Lexicon {
         _rng: &mut R,
         obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
-        if let Ok(trs) = TRS::new(self, obs.clone()) {
-            vec![trs]
-        } else {
-            vec![]
-        }
+        vec![TRS::new_unchecked(self, obs.clone())]
     }
     fn validate_offspring(
         &self,
