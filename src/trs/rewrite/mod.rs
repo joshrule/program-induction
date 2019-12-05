@@ -170,10 +170,20 @@ impl TRS {
         old_clause: &Rule,
         new_clause: Rule,
     ) -> Result<&mut TRS, SampleError> {
+        // TODO: why are we type-checking here?
         self.lex
             .infer_rule(&new_clause, &mut HashMap::new())
             .drop()?;
         self.utrs.replace(n, old_clause, new_clause)?;
+        Ok(self)
+    }
+
+    pub fn swap(&mut self, old_rule: &Rule, new_rule: Rule) -> Result<&mut TRS, SampleError> {
+        if let Some((n, _)) = self.utrs.get_clause(old_rule) {
+            self.utrs.replace(n, old_rule, new_rule)?;
+        } else {
+            self.utrs.insert(0, new_rule)?;
+        }
         Ok(self)
     }
 
