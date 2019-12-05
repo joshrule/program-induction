@@ -1692,13 +1692,13 @@ impl GP for Lexicon {
                 2 => trs.local_difference(rng),
                 3 => trs.add_exception(obs),
                 4 => trs.delete_rule(),
-                5 => trs.variablize(),
+                5 => trs.variablize(obs),
                 6 => trs.generalize(obs),
                 7 => trs.recurse(obs),
                 8 => trs.recurse(obs).and_then(|new_trss| {
                     let mut trss = new_trss
                         .into_iter()
-                        .filter_map(|trs| trs.variablize().ok())
+                        .filter_map(|trs| trs.variablize(obs).ok())
                         .flatten()
                         .collect_vec();
                     trss.shuffle(rng);
