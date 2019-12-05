@@ -90,6 +90,7 @@ impl TRS {
                 }
                 utrs
             };
+            // Typecheck background rules to check variables across rules.
             lexicon.infer_utrs(&utrs)?;
             utrs
         };
@@ -97,6 +98,25 @@ impl TRS {
             lex: lexicon.clone(),
             utrs,
         })
+    }
+
+    /// Like [`TRS::new`] but skips type inference. This is useful in scenarios
+    /// where you are already confident in the type safety of the new rules.
+    ///
+    ///
+    /// [`TRS::new`]: struct.TRS.html#method.new
+    pub fn new_unchecked(lexicon: &Lexicon, mut rules: Vec<Rule>) -> TRS {
+        let lex = lexicon.clone();
+        let utrs = {
+            let lex = lexicon.0.read().expect("poisoned lexicon");
+            rules.append(&mut lex.background.clone());
+            let mut utrs = UntypedTRS::new(rules);
+            if lex.deterministic {
+                utrs.make_deterministic();
+            }
+            utrs
+        };
+        TRS { lex, utrs }
     }
 
     pub fn lexicon(&self) -> Lexicon {
@@ -224,7 +244,6 @@ impl TRS {
             .map(|_| ())
             .map_err(SampleError::from)
     }
-
 }
 impl fmt::Display for TRS {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
