@@ -768,8 +768,8 @@ impl Lex {
         let atom_tp = self.instantiate_atom(atom)?;
         let rollback_n = self.ctx.len();
         let unify_tp = match atom {
-            Atom::Operator(o) if o.arity() == 0 => &atom_tp,
-            _ => atom_tp.returns().unwrap_or(&atom_tp),
+            Atom::Operator(o) if o.arity() > 0 => atom_tp.returns().ok_or(TypeError::Malformed)?,
+            _ => &atom_tp,
         };
         let result = self.ctx.unify(unify_tp, tp);
         if rollback {
@@ -1327,12 +1327,10 @@ impl Lex {
         let mut vs = vars
             .iter()
             .filter_map(|&v| {
-                let atom = Atom::Variable(v);
-                if let Ok(arg_types) = self.fit_atom(&atom, &tp, true) {
-                    Some((Some(Atom::Variable(v)), arg_types))
-                } else {
-                    None
-                }
+                let atom = Atom::from(v);
+                self.fit_atom(&atom, &tp, true)
+                    .map(|arg_types| (Some(atom), arg_types))
+                    .ok()
             })
             .collect_vec();
         if invent {
@@ -1364,43 +1362,43 @@ impl Lex {
     fn atom_priors(
         invent: bool,
         (vw, cw, ow, iw): (f64, f64, f64, f64),
-        (vs, cs, os): (&[LOpt], &[LOpt], &[LOpt]),
+        (nv, nc, no): (usize, usize, usize),
     ) -> (f64, f64, f64, f64) {
         let z = vw + cw + ow;
         let (vp, cp, op) = (vw / z, cw / z, ow / z);
-        let vlp = if invent && vs.len() == 1 {
+        let vlp = if invent && nv == 1 {
             // in this case, the only variable is invented, so no mass goes here
             NEG_INFINITY
         } else {
-            vp.ln() - ((vs.len() as f64) + (invent as usize as f64) * (-1.0 + iw)).ln()
+            vp.ln() - ((nv as f64) + (invent as usize as f64) * (-1.0 + iw)).ln()
         };
         let ilp = if invent {
-            vp.ln() + iw.ln() - ((vs.len() as f64) - 1.0 + iw).ln()
+            vp.ln() + iw.ln() - ((nv as f64) - 1.0 + iw).ln()
         } else {
             NEG_INFINITY
         };
-        let clp = if cs.is_empty() {
+        let clp = if nc == 0 {
             NEG_INFINITY
         } else {
-            cp.ln() - (cs.len() as f64).ln()
+            cp.ln() - (nc as f64).ln()
         };
-        let olp = if os.is_empty() {
+        let olp = if no == 0 {
             NEG_INFINITY
         } else {
-            op.ln() - (os.len() as f64).ln()
+            op.ln() - (no as f64).ln()
         };
         let mut lps = vec![];
-        for i in 0..vs.len() {
+        for i in 0..nv {
             if invent && i == 0 {
                 lps.push(ilp);
             } else {
                 lps.push(vlp);
             }
         }
-        for _ in 0..cs.len() {
+        for _ in 0..nc {
             lps.push(clp);
         }
-        for _ in 0..os.len() {
+        for _ in 0..no {
             lps.push(olp);
         }
         let log_z = logsumexp(&lps[..]);
@@ -1431,14 +1429,22 @@ impl Lex {
         invent: bool,
         variables: &mut Vec<Variable>,
     ) -> Result<f64, SampleError> {
+        let tp = tp.apply_compress(&mut self.ctx);
         // setup the existing options
-        let (vs, cs, os) = self.prepare_prior_options(tp, term, invent, variables);
+        let (vs, cs, os) = self.prepare_prior_options(&tp, term, invent, variables);
         // compute the log probability of each kind of head
-        let (vlp, clp, olp, ilp) = Lex::atom_priors(invent, atom_weights, (&vs, &cs, &os));
+        let (vlp, clp, olp, ilp) =
+            Lex::atom_priors(invent, atom_weights, (vs.len(), cs.len(), os.len()));
         // find the selected option
         let mut options = vs.into_iter().chain(cs).chain(os);
-        let option_option = options.find(|&(ref o, _)| o == &Some(term.head()));
-        let option = option_option.map(|(o, arg_types)| (o.unwrap(), arg_types));
+        let option = options
+            .find(|&(ref o, _)| o == &Some(term.head()))
+            .and_then(|(o, _)| {
+                let atom = o.unwrap();
+                // use this propagate the type constraints forward
+                let arg_types = self.fit_atom(&atom, &tp, false).ok()?;
+                Some((atom, arg_types))
+            });
         // compute the probability of the term
         match option {
             None => Ok(NEG_INFINITY),
@@ -1459,6 +1465,9 @@ impl Lex {
                         invent,
                         variables,
                     )?;
+                    if lp == NEG_INFINITY {
+                        return Ok(lp);
+                    }
                 }
                 Ok(lp)
             }
