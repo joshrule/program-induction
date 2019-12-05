@@ -1682,7 +1682,7 @@ impl GP for Lexicon {
         obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // add, replace, delete, regenerate, exception, local difference, variablization, generalization
-        let weights = vec![2, 2, 0, 4, 4, 4, 4, 4, 1, 1];
+        let weights = vec![2, 2, 0, 4, 8, 8, 8, 2, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             let choice = dist.sample(rng);
