@@ -101,6 +101,7 @@ impl TRS {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
     use polytype::Context as TypeContext;
     use trs::parser::{parse_lexicon, parse_rule, parse_trs};
     use trs::TRS;
@@ -281,5 +282,128 @@ mod tests {
         }
 
         assert_eq!(trss.len(), 2);
+    }
+
+    #[test]
+    fn variablize_test_5() {
+        let lex = parse_lexicon(
+            &[
+                "C/0: list -> list;",
+                "CONS/0: nat -> list -> list;",
+                "NIL/0: list;",
+                "DECC/0: nat -> int -> nat;",
+                "DIGIT/0: int -> nat;",
+                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+                "0/0: int; 1/0: int; 2/0: int;",
+                "3/0: int; 4/0: int; 5/0: int;",
+                "6/0: int; 7/0: int; 8/0: int;",
+                "9/0: int;",
+            ]
+            .join(" "),
+            "",
+            "",
+            true,
+            TypeContext::default(),
+        )
+        .expect("parsed lexicon");
+        let rule = parse_rule(
+            "C (CONS (DIGIT 5) (CONS (DIGIT 3) (CONS (DIGIT 2) (CONS (DIGIT 9) (CONS (DIGIT 8) NIL))))) = CONS (DIGIT 2) NIL",
+            &lex,
+        )
+        .expect("parsed rule");
+        let trs = TRS::new_unchecked(&lex, vec![]);
+
+        let gen1 = trs.variablize(&[rule]).unwrap();
+        for trs in gen1.iter().sorted_by_key(|trs| trs.size()) {
+            println!("{}\n", trs);
+        }
+
+        assert_eq!(gen1.len(), 24);
+
+        let mut gen2 = gen1
+            .iter()
+            .sorted_by_key(|trs| trs.size())
+            .take(50)
+            .flat_map(|trs| trs.variablize(&[]).unwrap())
+            .collect_vec();
+        let mut i = 1;
+        while i < gen2.len() {
+            if !(0..i).any(|n| TRS::is_alpha(&gen2[n], &gen2[i])) {
+                i += 1;
+            } else {
+                gen2.swap_remove(i);
+            }
+        }
+        println!(">>> {}\n", gen2.len());
+        for trs in gen2.iter().sorted_by_key(|trs| trs.size()).take(50) {
+            println!("{}\n", trs);
+        }
+        assert_eq!(gen2.len(), 214);
+
+        let mut gen3 = gen2
+            .iter()
+            .sorted_by_key(|trs| trs.size())
+            .take(50)
+            .filter_map(|trs| trs.variablize(&[]).ok())
+            .flatten()
+            .collect_vec();
+        let mut i = 1;
+        while i < gen3.len() {
+            if !(0..i).any(|n| TRS::is_alpha(&gen3[n], &gen3[i])) {
+                i += 1;
+            } else {
+                gen3.swap_remove(i);
+            }
+        }
+        println!(">>> {}\n", gen3.len());
+        for trs in gen3.iter().sorted_by_key(|trs| trs.size()).take(50) {
+            println!("{}\n", trs);
+        }
+
+        assert_eq!(gen3.len(), 292);
+
+        let mut gen4 = gen3
+            .iter()
+            .sorted_by_key(|trs| trs.size())
+            .take(50)
+            .filter_map(|trs| trs.variablize(&[]).ok())
+            .flatten()
+            .collect_vec();
+        let mut i = 1;
+        while i < gen4.len() {
+            if !(0..i).any(|n| TRS::is_alpha(&gen4[n], &gen4[i])) {
+                i += 1;
+            } else {
+                gen4.swap_remove(i);
+            }
+        }
+        println!(">>> {}\n", gen4.len());
+        for trs in gen4.iter().sorted_by_key(|trs| trs.size()).take(50) {
+            println!("{}\n", trs);
+        }
+
+        assert_eq!(gen4.len(), 105);
+
+        let mut gen5 = gen4
+            .iter()
+            .sorted_by_key(|trs| trs.size())
+            .take(50)
+            .filter_map(|trs| trs.variablize(&[]).ok())
+            .flatten()
+            .collect_vec();
+        let mut i = 1;
+        while i < gen5.len() {
+            if !(0..i).any(|n| TRS::is_alpha(&gen5[n], &gen5[i])) {
+                i += 1;
+            } else {
+                gen5.swap_remove(i);
+            }
+        }
+        println!(">>> {}\n", gen5.len());
+        for trs in gen5.iter().sorted_by_key(|trs| trs.size()).take(50) {
+            println!("{}\n", trs);
+        }
+
+        assert_eq!(gen5.len(), 2004);
     }
 }
