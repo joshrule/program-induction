@@ -1768,7 +1768,6 @@ impl GP for Lexicon {
         _children: &[(Self::Expression, Option<f64>)],
         seen: &mut Vec<Self::Expression>,
         offspring: &mut Vec<(Self::Expression, Option<f64>)>,
-        _task: &Task<Self, Self::Expression, Self::Observation>,
         max_validated: usize,
     ) {
         let mut validated = 0;

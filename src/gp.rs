@@ -359,7 +359,6 @@ pub trait GP: Send + Sync + Sized {
         _children: &[(Self::Expression, Option<f64>)],
         _seen: &mut Vec<Self::Expression>,
         _offspring: &mut Vec<(Self::Expression, Option<f64>)>,
-        _task: &Task<Self, Self::Expression, Self::Observation>,
         _max_validated: usize,
     ) {
     }
@@ -423,21 +422,13 @@ pub trait GP: Send + Sync + Sized {
                     self.generate_offspring(&dist, rng, params, gpparams, task, &parents);
                 // Add the parent to the species.
                 let mut parents = parents.into_iter().map(|(x, _)| (x, None)).collect_vec();
-                self.validate_offspring(params, &[], &species, seen, &mut parents, task, 1);
+                self.validate_offspring(params, &[], &species, seen, &mut parents, 1);
                 species.append(&mut parents);
                 if gen + 1 == n_gens {
                     // After N generations, select the best and add it to the species. Forget the rest.
                     if let Some(chosen) = offspring.into_iter().choose(rng) {
                         let mut chosen_vec = vec![(chosen, None)];
-                        self.validate_offspring(
-                            params,
-                            &[],
-                            &species,
-                            seen,
-                            &mut chosen_vec,
-                            task,
-                            1,
-                        );
+                        self.validate_offspring(params, &[], &species, seen, &mut chosen_vec, 1);
                         species.append(&mut chosen_vec);
                     }
                 } else {
@@ -493,7 +484,6 @@ pub trait GP: Send + Sync + Sized {
                 &children,
                 seen,
                 &mut offspring,
-                task,
                 gpparams.n_delta - children.len(),
             );
             children.append(&mut offspring);
