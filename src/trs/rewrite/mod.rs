@@ -90,7 +90,6 @@ impl TRS {
                 }
                 utrs
             };
-            // Typecheck background rules to check variables across rules.
             lexicon.infer_utrs(&utrs)?;
             utrs
         };
@@ -185,6 +184,17 @@ impl TRS {
             self.utrs.insert(0, new_rule)?;
         }
         Ok(self)
+    }
+
+    pub fn is_alpha(trs1: &TRS, trs2: &TRS) -> bool {
+        let m = trs1.num_learned_rules();
+        let n = trs2.num_learned_rules();
+        trs1.lex == trs2.lex
+            && m == n
+            && trs1.utrs.rules[..m]
+                .iter()
+                .zip(&trs2.utrs.rules[..m])
+                .all(|(r1, r2)| Rule::alpha(r1, r2).is_some())
     }
 
     fn clauses(&self) -> Vec<(usize, Rule)> {

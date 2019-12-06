@@ -1,3 +1,4 @@
+use super::{SampleError, TypeError, TRS};
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type, TypeSchema, Variable as TypeVar};
 use rand::{distributions::Distribution, distributions::WeightedIndex, seq::SliceRandom, Rng};
@@ -11,10 +12,8 @@ use term_rewriting::{
     Atom, Context, Operator, PStringDist, Place, Rule, RuleContext, Signature, Term, Variable,
     TRS as UntypedTRS,
 };
-
-use super::{SampleError, TypeError, TRS};
 use utils::{logsumexp, weighted_sample};
-use {Task, GP};
+use GP;
 
 type LOpt = (Option<Atom>, Vec<Type>);
 
@@ -1022,7 +1021,8 @@ impl Lex {
         Ok(lhs_type.apply_compress(&mut self.ctx))
     }
     fn infer_utrs(&mut self, utrs: &UntypedTRS) -> Result<(), TypeError> {
-        for rule in &utrs.rules {
+        let n = utrs.rules.len() - self.background.len();
+        for rule in &utrs.rules[..n] {
             self.infer_rule_internal(rule, &mut HashMap::new())?;
         }
         Ok(())
@@ -1773,10 +1773,8 @@ impl GP for Lexicon {
         let mut validated = 0;
         while validated < max_validated && validated < offspring.len() {
             let (x, _) = &offspring[validated];
-            let pop_unique = !population
-                .iter()
-                .any(|p| UntypedTRS::alphas(&p.0.utrs, &x.utrs));
-            let see_unique = !seen.iter().any(|c| UntypedTRS::alphas(&c.utrs, &x.utrs));
+            let pop_unique = !population.iter().any(|p| TRS::is_alpha(&p.0, &x));
+            let see_unique = !seen.iter().any(|c| TRS::is_alpha(&c, &x));
             if pop_unique && see_unique {
                 validated += 1;
                 seen.push(x.clone());
