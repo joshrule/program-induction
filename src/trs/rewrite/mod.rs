@@ -126,7 +126,8 @@ impl TRS {
     ///
     /// [`term_rewriting::TRS`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.TRS.html#method.size
     pub fn size(&self) -> usize {
-        self.utrs.size()
+        let n = self.num_learned_rules();
+        self.utrs.rules[..n].iter().map(Rule::size).sum()
     }
 
     /// The length of the underlying [`term_rewriting::TRS`].
@@ -174,6 +175,13 @@ impl TRS {
             .infer_rule(&new_clause, &mut HashMap::new())
             .drop()?;
         self.utrs.replace(n, old_clause, new_clause)?;
+        Ok(self)
+    }
+
+    pub fn swap_rules(&mut self, rules: &[(Rule, &Rule)]) -> Result<&mut TRS, SampleError> {
+        for (new_rule, old_rule) in rules {
+            self.swap(old_rule, new_rule.clone())?;
+        }
         Ok(self)
     }
 
