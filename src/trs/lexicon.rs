@@ -1682,7 +1682,7 @@ impl GP for Lexicon {
         obs: &Self::Observation,
     ) -> Vec<Self::Expression> {
         // add, replace, delete, regenerate, exception, local difference, variablization, generalization
-        let weights = vec![2, 2, 0, 4, 8, 8, 8, 2, 1, 1];
+        let weights = vec![2, 2, 0, 4, 8, 4, 4, 2, 1, 1];
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             let choice = dist.sample(rng);
@@ -1694,11 +1694,17 @@ impl GP for Lexicon {
                 4 => trs.delete_rule(),
                 5 => trs.variablize(obs),
                 6 => trs.generalize(obs),
-                7 => trs.recurse(obs),
-                8 => trs.recurse(obs).and_then(|new_trss| {
+                7 => trs.recurse(obs, 20),
+                8 => trs.recurse(obs, 3).and_then(|new_trss| {
                     let mut trss = new_trss
                         .into_iter()
-                        .filter_map(|trs| trs.variablize(obs).ok())
+                        .filter_map(|trs| {
+                            trs.variablize(obs).ok().map(|trss| {
+                                trss.into_iter()
+                                    .sorted_by_key(|trs| trs.size())
+                                    .collect_vec()
+                            })
+                        })
                         .flatten()
                         .collect_vec();
                     trss.shuffle(rng);
@@ -1708,7 +1714,7 @@ impl GP for Lexicon {
                         Ok(trss)
                     }
                 }),
-                9 => trs.recurse(obs).and_then(|new_trss| {
+                9 => trs.recurse(obs, 20).and_then(|new_trss| {
                     let mut trss = new_trss
                         .into_iter()
                         .filter_map(|trs| trs.generalize(obs).ok())

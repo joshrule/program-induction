@@ -6,7 +6,7 @@ use term_rewriting::{Operator, Place, Rule, Term};
 use utils::weighted_permutation;
 
 impl TRS {
-    pub fn recurse(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
+    pub fn recurse(&self, data: &[Rule], n_sampled: usize) -> Result<Vec<TRS>, SampleError> {
         let all_rules = self.clauses_for_learning(data)?;
         let snapshot = self.lex.snapshot();
         let op = self
@@ -74,10 +74,7 @@ impl TRS {
             .unzip();
         self.lex.rollback(snapshot);
         // HACK: 20 is a constant but not a magic number.
-        let new_trss = weighted_permutation(&trss, &ns, Some(20));
-        // for trs in &trss {
-        //     println!("##\n{}\n##", trs);
-        // }
+        let new_trss = weighted_permutation(&trss, &ns, Some(n_sampled));
         Ok(new_trss)
     }
     fn collect_recursive_fns<'a>(
@@ -500,7 +497,7 @@ mod tests {
             &lex,
         )
             .expect("parsed TRS");
-        let result = trs.recurse(&[]);
+        let result = trs.recurse(&[], 20);
         assert!(result.is_ok());
         let trss = result.unwrap();
 
@@ -537,7 +534,7 @@ mod tests {
             &lex,
         )
             .expect("parsed TRS");
-        let result = trs.recurse(&[]);
+        let result = trs.recurse(&[], 20);
         assert!(result.is_ok());
         let trss = result.unwrap();
 
