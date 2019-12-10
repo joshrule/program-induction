@@ -30,7 +30,7 @@ impl TRS {
         if self.num_learned_rules() == 0 {
             Err(SampleError::OptionsExhausted)
         } else {
-            let mut trs = TRS::new(&self.lex, vec![])?;
+            let mut trs = TRS::new_unchecked(&self.lex, vec![]);
             trs.utrs.rules.clear();
             let n = self.num_learned_rules();
             trs.smart_delete_helper(start, stop, &self.utrs.rules[0..n]);
