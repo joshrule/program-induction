@@ -1,9 +1,9 @@
+use super::{Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Atom, Context, Operator, Rule, Term, Variable};
 
-use super::{Lexicon, SampleError, TRS};
 
 impl TRS {
     pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {

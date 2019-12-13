@@ -5,13 +5,14 @@
 //! - https://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system
 //! - (TAPL; Pierce, 2002, ch. 22)
 
-mod add_exception;
+mod combine;
 mod delete_rule;
 mod generalize;
 mod local_difference;
 mod log_likelihood;
 mod log_posterior;
 mod log_prior;
+mod memorize;
 mod move_rule;
 mod recurse;
 mod regenerate_rule;
@@ -19,13 +20,104 @@ mod sample_rule;
 mod swap_lhs_and_rhs;
 mod variablize;
 
+use super::{Lexicon, Likelihood, ModelParams, Prior, SampleError, TypeError};
+use gp::Tournament;
 use itertools::Itertools;
-use rand::{seq::IteratorRandom, Rng};
+use rand::{distributions::Distribution, seq::IteratorRandom, Rng};
 use std::collections::HashMap;
 use std::fmt;
 use term_rewriting::{Rule, TRS as UntypedTRS};
 
-use super::{Lexicon, Likelihood, ModelParams, Prior, SampleError, TypeError};
+pub type TRSMoves = Vec<WeightedTRSMove>;
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct WeightedTRSMove {
+    pub weight: usize,
+    pub mv: TRSMove,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TRSMoveName {
+    Memorize,
+    SampleRule,
+    RegenerateRule,
+    LocalDifference,
+    MemorizeOne,
+    DeleteRule,
+    Variablize,
+    Generalize,
+    Recurse,
+    RecurseVariablize,
+    RecurseGeneralize,
+    DeleteRules,
+    Combine,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub enum TRSMove {
+    Memorize,
+    SampleRule((f64, f64, f64, f64), usize),
+    RegenerateRule((f64, f64, f64, f64), usize),
+    LocalDifference,
+    MemorizeOne,
+    DeleteRule,
+    Variablize,
+    Generalize,
+    Recurse(usize),
+    RecurseVariablize(usize),
+    RecurseGeneralize(usize),
+    DeleteRules,
+    Combine,
+}
+impl TRSMove {
+    pub fn take<R: Rng>(
+        &self,
+        lex: &Lexicon,
+        obs: &[Rule],
+        rng: &mut R,
+        parents: &[TRS],
+    ) -> Result<Vec<TRS>, SampleError> {
+        match *self {
+            TRSMove::Memorize => Ok(TRS::memorize(lex, obs)),
+            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
+            TRSMove::RegenerateRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
+            TRSMove::LocalDifference => parents[0].local_difference(rng),
+            TRSMove::MemorizeOne => parents[0].memorize_one(obs),
+            TRSMove::DeleteRule => parents[0].delete_rule(),
+            TRSMove::Variablize => parents[0].variablize(obs),
+            TRSMove::Generalize => parents[0].generalize(obs),
+            TRSMove::Recurse(n) => parents[0].recurse(obs, n),
+            TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(obs, n, rng),
+            TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(obs, n, rng),
+            TRSMove::DeleteRules => parents[0].clone().delete_rules(),
+            TRSMove::Combine => TRS::combine(&parents[0], &parents[1]),
+        }
+    }
+    pub fn get_parents<R: Rng>(&self, t: &Tournament<TRS>, rng: &mut R) -> Vec<TRS> {
+        match *self {
+            TRSMove::Memorize => vec![],
+            TRSMove::Combine => vec![t.sample(rng).clone(), t.sample(rng).clone()],
+            _ => vec![t.sample(rng).clone()],
+        }
+    }
+    pub(crate) fn name(&self) -> TRSMoveName {
+        match *self {
+            TRSMove::Memorize => TRSMoveName::Memorize,
+            TRSMove::SampleRule(..) => TRSMoveName::SampleRule,
+            TRSMove::RegenerateRule(..) => TRSMoveName::RegenerateRule,
+            TRSMove::LocalDifference => TRSMoveName::LocalDifference,
+            TRSMove::MemorizeOne => TRSMoveName::MemorizeOne,
+            TRSMove::DeleteRule => TRSMoveName::DeleteRule,
+            TRSMove::Variablize => TRSMoveName::Variablize,
+            TRSMove::Generalize => TRSMoveName::Generalize,
+            TRSMove::Recurse(..) => TRSMoveName::Recurse,
+            TRSMove::RecurseVariablize(..) => TRSMoveName::RecurseVariablize,
+            TRSMove::RecurseGeneralize(..) => TRSMoveName::RecurseGeneralize,
+            TRSMove::DeleteRules => TRSMoveName::DeleteRules,
+            TRSMove::Combine => TRSMoveName::Combine,
+        }
+    }
+}
 
 /// Manages the semantics of a term rewriting system.
 #[derive(Debug, PartialEq, Clone)]

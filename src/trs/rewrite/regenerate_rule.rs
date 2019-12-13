@@ -1,8 +1,8 @@
+use super::{SampleError, TRS};
 use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::{Context, Rule, RuleContext};
 
-use super::{SampleError, TRS};
 
 impl TRS {
     /// Regenerate some portion of a rule

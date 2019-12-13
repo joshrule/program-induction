@@ -161,6 +161,31 @@ pub struct GPParams {
     pub n_delta: usize,
 }
 
+pub struct Tournament<'a, T> {
+    pub n: usize,
+    pub population: &'a [(T, f64)],
+}
+impl<'a, T> Tournament<'a, T> {
+    pub fn new(n: usize, population: &'a [(T, f64)]) -> Tournament<'a, T> {
+        Tournament { n, population }
+    }
+}
+impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> &'a T {
+        if self.n == 1 {
+            &self.population[rng.gen_range(0, self.population.len())].0
+        } else {
+            (0..self.population.len())
+                .choose_multiple(rng, self.n)
+                .into_iter()
+                .map(|i| &self.population[i])
+                .max_by(|&&(_, ref x), &&(_, ref y)| x.partial_cmp(y).expect("found NaN"))
+                .map(|&(ref expr, _)| expr)
+                .expect("tournament cannot select winner from no contestants")
+        }
+    }
+}
+
 /// A kind of representation suitable for **genetic programming**.
 ///
 /// Implementors of `GP` must provide methods for [`genesis`], [`mutate`], [`crossover`]. A
@@ -261,6 +286,8 @@ pub struct GPParams {
 /// [`oracle`]: struct.Task.html#structfield.oracle
 /// [`pcfg::Grammar`]: pcfg/struct.Grammar.html
 pub trait GP: Send + Sync + Sized {
+    /// A Representation is the formalism in which learning takes place, typically `Self`.
+    type Representation: Send + Sync + Sized;
     /// An Expression is a sentence in the representation. **Tasks are solved by Expressions**.
     type Expression: Clone + Send + Sync;
     /// Extra parameters for a representation go here.
@@ -277,74 +304,41 @@ pub trait GP: Send + Sync + Sized {
         tp: &TypeSchema,
     ) -> Vec<Self::Expression>;
 
-    /// Mutate a single program, potentially producing multiple offspring.
-    fn mutate<R: Rng>(
-        &self,
-        params: &Self::Params,
-        rng: &mut R,
-        prog: &Self::Expression,
-        obs: &Self::Observation,
-    ) -> Vec<Self::Expression>;
-
-    /// Create life without parents, potentially producing multiple offspring.
-    fn abiogenesis<R: Rng>(
-        &self,
-        _params: &Self::Params,
-        _rng: &mut R,
-        _obs: &Self::Observation,
-    ) -> Vec<Self::Expression> {
-        Vec::with_capacity(0)
-    }
-
-    /// Perform crossover between two programs. There must be at least one child.
-    fn crossover<R: Rng>(
-        &self,
-        params: &Self::Params,
-        rng: &mut R,
-        parent1: &Self::Expression,
-        parent2: &Self::Expression,
-        obs: &Self::Observation,
-    ) -> Vec<Self::Expression>;
-
-    /// A tournament selects an individual from a population.
-    fn tournament<'a, R: Rng>(
-        &self,
-        rng: &mut R,
-        tournament_size: usize,
-        population: &'a [(Self::Expression, f64)],
-    ) -> &'a Self::Expression {
-        if tournament_size == 1 {
-            &population[rng.gen_range(0, population.len())].0
-        } else {
-            (0..population.len())
-                .choose_multiple(rng, tournament_size)
-                .into_iter()
-                .map(|i| &population[i])
-                .max_by(|&&(_, ref x), &&(_, ref y)| x.partial_cmp(y).expect("found NaN"))
-                .map(|&(ref expr, _)| expr)
-                .expect("tournament cannot select winner from no contestants")
-        }
-    }
-
     /// Initializes a population, which is a list of programs and their scores sorted by score.
     /// The most-fit individual is the first element in the population.
-    fn init<R: Rng, O: Sync>(
+    // TODO: uses sneaky magic from https://stackoverflow.com/questions/50090578
+    //       that we'll remove after the referenced bugfixes.
+    fn init<R: Rng, T>(
         &self,
         params: &Self::Params,
         rng: &mut R,
         gpparams: &GPParams,
-        task: &Task<Self, Self::Expression, O>,
-    ) -> Vec<(Self::Expression, f64)> {
+        task: &Task<Self::Representation, Self::Expression, Self::Observation>,
+    ) -> Vec<(Self::Expression, f64)>
+    where
+        for<'a> &'a Self::Representation: From<&'a Self>,
+    {
         let exprs = self.genesis(params, rng, gpparams.population_size, &task.tp);
         exprs
             .into_iter()
             .map(|expr| {
-                let l = (task.oracle)(self, &expr);
+                let l = (task.oracle)(<&Self::Representation>::from(self), &expr);
                 (expr, l)
             })
             .sorted_by(|&(_, ref x), &(_, ref y)| x.partial_cmp(y).expect("found NaN"))
             .collect()
     }
+
+    /// This should be the guts of `impl GP`. `reproduce` takes parameters,
+    /// observations, and a tournament for selecting individuals from the
+    /// population, and returns a vector of offspring.
+    fn reproduce<R: Rng>(
+        &self,
+        rng: &mut R,
+        params: &Self::Params,
+        obs: &Self::Observation,
+        tournament: &Tournament<Self::Expression>,
+    ) -> Vec<Self::Expression>;
 
     /// This should be a filter-like operation on `offspring`. The intended
     /// semantics is that `validate_offspring` reduces the set of newly created
@@ -356,98 +350,11 @@ pub trait GP: Send + Sync + Sized {
         &self,
         _params: &Self::Params,
         _population: &[(Self::Expression, f64)],
-        _children: &[(Self::Expression, Option<f64>)],
+        _children: &[Self::Expression],
         _seen: &mut Vec<Self::Expression>,
-        _offspring: &mut Vec<(Self::Expression, Option<f64>)>,
+        _offspring: &mut Vec<Self::Expression>,
         _max_validated: usize,
     ) {
-    }
-
-    fn generate_offspring<D, R>(
-        &self,
-        dist: &D,
-        rng: &mut R,
-        params: &Self::Params,
-        gpparams: &GPParams,
-        task: &Task<Self, Self::Expression, Self::Observation>,
-        population: &[(Self::Expression, f64)],
-    ) -> Vec<Self::Expression>
-    where
-        D: Distribution<usize>,
-        R: Rng,
-    {
-        match dist.sample(rng) {
-            0 => {
-                let parent = self.tournament(rng, gpparams.tournament_size, population);
-                self.mutate(params, rng, parent, &task.observation)
-            }
-            1 => {
-                let parent1 = self.tournament(rng, gpparams.tournament_size, population);
-                let parent2 = self.tournament(rng, gpparams.tournament_size, population);
-                self.crossover(params, rng, parent1, parent2, &task.observation)
-            }
-            2 => self.abiogenesis(params, rng, &task.observation),
-            _ => unreachable![],
-        }
-    }
-
-    fn speciate<R: Rng>(
-        &self,
-        params: &Self::Params,
-        rng: &mut R,
-        gpparams: &GPParams,
-        task: &Task<Self, Self::Expression, Self::Observation>,
-        seen: &mut Vec<Self::Expression>,
-        population: &mut Vec<(Self::Expression, f64)>,
-    ) {
-        let dist = WeightedIndex::new(&[1, 0, 0]).unwrap();
-        let n_gens = 3; // HACK: 3 is a constant but not a magic number
-        let mut species = Vec::with_capacity(population.len() * gpparams.species_size);
-        let mut n_seen = 0;
-
-        // For each member, P, of the population
-        while let Some(p) = population.pop() {
-            n_seen += 1;
-            println!("###### pop_len: {}", population.len());
-            // Create a species and a stack.
-            let mut stack: Vec<((Self::Expression, f64), usize)> = vec![];
-            // Until we have S members of our species
-            while species.len() < n_seen * gpparams.species_size {
-                print!("{} ", species.len());
-                // Pop a parent off the stack (assume the initial stack contains infinitely many copies of P)
-                let (parent, gen) = stack.pop().unwrap_or((p.clone(), 0));
-                // Generate offspring.
-                let parents = vec![parent];
-                let offspring =
-                    self.generate_offspring(&dist, rng, params, gpparams, task, &parents);
-                // Add the parent to the species.
-                let mut parents = parents.into_iter().map(|(x, _)| (x, None)).collect_vec();
-                self.validate_offspring(params, &[], &species, seen, &mut parents, 1);
-                species.append(&mut parents);
-                if gen + 1 == n_gens {
-                    // After N generations, select the best and add it to the species. Forget the rest.
-                    if let Some(chosen) = offspring.into_iter().choose(rng) {
-                        let mut chosen_vec = vec![(chosen, None)];
-                        self.validate_offspring(params, &[], &species, seen, &mut chosen_vec, 1);
-                        species.append(&mut chosen_vec);
-                    }
-                } else {
-                    // After M < N generations, score each and add them to the stack.
-                    for o in offspring {
-                        stack.push(((o, 0.0), gen + 1));
-                    }
-                }
-            }
-        }
-        // Given all children from all species, select the new population.
-        let species = species.into_iter().map(|x| x.0).collect_vec();
-        gpparams.selection.select(
-            population,
-            species,
-            |child| (task.oracle)(self, child),
-            rng,
-            gpparams.population_size,
-        );
     }
 
     /// Evolves a population. This will repeatedly run a Bernoulli trial with parameter
@@ -456,28 +363,23 @@ pub trait GP: Send + Sync + Sized {
     ///
     /// [`mutation_prob`]: struct.GPParams.html#mutation_prob
     /// [`n_delta`]: struct.GPParams.html#n_delta
+    // TODO: uses sneaky magic from https://stackoverflow.com/questions/50090578
+    //       that we'll remove after the referenced bugfixes.
     fn evolve<R: Rng>(
         &self,
         params: &Self::Params,
         rng: &mut R,
         gpparams: &GPParams,
-        task: &Task<Self, Self::Expression, Self::Observation>,
+        task: &Task<Self::Representation, Self::Expression, Self::Observation>,
         seen: &mut Vec<Self::Expression>,
         population: &mut Vec<(Self::Expression, f64)>,
-    ) {
+    ) where
+        for<'a> &'a Self::Representation: From<&'a Self>,
+    {
         let mut children = Vec::with_capacity(gpparams.n_delta);
-        let dist = WeightedIndex::new(&[
-            gpparams.weights.mutation,
-            gpparams.weights.crossover,
-            gpparams.weights.abiogenesis,
-        ])
-        .unwrap();
         while children.len() < gpparams.n_delta {
-            let mut offspring = self
-                .generate_offspring(&dist, rng, params, gpparams, task, population)
-                .into_iter()
-                .map(|x| (x, None))
-                .collect_vec();
+            let tournament = Tournament::new(gpparams.tournament_size, population);
+            let mut offspring = self.reproduce(rng, params, &task.observation, &tournament);
             self.validate_offspring(
                 params,
                 population,
@@ -488,12 +390,10 @@ pub trait GP: Send + Sync + Sized {
             );
             children.append(&mut offspring);
         }
-        children.truncate(gpparams.n_delta);
-        let children = children.into_iter().map(|(x, _)| x).collect_vec();
         gpparams.selection.select(
             population,
             children,
-            |child| (task.oracle)(self, child),
+            |child| (task.oracle)(<&Self::Representation>::from(self), child),
             rng,
             gpparams.population_size,
         );

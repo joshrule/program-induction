@@ -55,7 +55,7 @@ use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use {ECFrontier, Task, EC, GP};
+use {ECFrontier, Task, Tournament, EC, GP};
 
 /// (representation) Probabilistic context-free grammar. Currently cannot handle bound variables or
 /// polymorphism.
@@ -312,6 +312,56 @@ impl Grammar {
             }
         }
     }
+
+    fn mutate<R: Rng>(
+        &self,
+        params: &GeneticParams,
+        rng: &mut R,
+        prog: &AppliedRule,
+    ) -> Vec<AppliedRule> {
+        let tot = params.mutation_point + params.mutation_subtree + params.mutation_reproduction;
+        match Uniform::from(0f64..tot).sample(rng) {
+            // point mutation
+            x if x < params.mutation_point => {
+                vec![mutate_random_node(params, prog.clone(), rng, |ar, rng| {
+                    let rule = &self.rules[&ar.0][ar.1];
+                    let mut candidates: Vec<_> = self.rules[&ar.0]
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, r)| r.production == rule.production && i != ar.1)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if candidates.is_empty() {
+                        ar
+                    } else {
+                        candidates.shuffle(rng);
+                        AppliedRule(ar.0, candidates[0], ar.2)
+                    }
+                })]
+            }
+            // subtree mutation
+            x if x < params.mutation_point + params.mutation_subtree => {
+                vec![mutate_random_node(params, prog.clone(), rng, |ar, rng| {
+                    self.sample(&ar.0, rng)
+                })]
+            }
+            // reproduction
+            _ => vec![prog.clone()], // reproduction
+        }
+    }
+
+    fn crossover<R: Rng>(
+        &self,
+        params: &GeneticParams,
+        rng: &mut R,
+        parent1: &AppliedRule,
+        parent2: &AppliedRule,
+    ) -> Vec<AppliedRule> {
+        vec![
+            crossover_random_node(params, parent1, parent2, rng),
+            crossover_random_node(params, parent2, parent1, rng),
+        ]
+    }
 }
 
 /// Parameters for PCFG parameter estimation.
@@ -390,6 +440,7 @@ impl EC for Grammar {
 /// randomly select one of these variants.
 ///
 /// [`GP`]: ../trait.GP.html
+#[derive(Clone, Copy)]
 pub struct GeneticParams {
     /// The progeny factor determines the distribution over nodes in a statement when a
     /// node/subtree is randomly selected. If set to `1`, each node has uniform probability of
@@ -416,6 +467,7 @@ impl Default for GeneticParams {
 }
 
 impl GP for Grammar {
+    type Representation = Grammar;
     type Expression = AppliedRule;
     type Params = GeneticParams;
     type Observation = ();
@@ -433,55 +485,21 @@ impl GP for Grammar {
         };
         (0..pop_size).map(|_| self.sample(tp, rng)).collect()
     }
-    fn mutate<R: Rng>(
+    fn reproduce<R: Rng>(
         &self,
-        params: &Self::Params,
         rng: &mut R,
-        prog: &Self::Expression,
+        params: &Self::Params,
         _obs: &Self::Observation,
+        tournament: &Tournament<Self::Expression>,
     ) -> Vec<Self::Expression> {
-        let tot = params.mutation_point + params.mutation_subtree + params.mutation_reproduction;
-        match Uniform::from(0f64..tot).sample(rng) {
-            // point mutation
-            x if x < params.mutation_point => {
-                vec![mutate_random_node(params, prog.clone(), rng, |ar, rng| {
-                    let rule = &self.rules[&ar.0][ar.1];
-                    let mut candidates: Vec<_> = self.rules[&ar.0]
-                        .iter()
-                        .enumerate()
-                        .filter(|&(i, r)| r.production == rule.production && i != ar.1)
-                        .map(|(i, _)| i)
-                        .collect();
-                    if candidates.is_empty() {
-                        ar
-                    } else {
-                        candidates.shuffle(rng);
-                        AppliedRule(ar.0, candidates[0], ar.2)
-                    }
-                })]
-            }
-            // subtree mutation
-            x if x < params.mutation_point + params.mutation_subtree => {
-                vec![mutate_random_node(params, prog.clone(), rng, |ar, rng| {
-                    self.sample(&ar.0, rng)
-                })]
-            }
-            // reproduction
-            _ => vec![prog.clone()], // reproduction
+        if rng.gen() {
+            let parent = tournament.sample(rng);
+            self.mutate(params, rng, parent)
+        } else {
+            let parent1 = tournament.sample(rng);
+            let parent2 = tournament.sample(rng);
+            self.crossover(params, rng, parent1, parent2)
         }
-    }
-    fn crossover<R: Rng>(
-        &self,
-        params: &Self::Params,
-        rng: &mut R,
-        parent1: &Self::Expression,
-        parent2: &Self::Expression,
-        _obs: &Self::Observation,
-    ) -> Vec<Self::Expression> {
-        vec![
-            crossover_random_node(params, parent1, parent2, rng),
-            crossover_random_node(params, parent2, parent1, rng),
-        ]
     }
 }
 

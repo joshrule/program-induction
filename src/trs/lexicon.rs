@@ -1,34 +1,36 @@
-use super::{SampleError, TypeError, TRS};
+use super::{SampleError, TRSMoveName, TRSMoves, TypeError, TRS};
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type, TypeSchema, Variable as TypeVar};
-use rand::{distributions::Distribution, distributions::WeightedIndex, seq::SliceRandom, Rng};
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::f64::NEG_INFINITY;
-use std::fmt;
-use std::iter;
-use std::sync::{Arc, RwLock};
+use rand::{
+    distributions::{Distribution, WeightedIndex},
+    Rng,
+};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    f64::NEG_INFINITY,
+    fmt,
+    sync::{Arc, RwLock},
+};
 use term_rewriting::{
     Atom, Context, Operator, PStringDist, Place, Rule, RuleContext, Signature, Term, Variable,
     TRS as UntypedTRS,
 };
 use utils::{logsumexp, weighted_sample};
-use GP;
+use {Tournament, GP};
 
 type LOpt = (Option<Atom>, Vec<Type>);
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Parameters for [`Lexicon`] genetic programming ([`GP`]).
 ///
 /// [`Lexicon`]: struct.Lexicon.html
 /// [`GP`]: ../trait.GP.html
 pub struct GeneticParams {
-    /// The number of hypotheses crossover should generate.
-    pub n_crosses: usize,
+    // A list of the moves available during search.
+    pub moves: TRSMoves,
     /// The maximum number of nodes a sampled `Term` can have without failing.
     pub max_sample_size: usize,
-    /// The probability of keeping a rule during crossover.
-    pub p_keep: f64,
     /// The weight to assign variables, constants, and non-constant operators, respectively.
     pub atom_weights: (f64, f64, f64, f64),
 }
@@ -196,6 +198,10 @@ impl Lexicon {
                     && op.name(sig).as_ref().map(std::string::String::as_str) == name
             })
             .ok_or(())
+    }
+    /// Is the `Lexicon` deterministic?
+    pub fn is_deterministic(&self) -> bool {
+        self.0.read().expect("poisoned lexicon").deterministic
     }
     /// All the [`term_rewriting::Variable`]s in the `Lexicon`.
     ///
@@ -620,34 +626,6 @@ impl Lexicon {
         );
         lex.ctx.rollback(snapshot);
         result
-    }
-    /// merge two `TRS` into a single `TRS`.
-    pub fn combine(&self, trs1: &TRS, trs2: &TRS) -> Result<TRS, TypeError> {
-        assert_eq!(trs1.lex, trs2.lex);
-        let background_size = trs1.num_background_rules();
-        let rules1 = trs1.utrs.rules[..(trs1.utrs.len() - background_size)].to_vec();
-        let rules2 = trs2.utrs.rules[..(trs2.utrs.len() - background_size)].to_vec();
-        let mut trs = TRS::new(&trs1.lex, rules1)?;
-        let filtered_rules = rules2
-            .into_iter()
-            .flat_map(|r| r.clauses())
-            .filter(|r2| {
-                for r1 in &trs.utrs().clauses() {
-                    if Rule::alpha(r1, r2).is_some()
-                        || (self.0.read().expect("poisoned lexicon").deterministic
-                            && Term::alpha(vec![(&r1.lhs, &r2.lhs)]).is_some())
-                    {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect_vec();
-        trs.utrs.pushes(filtered_rules).unwrap(); // hack?
-        if self.0.read().expect("poisoned lexicon").deterministic {
-            trs.utrs.make_deterministic();
-        }
-        Ok(trs)
     }
 }
 impl fmt::Debug for Lexicon {
@@ -1630,7 +1608,59 @@ impl Lex {
         }
     }
 }
-impl GP for Lexicon {
+impl<'a> From<&'a GPLexicon> for &'a Lexicon {
+    fn from(gp_lex: &GPLexicon) -> &Lexicon {
+        &gp_lex.lexicon
+    }
+}
+
+type Parents = Vec<TRS>;
+type Tried = HashMap<TRSMoveName, Vec<Parents>>;
+pub struct GPLexicon {
+    pub lexicon: Lexicon,
+    pub(crate) tried: Arc<RwLock<Tried>>,
+}
+impl GPLexicon {
+    pub fn new(lex: &Lexicon) -> GPLexicon {
+        let lexicon = lex.clone();
+        let tried = Arc::new(RwLock::new(HashMap::new()));
+        GPLexicon { lexicon, tried }
+    }
+    pub fn clear(&self) {
+        let mut tried = self.tried.write().expect("poisoned");
+        tried.clear();
+    }
+    pub fn add(&self, name: TRSMoveName, parents: Vec<TRS>) {
+        let mut tried = self.tried.write().expect("poisoned");
+        let entry = tried.entry(name).or_insert_with(|| vec![]);
+        entry.push(parents);
+    }
+    pub fn check(&self, name: TRSMoveName, parents: Parents) -> Option<Parents> {
+        let mut tried = self.tried.write().expect("poisoned");
+        let past_parents = tried.entry(name).or_insert_with(|| vec![]);
+        if self.novelty_possible(name, &parents, &past_parents) {
+            Some(parents)
+        } else {
+            None
+        }
+    }
+    fn novelty_possible(&self, name: TRSMoveName, parents: &Parents, past: &[Parents]) -> bool {
+        match name {
+            TRSMoveName::Memorize => past.is_empty(),
+            TRSMoveName::SampleRule
+            | TRSMoveName::RegenerateRule
+            | TRSMoveName::Recurse
+            | TRSMoveName::RecurseVariablize
+            | TRSMoveName::RecurseGeneralize => true,
+            TRSMoveName::LocalDifference => {
+                parents[0].num_learned_rules() > 1 || !past.contains(parents)
+            }
+            _ => !past.contains(parents),
+        }
+    }
+}
+impl GP for GPLexicon {
+    type Representation = Lexicon;
     type Expression = TRS;
     type Params = GeneticParams;
     type Observation = Vec<Rule>;
@@ -1641,22 +1671,17 @@ impl GP for Lexicon {
         pop_size: usize,
         _tp: &TypeSchema,
     ) -> Vec<Self::Expression> {
-        let trs = TRS::new(self, Vec::new());
-        match trs {
+        match TRS::new(&self.lexicon, vec![]) {
             Ok(mut trs) => {
-                if self.0.read().expect("poisoned lexicon").deterministic {
+                if self.lexicon.is_deterministic() {
                     trs.utrs.make_deterministic();
                 }
                 let mut pop = Vec::with_capacity(pop_size);
                 while pop.len() < pop_size {
                     if let Ok(mut new_trs) =
-                        trs.clone()
-                            .sample_rule(params.atom_weights, params.max_sample_size, rng)
+                        trs.sample_rule(params.atom_weights, params.max_sample_size, rng)
                     {
-                        if !pop
-                            .iter()
-                            .any(|p: &TRS| UntypedTRS::alphas(&p.utrs, &new_trs[0].utrs))
-                        {
+                        if !pop.iter().any(|p: &TRS| TRS::is_alpha(&p, &new_trs[0])) {
                             pop.append(&mut new_trs);
                         }
                     }
@@ -1664,7 +1689,7 @@ impl GP for Lexicon {
                 pop
             }
             Err(err) => {
-                let lex = self.0.read().expect("poisoned lexicon");
+                let lex = &self.lexicon.0.read().expect("poisoned lexicon");
                 let background_trs = UntypedTRS::new(lex.background.clone());
                 panic!(
                     "invalid background knowledge {}: {}",
@@ -1674,111 +1699,44 @@ impl GP for Lexicon {
             }
         }
     }
-    fn mutate<R: Rng>(
+    fn reproduce<R: Rng>(
         &self,
-        params: &Self::Params,
         rng: &mut R,
-        trs: &Self::Expression,
+        params: &Self::Params,
         obs: &Self::Observation,
+        tournament: &Tournament<Self::Expression>,
     ) -> Vec<Self::Expression> {
-        // add, replace, delete, regenerate, exception, local difference, variablization, generalization
-        let weights = vec![2, 2, 0, 4, 8, 4, 4, 2, 1, 1];
+        let weights = params.moves.iter().map(|mv| mv.weight).collect_vec();
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
+            // Choose a move
             let choice = dist.sample(rng);
-            let new_trss = match choice {
-                0 => trs.sample_rule(params.atom_weights, params.max_sample_size, rng),
-                1 => trs.regenerate_rule(params.atom_weights, params.max_sample_size, rng),
-                2 => trs.local_difference(rng),
-                3 => trs.add_exception(obs),
-                4 => trs.delete_rule(),
-                5 => trs.variablize(obs),
-                6 => trs.generalize(obs),
-                7 => trs.recurse(obs, 20),
-                8 => trs.recurse(obs, 3).and_then(|new_trss| {
-                    let mut trss = new_trss
-                        .into_iter()
-                        .filter_map(|trs| {
-                            trs.variablize(obs).ok().map(|trss| {
-                                trss.into_iter()
-                                    .sorted_by_key(|trs| trs.size())
-                                    .collect_vec()
-                            })
-                        })
-                        .flatten()
-                        .collect_vec();
-                    trss.shuffle(rng);
-                    if trss.is_empty() {
-                        Err(SampleError::OptionsExhausted)
-                    } else {
-                        Ok(trss)
-                    }
-                }),
-                9 => trs.recurse(obs, 20).and_then(|new_trss| {
-                    let mut trss = new_trss
-                        .into_iter()
-                        .filter_map(|trs| trs.generalize(obs).ok())
-                        .flatten()
-                        .collect_vec();
-                    trss.shuffle(rng);
-                    if trss.is_empty() {
-                        Err(SampleError::OptionsExhausted)
-                    } else {
-                        Ok(trss)
-                    }
-                }),
-                _ => unreachable!(),
-            };
-            if let Ok(trss) = new_trss {
-                return trss;
+            let mv = params.moves[choice].mv;
+            let name = mv.name();
+            // Sample the parents.
+            let parents = mv.get_parents(&tournament, rng);
+            // Check the parents.
+            if let Some(parents) = self.check(name, parents) {
+                // Take the move.
+                if let Ok(trss) = mv.take(&self.lexicon, obs, rng, &parents) {
+                    self.add(name, parents);
+                    return trss;
+                }
             }
         }
-    }
-    fn crossover<R: Rng>(
-        &self,
-        params: &Self::Params,
-        rng: &mut R,
-        parent1: &Self::Expression,
-        parent2: &Self::Expression,
-        _obs: &Self::Observation,
-    ) -> Vec<Self::Expression> {
-        let trs = self
-            .combine(parent1, parent2)
-            .expect("poorly-typed TRS in crossover");
-        iter::repeat(trs)
-            .take(params.n_crosses)
-            .update(|trs| {
-                trs.utrs.rules.retain(|r| {
-                    self.0
-                        .read()
-                        .expect("poisoned lexicon")
-                        .background
-                        .contains(&r)
-                        || rng.gen_bool(params.p_keep)
-                })
-            })
-            .collect()
-    }
-    fn abiogenesis<R: Rng>(
-        &self,
-        _params: &Self::Params,
-        _rng: &mut R,
-        obs: &Self::Observation,
-    ) -> Vec<Self::Expression> {
-        vec![TRS::new_unchecked(self, obs.clone())]
     }
     fn validate_offspring(
         &self,
         _params: &Self::Params,
         population: &[(Self::Expression, f64)],
-        _children: &[(Self::Expression, Option<f64>)],
+        _children: &[Self::Expression],
         seen: &mut Vec<Self::Expression>,
-        offspring: &mut Vec<(Self::Expression, Option<f64>)>,
+        offspring: &mut Vec<Self::Expression>,
         max_validated: usize,
     ) {
         let mut validated = 0;
         while validated < max_validated && validated < offspring.len() {
-            let (x, _) = &offspring[validated];
+            let x = &offspring[validated];
             let pop_unique = !population.iter().any(|p| TRS::is_alpha(&p.0, &x));
             let see_unique = !seen.iter().any(|c| TRS::is_alpha(&c, &x));
             if pop_unique && see_unique {

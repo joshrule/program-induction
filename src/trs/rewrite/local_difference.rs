@@ -1,9 +1,9 @@
+use super::{SampleError, TRS};
 use itertools::Itertools;
 use rand::Rng;
 use std::iter::once;
 use term_rewriting::{Rule, Term};
 
-use super::{SampleError, TRS};
 
 impl TRS {
     /// Selects a rule from the TRS at random, finds all differences in the LHS and RHS,

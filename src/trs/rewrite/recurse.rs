@@ -1,11 +1,58 @@
 use super::{Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
+use rand::{prelude::SliceRandom, Rng};
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term};
 use utils::weighted_permutation;
 
 impl TRS {
+    pub fn recurse_and_generalize<R: Rng>(
+        &self,
+        data: &[Rule],
+        n_sampled: usize,
+        rng: &mut R,
+    ) -> Result<Vec<TRS>, SampleError> {
+        self.recurse(data, n_sampled).and_then(|new_trss| {
+            let mut trss = new_trss
+                .into_iter()
+                .filter_map(|trs| trs.generalize(data).ok())
+                .flatten()
+                .collect_vec();
+            trss.shuffle(rng);
+            if trss.is_empty() {
+                Err(SampleError::OptionsExhausted)
+            } else {
+                Ok(trss)
+            }
+        })
+    }
+    pub fn recurse_and_variablize<R: Rng>(
+        &self,
+        data: &[Rule],
+        n_sampled: usize,
+        rng: &mut R,
+    ) -> Result<Vec<TRS>, SampleError> {
+        self.recurse(data, n_sampled).and_then(|new_trss| {
+            let mut trss = new_trss
+                .into_iter()
+                .filter_map(|trs| {
+                    trs.variablize(data).ok().map(|trss| {
+                        trss.into_iter()
+                            .sorted_by_key(|trs| trs.size())
+                            .collect_vec()
+                    })
+                })
+                .flatten()
+                .collect_vec();
+            trss.shuffle(rng);
+            if trss.is_empty() {
+                Err(SampleError::OptionsExhausted)
+            } else {
+                Ok(trss)
+            }
+        })
+    }
     pub fn recurse(&self, data: &[Rule], n_sampled: usize) -> Result<Vec<TRS>, SampleError> {
         let all_rules = self.clauses_for_learning(data)?;
         let snapshot = self.lex.snapshot();
