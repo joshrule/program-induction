@@ -440,7 +440,7 @@ mod gen {
         (0..size).map(|_| white_word(rng)).join(&delim.to_string())
     }
 
-    #[allow(clippy::cyclomatic_complexity)]
+    #[allow(clippy::cognitive_complexity)]
     #[allow(clippy::redundant_closure_call)]
     #[allow(clippy::type_complexity)]
     pub fn make_examples(

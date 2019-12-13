@@ -1644,7 +1644,8 @@ impl GPLexicon {
             None
         }
     }
-    fn novelty_possible(&self, name: TRSMoveName, parents: &Parents, past: &[Parents]) -> bool {
+    fn novelty_possible(&self, name: TRSMoveName, parents: &[TRS], past: &[Parents]) -> bool {
+        let check = || !past.iter().any(|p| &p[..] == parents);
         match name {
             TRSMoveName::Memorize => past.is_empty(),
             TRSMoveName::SampleRule
@@ -1652,10 +1653,8 @@ impl GPLexicon {
             | TRSMoveName::Recurse
             | TRSMoveName::RecurseVariablize
             | TRSMoveName::RecurseGeneralize => true,
-            TRSMoveName::LocalDifference => {
-                parents[0].num_learned_rules() > 1 || !past.contains(parents)
-            }
-            _ => !past.contains(parents),
+            TRSMoveName::LocalDifference => parents[0].num_learned_rules() > 1 || check(),
+            _ => check(),
         }
     }
 }
