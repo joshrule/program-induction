@@ -127,19 +127,6 @@ impl GPSelection {
 }
 
 /// Weights for various reproduction operators in genetic programming.
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-pub struct GPWeights {
-    /// The weight for [`crossover`].
-    /// [`crossover`]: trait.GP.html#tymethod.crossover
-    pub crossover: usize,
-    /// The weight for [`mutate`].
-    /// [`mutate`]: trait.GP.html#tymethod.mutate
-    pub mutation: usize,
-    /// The weight for [`abiogenesis`].
-    /// [`abiogenesis`]: trait.GP.html#method.abiogenesis
-    pub abiogenesis: usize,
-}
-
 /// Parameters for genetic programming.
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub struct GPParams {
@@ -147,14 +134,11 @@ pub struct GPParams {
     /// population.
     pub selection: GPSelection,
     pub population_size: usize,
-    pub species_size: usize,
     /// The number of individuals selected uniformly at random to participate in
     /// a tournament. If 1, a single individual is selected uniformly at random,
     /// as if the population were unweighted. This is useful for mimicking
     /// uniform weights after resampling, as in a particle filter.
     pub tournament_size: usize,
-    /// Weights for the various reproduction operators.
-    pub weights: GPWeights,
     /// The number of new children added to the population with each step of evolution.
     /// Traditionally, this would be set to 1. If it is larger than 1, mutations and crossover will
     /// be repeated until the threshold of `n_delta` is met.
@@ -181,7 +165,7 @@ impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
                 .map(|i| &self.population[i])
                 .max_by(|&&(_, ref x), &&(_, ref y)| x.partial_cmp(y).expect("found NaN"))
                 .map(|&(ref expr, _)| expr)
-                .expect("tournament cannot select winner from no contestants")
+                .expect("tournament cannot select winner with no contestants")
         }
     }
 }
@@ -213,7 +197,7 @@ impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
 /// extern crate programinduction;
 /// extern crate rand;
 /// use programinduction::pcfg::{self, Grammar, Rule};
-/// use programinduction::{GP, GPParams, GPSelection, GPWeights, Task};
+/// use programinduction::{GP, GPParams, GPSelection, Task};
 /// use rand::{rngs::SmallRng, SeedableRng};
 ///
 /// fn evaluator(name: &str, inps: &[i32]) -> Result<i32, ()> {
@@ -250,13 +234,7 @@ impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
 ///     let gpparams = GPParams {
 ///         selection: GPSelection::Deterministic,
 ///         population_size: 10,
-///         species_size: 10,
 ///         tournament_size: 5,
-///         weights: GPWeights {
-///             mutation: 6,
-///             crossover: 4,
-///             abiogenesis: 0,
-///         },
 ///         n_delta: 1,
 ///     };
 ///     let params = pcfg::GeneticParams::default();
@@ -308,7 +286,7 @@ pub trait GP: Send + Sync + Sized {
     /// The most-fit individual is the first element in the population.
     // TODO: uses sneaky magic from https://stackoverflow.com/questions/50090578
     //       that we'll remove after the referenced bugfixes.
-    fn init<R: Rng, T>(
+    fn init<R: Rng>(
         &self,
         params: &Self::Params,
         rng: &mut R,
