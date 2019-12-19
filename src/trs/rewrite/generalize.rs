@@ -4,7 +4,6 @@ use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Atom, Context, Operator, Rule, Term, Variable};
 
-
 impl TRS {
     pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
         let all_rules = self.clauses_for_learning(data)?;
@@ -258,7 +257,7 @@ impl TRS {
         // Construct the name.
         let name = None;
         // Construct the arity.
-        let arity = (!applicative as u32) * (vars.len() as u32);
+        let arity = (!applicative as u8) * (vars.len() as u8);
         // Construct the type.
         let mut tp = return_tp.clone();
         for &var in vars.iter().rev() {

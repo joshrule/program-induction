@@ -85,7 +85,7 @@ impl Lexicon {
     /// [`polytype::TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`term_rewriting::Operator`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Operator.html
     pub fn new(
-        operators: Vec<(u32, Option<String>, TypeSchema)>,
+        operators: Vec<(u8, Option<String>, TypeSchema)>,
         deterministic: bool,
         ctx: TypeContext,
     ) -> Lexicon {
@@ -189,7 +189,7 @@ impl Lexicon {
         lex
     }
     /// Return the specified operator if possible.
-    pub fn has_op(&self, name: Option<&str>, arity: u32) -> Result<Operator, ()> {
+    pub fn has_op(&self, name: Option<&str>, arity: u8) -> Result<Operator, ()> {
         let sig = &self.0.read().expect("poisoned lexicon").signature;
         sig.operators()
             .into_iter()
@@ -225,7 +225,7 @@ impl Lexicon {
             .invent_variable(tp)
     }
     /// Add a new operator to the `Lexicon`.
-    pub fn invent_operator(&self, name: Option<String>, arity: u32, tp: &Type) -> Operator {
+    pub fn invent_operator(&self, name: Option<String>, arity: u8, tp: &Type) -> Operator {
         self.0
             .write()
             .expect("poisoned lexicon")
@@ -710,7 +710,7 @@ impl Lex {
         self.free_vars.dedup();
         var
     }
-    fn invent_operator(&mut self, name: Option<String>, arity: u32, tp: &Type) -> Operator {
+    fn invent_operator(&mut self, name: Option<String>, arity: u8, tp: &Type) -> Operator {
         let op = self.signature.new_op(arity, name);
         self.ops.push(TypeSchema::Monotype(tp.clone()));
         self.free_vars.append(&mut tp.vars());
@@ -1609,7 +1609,7 @@ impl Lex {
     }
 }
 impl<'a> From<&'a GPLexicon> for &'a Lexicon {
-    fn from(gp_lex: &GPLexicon) -> &Lexicon {
+    fn from(gp_lex: &'a GPLexicon) -> &'a Lexicon {
         &gp_lex.lexicon
     }
 }
@@ -1628,9 +1628,9 @@ impl GPLexicon {
     }
     pub fn clear(&self) {
         let mut tried = self.tried.write().expect("poisoned");
-        tried.clear();
+        *tried = HashMap::new();
     }
-    pub fn add(&self, name: TRSMoveName, parents: Vec<TRS>) {
+    pub fn add(&self, name: TRSMoveName, parents: Parents) {
         let mut tried = self.tried.write().expect("poisoned");
         let entry = tried.entry(name).or_insert_with(|| vec![]);
         entry.push(parents);
@@ -1740,11 +1740,11 @@ impl GP for GPLexicon {
             let see_unique = !seen.iter().any(|c| TRS::is_alpha(&c, &x));
             if pop_unique && see_unique {
                 validated += 1;
-                seen.push(x.clone());
             } else {
                 offspring.swap_remove(validated);
             }
         }
         offspring.truncate(validated);
+        seen.extend_from_slice(&offspring);
     }
 }

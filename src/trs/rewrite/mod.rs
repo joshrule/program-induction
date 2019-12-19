@@ -330,7 +330,9 @@ impl TRS {
             .iter()
             .flat_map(Rule::clauses)
             .collect_vec();
-        all_rules.extend_from_slice(&self.novel_rules(data));
+        if !data.is_empty() {
+            all_rules.extend_from_slice(&self.novel_rules(data));
+        }
         if all_rules.is_empty() {
             Err(SampleError::OptionsExhausted)
         } else {

@@ -180,7 +180,7 @@ pub fn parse_templates(input: &str, lex: &mut Lexicon) -> Result<Vec<RuleContext
 #[derive(Debug, Clone)]
 enum AtomName {
     Variable(String),
-    Operator(String, u32),
+    Operator(String, u8),
 }
 
 fn schema_wrapper(input: CompleteStr) -> nom::IResult<CompleteStr, TypeSchema> {
@@ -233,7 +233,7 @@ named!(atom_name<CompleteStr, AtomName>,
                            slash >>
                            arity: digit >>
                            (ident, arity)),
-                 |(s, a)| AtomName::Operator(s.to_string(), a.parse::<u32>().unwrap()))));
+                 |(s, a)| AtomName::Operator(s.to_string(), a.parse::<u8>().unwrap()))));
 named!(schema<CompleteStr, TypeSchema>,
        call!(schema_wrapper));
 named!(comment<CompleteStr, CompleteStr>,
