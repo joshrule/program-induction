@@ -16,7 +16,6 @@ impl TRS {
     /// # use polytype::Context as TypeContext;
     /// # use rand::{thread_rng};
     /// # use term_rewriting::{Context, RuleContext, Signature, parse_rule};
-    /// # fn main() {
     /// let mut sig = Signature::default();
     ///
     /// let mut ops = vec![];
@@ -59,7 +58,6 @@ impl TRS {
     /// if let Ok(new_trss) = trs.sample_rule(atom_weights, max_size, &mut rng) {
     ///     assert_eq!(new_trss[0].len(), 3);
     /// }
-    /// # }
     /// ```
     pub fn sample_rule<R: Rng>(
         &self,

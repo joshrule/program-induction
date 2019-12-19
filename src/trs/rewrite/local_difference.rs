@@ -4,7 +4,6 @@ use rand::Rng;
 use std::iter::once;
 use term_rewriting::{Rule, Term};
 
-
 impl TRS {
     /// Selects a rule from the TRS at random, finds all differences in the LHS and RHS,
     /// and makes rules from those differences and inserts them back into the TRS imediately after the background.
@@ -20,7 +19,6 @@ impl TRS {
     /// # use polytype::Context as TypeContext;
     /// # use rand::{thread_rng};
     /// # use term_rewriting::{Context, RuleContext, Signature, parse_rule};
-    /// # fn main() {
     /// let mut sig = Signature::default();
     ///
     /// let mut ops = vec![];
@@ -60,7 +58,6 @@ impl TRS {
     /// let num_new_trss = trs.local_difference(&mut rng).map(|x| x.len()).ok();
     ///
     /// assert_eq!(Some(2), num_new_trss)
-    /// # }
     /// ```
     pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;

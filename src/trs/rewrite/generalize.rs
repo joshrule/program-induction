@@ -13,7 +13,7 @@ impl TRS {
         let new_rules = TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
         trs.remove_clauses(&clauses)?;
         let start = trs.num_learned_rules();
-        trs.append_clauses(new_rules.clone())?;
+        trs.append_clauses(new_rules)?;
         let stop = trs.num_learned_rules();
         Ok(vec![trs.smart_delete(start, stop)?])
     }

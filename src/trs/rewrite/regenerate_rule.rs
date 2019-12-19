@@ -3,7 +3,6 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::{Context, Rule, RuleContext};
 
-
 impl TRS {
     /// Regenerate some portion of a rule
     pub fn regenerate_rule<R: Rng>(

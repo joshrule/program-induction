@@ -19,7 +19,6 @@ impl TRS {
     /// # use polytype::Context as TypeContext;
     /// # use rand::{thread_rng};
     /// # use term_rewriting::{Context, RuleContext, Signature, parse_rule};
-    /// # fn main() {
     /// let mut sig = Signature::default();
     ///
     /// let mut ops = vec![];
@@ -91,7 +90,6 @@ impl TRS {
     /// let mut trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// assert!(trs.swap_lhs_and_rhs(&mut rng).is_err());
-    /// # }
     /// ```
     pub fn swap_lhs_and_rhs<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
         let num_rules = self.len();

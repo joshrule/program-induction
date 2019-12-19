@@ -69,7 +69,6 @@ impl Lexicon {
     /// # extern crate programinduction;
     /// # use programinduction::trs::Lexicon;
     /// # use polytype::Context as TypeContext;
-    /// # fn main() {
     /// let operators = vec![
     ///     (2, Some("PLUS".to_string()), ptp![@arrow[tp!(int), tp!(int), tp!(int)]]),
     ///     (1, Some("SUCC".to_string()), ptp![@arrow[tp!(int), tp!(int)]]),
@@ -78,7 +77,6 @@ impl Lexicon {
     /// let deterministic = false;
     ///
     /// let lexicon = Lexicon::new(operators, deterministic, TypeContext::default());
-    /// # }
     /// ```
     ///
     /// [`polytype::ptp`]: https://docs.rs/polytype/~6.0/polytype/macro.ptp.html
@@ -128,7 +126,6 @@ impl Lexicon {
     /// # use programinduction::trs::Lexicon;
     /// # use term_rewriting::{Signature, parse_rule, parse_rulecontext};
     /// # use polytype::Context as TypeContext;
-    /// # fn main() {
     /// let mut sig = Signature::default();
     ///
     /// let vars = vec![];
@@ -153,7 +150,6 @@ impl Lexicon {
     /// let deterministic = false;
     ///
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, background, templates, deterministic, TypeContext::default());
-    /// # }
     /// ```
     ///
     /// [`polytype::ptp`]: https://docs.rs/polytype/~6.0/polytype/macro.ptp.html
@@ -285,7 +281,6 @@ impl Lexicon {
     /// # use term_rewriting::{Context, Signature, parse_rule};
     /// # use polytype::Context as TypeContext;
     /// # use std::collections::HashMap;
-    /// # fn main() {
     /// let mut sig = Signature::default();
     ///
     /// let vars = vec![];
@@ -314,7 +309,6 @@ impl Lexicon {
     /// let inferred_schema = lexicon.infer_context(&context, &mut HashMap::new()).drop().unwrap();
     ///
     /// assert_eq!(inferred_schema, ptp![int]);
-    /// # }
     /// ```
     ///
     /// [`polytype::TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
@@ -424,7 +418,6 @@ impl Lexicon {
     /// # extern crate programinduction;
     /// # use programinduction::trs::Lexicon;
     /// # use polytype::Context as TypeContext;
-    /// # fn main() {
     /// let operators = vec![
     ///     (2, Some("PLUS".to_string()), ptp![@arrow[tp!(int), tp!(int), tp!(int)]]),
     ///     (1, Some("SUCC".to_string()), ptp![@arrow[tp!(int), tp!(int)]]),
@@ -442,7 +435,6 @@ impl Lexicon {
     /// let mut vars = vec![];
     ///
     /// let term = lexicon.sample_term(&schema, atom_weights, invent, variable, max_size, &mut vars).unwrap();
-    /// # }
     /// ```
     ///
     /// [`term_rewriting::Term`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Term.html

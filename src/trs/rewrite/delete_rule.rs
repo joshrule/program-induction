@@ -1,15 +1,14 @@
-use super::{SampleError, TRS};
+use super::{Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use term_rewriting::{Rule, Term};
 
 impl TRS {
-    /// Delete a rule from the rewrite system, excluding background knowledge.
+    /// Delete a learned rule from the rewrite system.
     pub fn delete_rule(&self) -> Result<Vec<TRS>, SampleError> {
-        let background = &self.lex.0.read().expect("poisoned lexicon").background;
-        let clauses = self.utrs.clauses();
-        let deletable = clauses
+        let n_rules = self.num_learned_rules();
+        let deletable = self.utrs.rules[0..n_rules]
             .iter()
-            .filter(|c| !background.contains(c))
+            .flat_map(|r| r.clauses())
             .collect_vec();
         if deletable.is_empty() {
             Err(SampleError::OptionsExhausted)
@@ -25,7 +24,7 @@ impl TRS {
         }
     }
 
-    /// Try deleting all combinations of rules from the rewrite system.
+    /// Delete all combinations of learned rules from the rewrite system.
     pub fn delete_rules(self) -> Result<Vec<TRS>, SampleError> {
         let n_rules = self.num_learned_rules();
         let deletable = self.utrs.rules[0..n_rules]
@@ -33,10 +32,10 @@ impl TRS {
             .flat_map(|r| r.clauses())
             .collect_vec();
         if deletable.is_empty() {
-            Ok(vec![self])
+            Err(SampleError::OptionsExhausted)
         } else {
             let mut trss = vec![];
-            for n in 1..=deletable.len() {
+            for n in 1..deletable.len() {
                 for rules in deletable.iter().combinations(n) {
                     let mut trs = self.clone();
                     for rule in &rules {
@@ -50,32 +49,24 @@ impl TRS {
         }
     }
 
-    /// Delete rules from the rewrite system which are outmatched by prior rules.
+    /// Delete rules from the rewrite system whose LHS matches a prior rule's.
     pub fn smart_delete(&self, start: usize, stop: usize) -> Result<TRS, SampleError> {
-        if self.num_learned_rules() == 0 {
+        let rules = &self.utrs.rules[0..self.num_learned_rules()];
+        if rules.is_empty() {
             Err(SampleError::OptionsExhausted)
         } else {
-            let mut trs = TRS::new_unchecked(&self.lex, vec![]);
-            trs.utrs.rules.clear();
-            let n = self.num_learned_rules();
-            trs.smart_delete_helper(start, stop, &self.utrs.rules[0..n]);
-            Ok(trs)
+            Ok(TRS::smart_delete_helper(&self.lex, start, stop, rules))
         }
     }
 
-    fn smart_delete_helper(&mut self, start: usize, stop: usize, rules: &[Rule]) {
-        if rules.is_empty() {
-            let mut bg = self
-                .lex
-                .0
-                .read()
-                .expect("poisoned lexicon")
-                .background
-                .clone();
-            self.utrs.rules.append(&mut bg);
-        } else {
-            let new_start = 1.max(start) - 1;
-            let new_stop = 1.max(stop) - 1;
+    fn smart_delete_helper(
+        lex: &Lexicon,
+        mut start: usize,
+        mut stop: usize,
+        mut rules: &[Rule],
+    ) -> TRS {
+        let mut new_rules = Vec::with_capacity(rules.len());
+        while !rules.is_empty() {
             let new_rule = rules[0].clone();
             if (start == 0 && stop > 0)
                 || (start > 0
@@ -83,16 +74,17 @@ impl TRS {
                         .iter()
                         .skip(1)
                         .all(|rule| Term::pmatch(vec![(&rule.lhs, &new_rule.lhs)]).is_none()))
-                || self
-                    .utrs
-                    .rules
+                || new_rules
                     .iter()
-                    .all(|rule| Term::pmatch(vec![(&rule.lhs, &new_rule.lhs)]).is_none())
+                    .all(|rule: &Rule| Term::pmatch(vec![(&rule.lhs, &new_rule.lhs)]).is_none())
             {
                 // in safe zone or outside safe zone with useful rule
-                self.utrs.rules.push(new_rule);
+                new_rules.push(new_rule);
             }
-            self.smart_delete_helper(new_start, new_stop, &rules[1..])
+            start = 1.max(start) - 1;
+            stop = 1.max(stop) - 1;
+            rules = &rules[1..];
         }
+        TRS::new_unchecked(lex, new_rules)
     }
 }

@@ -17,7 +17,6 @@
 //! # use programinduction::trs::{TRS, Lexicon};
 //! # use polytype::Context as TypeContext;
 //! # use term_rewriting::{Signature, parse_rule};
-//! # fn main() {
 //! let mut sig = Signature::default();
 //!
 //! let mut ops = vec![];
@@ -42,7 +41,6 @@
 //! let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
 //!
 //! let trs = TRS::new(&lexicon, rules);
-//! # }
 //! ```
 
 mod lexicon;
@@ -228,4 +226,12 @@ pub fn task_by_rewrite<'a, O: Sync>(
         tp: lex.infer_rules(data)?,
         observation,
     })
+}
+
+fn as_result<T>(xs: Vec<T>) -> Result<Vec<T>, SampleError> {
+    if xs.is_empty() {
+        Err(SampleError::OptionsExhausted)
+    } else {
+        Ok(xs)
+    }
 }

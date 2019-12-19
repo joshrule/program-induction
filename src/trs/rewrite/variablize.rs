@@ -1,4 +1,4 @@
-use super::{Lexicon, SampleError, TRS};
+use super::{super::as_result, Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
@@ -14,9 +14,9 @@ impl TRS {
     /// Replace subterms of [`term_rewriting::Rule`]s with [`term_rewriting::Variable`]s.
     /// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
     /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
-    pub fn variablize(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
+    pub fn variablize(&self) -> Result<Vec<TRS>, SampleError> {
         let snapshot = self.lex.snapshot();
-        let clauses = self.clauses_for_learning(data)?;
+        let clauses = self.clauses_for_learning(&[])?;
         let mut trss = vec![];
         // Generate the list of variablizations.
         let variablizations = TRS::find_all_variablizations(&clauses, &self.lex);
@@ -37,38 +37,34 @@ impl TRS {
                 vars.reverse();
                 // For each variablization, v:
                 for (i, (_, nrs)) in vars.iter().enumerate() {
-                    let mut solution = nrs.clone();
+                    let mut new_rules = nrs.clone();
                     let the_len = trss.len();
-                    self.store_solution(&mut trss, TRS::make_solution(&solution, &old_rules));
+                    self.store_solution(&mut trss, TRS::make_solution(&new_rules, &old_rules));
                     if trss.len() == the_len {
                         continue;
                     }
                     // For each remaining variablization, v':
                     for ((tp, places), _) in vars.iter().skip(i + 1) {
                         // If you can apply v' to each rule, update the result.
-                        let attempt = TRS::apply_variablization(tp, places, &solution, &self.lex);
-                        if attempt.len() == solution.len() {
-                            solution = attempt.into_iter().map(|(x, _)| x).collect_vec();
+                        let attempt = TRS::apply_variablization(tp, places, &new_rules, &self.lex);
+                        if attempt.len() == new_rules.len() {
+                            new_rules = attempt.into_iter().map(|(x, _)| x).collect_vec();
                         }
                     }
-                    self.store_solution(&mut trss, TRS::make_solution(&solution, &old_rules));
+                    self.store_solution(&mut trss, TRS::make_solution(&new_rules, &old_rules));
                 }
             });
         // Return the solution set.
         self.lex.rollback(snapshot);
-        if trss.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(trss)
-        }
+        as_result(trss)
     }
     /// A simplified version of [`TRS::variablize`] that introduces exactly one
     /// [`term_rewriting::Variable`].
     ///
     /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
-    pub fn variablize_once(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
+    pub fn variablize_once(&self) -> Result<Vec<TRS>, SampleError> {
         let snapshot = self.lex.snapshot();
-        let clauses = self.clauses_for_learning(data)?;
+        let clauses = self.clauses_for_learning(&[])?;
         let variablizations = TRS::find_all_variablizations(&clauses, &self.lex);
         let mut trss = vec![];
         TRS::apply_variablizations(&variablizations, &clauses, &self.lex)
@@ -76,11 +72,7 @@ impl TRS {
             .map(|(_, x)| x)
             .for_each(|solution| self.store_solution(&mut trss, solution));
         self.lex.rollback(snapshot);
-        if trss.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(trss)
-        }
+        as_result(trss)
     }
     fn find_all_variablizations(rules: &[Rule], lex: &Lexicon) -> Vec<(Type, Vec<Place>)> {
         rules
@@ -162,24 +154,52 @@ impl TRS {
             .collect_vec()
     }
     fn store_solution(&self, new_trss: &mut Vec<TRS>, solution: Vec<(Rule, &Rule)>) {
-        if let Some(trss) = self.convert_applied_variablization_to_trs(solution) {
-            for trs in trss {
-                if new_trss.iter().all(|new_trs| !TRS::is_alpha(new_trs, &trs)) {
-                    new_trss.push(trs);
-                }
+        if let Some(trs) = self.adopt_solution(solution) {
+            if new_trss.iter().all(|new_trs| !TRS::is_alpha(new_trs, &trs)) {
+                new_trss.push(trs);
             }
         }
     }
-    fn convert_applied_variablization_to_trs(&self, rules: Vec<(Rule, &Rule)>) -> Option<Vec<TRS>> {
+    fn adopt_solution(&self, mut rules: Vec<(Rule, &Rule)>) -> Option<TRS> {
         let mut trs = self.clone();
-        trs.swap_rules(&rules).ok()?;
-        trs = trs.smart_delete(0, 0).ok()?;
-        // Create a hypothesis containing just the new rules.
-        let (just_rules, _): (Vec<Rule>, Vec<&Rule>) = rules.into_iter().unzip();
-        let trs2 = TRS::new_unchecked(&self.lex, just_rules)
-            .smart_delete(0, 0)
-            .ok()?;
-        Some(vec![trs, trs2])
+        let mut i = 0;
+        while i < rules.len() {
+            if rules
+                .iter()
+                .take(i)
+                .any(|(r, _)| Rule::alpha(r, &rules[i].0).is_some())
+            {
+                rules.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        if self.lex.is_deterministic() {
+            i = 0;
+            while i < rules.len() {
+                let mut okay = true;
+                let mut j = i + 1;
+                while j < rules.len() {
+                    if Term::alpha(vec![(&rules[j].0.lhs, &rules[i].0.lhs)]).is_some() {
+                        okay = false;
+                        rules.remove(j);
+                    } else {
+                        j += 1;
+                    }
+                }
+                if !okay {
+                    rules.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        if rules.is_empty() {
+            None
+        } else {
+            trs.swap_rules(&rules).ok()?;
+            trs.smart_delete(0, 0).ok()
+        }
     }
 }
 
@@ -254,13 +274,13 @@ mod tests {
             &lex,
         )
             .expect("parsed trs");
-        let trss = trs.variablize_once(&[]).unwrap();
+        let trss = trs.variablize_once().unwrap();
 
         for trs in &trss {
             println!("{}\n", trs);
         }
 
-        assert_eq!(trss.len(), 6);
+        assert_eq!(trss.len(), 4);
     }
 
     #[test]
@@ -270,7 +290,7 @@ mod tests {
             &lex,
         )
             .expect("parsed trs");
-        let trss = trs.variablize_once(&[]).unwrap();
+        let trss = trs.variablize_once().unwrap();
 
         for trs in &trss {
             println!("{}\n", trs);
@@ -282,30 +302,12 @@ mod tests {
     #[test]
     fn variablize_once_test_3() {
         let lex = create_test_lexicon();
-        let rule = parse_rule(".(C .(.(CONS x_) NIL)) = .(.(CONS x_) .(.(CONS x_) .(.(CONS x_) .(.(CONS x_) .(.(CONS x_) .(.(CONS x_) NIL))))))",
-            &lex,
-        )
-            .expect("parsed rule");
-        let trs = TRS::new_unchecked(&lex, vec![]);
-        let trss = trs.variablize_once(&[rule]).unwrap();
-
-        for trs in &trss {
-            println!("{}\n", trs);
-        }
-
-        assert_eq!(trss.len(), 4);
-    }
-
-    #[test]
-    fn variablize_once_test_4() {
-        let lex = create_test_lexicon();
-        let rule = parse_rule(
-            ".(C .(x_ NIL)) = .(x_ .(x_ .(x_ .(x_ .(x_ .(x_ NIL))))))",
+        let trs = parse_trs(
+            ".(C .(x_ NIL)) = .(x_ .(x_ .(x_ .(x_ .(x_ .(x_ NIL))))));",
             &lex,
         )
         .expect("parsed rule");
-        let trs = TRS::new_unchecked(&lex, vec![]);
-        let trss = trs.variablize_once(&[rule]).unwrap();
+        let trss = trs.variablize_once().unwrap();
 
         for trs in &trss {
             println!("{}\n", trs);
@@ -315,16 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn variablize_test() {
+    fn variablize_test_1() {
         let lex = create_test_lexicon();
-        let rule = parse_rule(
-            "C (CONS (DIGIT 5) (CONS (DIGIT 3) (CONS (DIGIT 2) (CONS (DIGIT 9) (CONS (DIGIT 8) NIL))))) = CONS (DIGIT 2) NIL",
-            &lex,
-        )
-            .expect("parsed rule");
-        let trs = parse_trs("C (x_ (x_ y_)) = y_;", &lex).expect("parsed trs");
+        let trs = parse_trs("C (CONS (DIGIT 5) (CONS (DIGIT 3) (CONS (DIGIT 2) (CONS (DIGIT 9) (CONS (DIGIT 8) NIL))))) = CONS (DIGIT 2) NIL;C (x_ (x_ y_)) = y_;", &lex).expect("parsed trs");
 
-        let trss = trs.variablize(&[rule]);
+        let trss = trs.variablize();
 
         assert!(trss.is_ok());
 
@@ -333,6 +330,29 @@ mod tests {
             println!("{}\n", trs);
         }
 
-        assert_eq!(trss.len(), 51);
+        assert_eq!(trss.len(), 26);
+    }
+
+    #[test]
+    fn variablize_test_2() {
+        let lex = create_test_lexicon();
+        let trs = parse_trs(".(C .(.(CONS .(.(DECC .(DIGIT 5)) 4)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 0)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) var13_)) = .(.(CONS .(DIGIT 2)) .(C var13_)); .(C .(.(CONS .(DIGIT 0)) var20_)) = .(.(CONS .(DIGIT 0)) .(C var20_)); .(C .(.(CONS .(.(DECC .(DIGIT 7)) 7)) var19_)) = .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(C var19_)); .(C .(.(CONS .(.(DECC .(DIGIT 2)) 0)) var17_)) = .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(C var17_)); .(C .(.(CONS .(DIGIT 9)) var16_)) = .(.(CONS .(DIGIT 9)) .(C var16_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 0)) var15_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(C var15_)); .(C .(.(CONS .(DIGIT 3)) var14_)) = .(.(CONS .(DIGIT 3)) .(C var14_)); .(C .(.(CONS .(.(DECC .(DIGIT 3)) 2)) var23_)) = .(.(CONS .(.(DECC .(DIGIT 3)) 2)) .(C var23_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 6)) var22_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 6)) .(C var22_));", &lex).expect("parsed trs");
+
+        let vs = TRS::find_all_variablizations(&trs.clauses_for_learning(&[]).unwrap(), &lex);
+
+        for (tp, places) in &vs {
+            println!("{} {:?}\n\n", tp, places);
+        }
+
+        let trss = trs.variablize();
+
+        assert!(trss.is_ok());
+
+        let trss = trss.unwrap();
+        for trs in &trss {
+            println!("{}\n", trs);
+        }
+
+        assert_eq!(trss.len(), 26);
     }
 }

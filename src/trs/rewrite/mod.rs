@@ -84,11 +84,11 @@ impl TRSMove {
             TRSMove::LocalDifference => parents[0].local_difference(rng),
             TRSMove::MemorizeOne => parents[0].memorize_one(obs),
             TRSMove::DeleteRule => parents[0].delete_rule(),
-            TRSMove::Variablize => parents[0].variablize(obs),
-            TRSMove::Generalize => parents[0].generalize(obs),
-            TRSMove::Recurse(n) => parents[0].recurse(obs, n),
-            TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(obs, n, rng),
-            TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(obs, n, rng),
+            TRSMove::Variablize => parents[0].variablize(),
+            TRSMove::Generalize => parents[0].generalize(&[]),
+            TRSMove::Recurse(n) => parents[0].recurse(n),
+            TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(n, rng),
+            TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(n, rng),
             TRSMove::DeleteRules => parents[0].clone().delete_rules(),
             TRSMove::Combine => TRS::combine(&parents[0], &parents[1]),
         }
@@ -139,7 +139,6 @@ impl TRS {
     /// # use programinduction::trs::{TRS, Lexicon};
     /// # use term_rewriting::{Signature, parse_rule};
     /// # use polytype::Context as TypeContext;
-    /// # fn main() {
     /// let mut sig = Signature::default();
     ///
     /// let mut ops = vec![];
@@ -168,7 +167,6 @@ impl TRS {
     /// let trs = TRS::new(&lexicon, rules).unwrap();
     ///
     /// assert_eq!(trs.size(), 12);
-    /// # }
     /// ```
     /// [`Lexicon`]: struct.Lexicon.html
     pub fn new(lexicon: &Lexicon, mut rules: Vec<Rule>) -> Result<TRS, TypeError> {

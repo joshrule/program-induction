@@ -192,8 +192,7 @@ impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
 /// We finally pick some parameters and evolve a population for a few hundred generations.
 ///
 /// ```
-/// #[macro_use]
-/// extern crate polytype;
+/// #[macro_use] extern crate polytype;
 /// extern crate programinduction;
 /// extern crate rand;
 /// use programinduction::pcfg::{self, Grammar, Rule};
@@ -209,49 +208,47 @@ impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
 ///     }
 /// }
 ///
-/// fn main() {
-///     let g = Grammar::new(
-///         tp!(EXPR),
-///         vec![
-///             Rule::new("0", tp!(EXPR), 1.0),
-///             Rule::new("1", tp!(EXPR), 1.0),
-///             Rule::new("plus", tp!(@arrow[tp!(EXPR), tp!(EXPR), tp!(EXPR)]), 1.0),
-///         ],
-///     );
-///     let target = 6;
-///     let task = Task {
-///         oracle: Box::new(|g: &Grammar, expr| {
-///             if let Ok(n) = g.eval(expr, &evaluator) {
-///                 (n - target).abs() as f64 // numbers close to target
-///             } else {
-///                 std::f64::INFINITY
-///             }
-///         }),
-///         tp: ptp!(EXPR),
-///         observation: (),
-///     };
+/// let g = Grammar::new(
+///     tp!(EXPR),
+///     vec![
+///         Rule::new("0", tp!(EXPR), 1.0),
+///         Rule::new("1", tp!(EXPR), 1.0),
+///         Rule::new("plus", tp!(@arrow[tp!(EXPR), tp!(EXPR), tp!(EXPR)]), 1.0),
+///     ],
+/// );
+/// let target = 6;
+/// let task = Task {
+///     oracle: Box::new(|g: &Grammar, expr| {
+///         if let Ok(n) = g.eval(expr, &evaluator) {
+///             (n - target).abs() as f64 // numbers close to target
+///         } else {
+///             std::f64::INFINITY
+///         }
+///     }),
+///     tp: ptp!(EXPR),
+///     observation: (),
+/// };
 ///
-///     let gpparams = GPParams {
-///         selection: GPSelection::Deterministic,
-///         population_size: 10,
-///         tournament_size: 5,
-///         n_delta: 1,
-///     };
-///     let params = pcfg::GeneticParams::default();
-///     let generations = 1000;
-///     let rng = &mut SmallRng::from_seed([1u8; 16]);
+/// let gpparams = GPParams {
+///     selection: GPSelection::Deterministic,
+///     population_size: 10,
+///     tournament_size: 5,
+///     n_delta: 1,
+/// };
+/// let params = pcfg::GeneticParams::default();
+/// let generations = 1000;
+/// let rng = &mut SmallRng::from_seed([1u8; 16]);
 ///
-///     let mut pop = g.init(&params, rng, &gpparams, &task);
-///     let mut seen = vec![];
-///     for _ in 0..generations {
-///         g.evolve(&params, rng, &gpparams, &task, &mut seen, &mut pop)
-///     }
-///
-///     // perfect winner is found!
-///     let &(ref winner, score) = &pop[0];
-///     assert_eq!(6, g.eval(winner, &evaluator).unwrap());
-///     assert_eq!(0.0, score);
+/// let mut pop = g.init(&params, rng, &gpparams, &task);
+/// let mut seen = vec![];
+/// for _ in 0..generations {
+///     g.evolve(&params, rng, &gpparams, &task, &mut seen, &mut pop)
 /// }
+///
+/// // perfect winner is found!
+/// let &(ref winner, score) = &pop[0];
+/// assert_eq!(6, g.eval(winner, &evaluator).unwrap());
+/// assert_eq!(0.0, score);
 /// ```
 ///
 /// [`genesis`]: #tymethod.genesis

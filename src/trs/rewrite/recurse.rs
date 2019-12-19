@@ -1,4 +1,4 @@
-use super::{Lexicon, SampleError, TRS};
+use super::{super::as_result, Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
 use rand::{prelude::SliceRandom, Rng};
@@ -9,120 +9,100 @@ use utils::weighted_permutation;
 impl TRS {
     pub fn recurse_and_generalize<R: Rng>(
         &self,
-        data: &[Rule],
         n_sampled: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
-        self.recurse(data, n_sampled).and_then(|new_trss| {
+        self.recurse(n_sampled).and_then(|new_trss| {
             let mut trss = new_trss
                 .into_iter()
-                .filter_map(|trs| trs.generalize(data).ok())
+                .filter_map(|trs| trs.generalize(&[]).ok())
                 .flatten()
                 .collect_vec();
             trss.shuffle(rng);
-            if trss.is_empty() {
-                Err(SampleError::OptionsExhausted)
-            } else {
-                Ok(trss)
-            }
+            as_result(trss)
         })
     }
     pub fn recurse_and_variablize<R: Rng>(
         &self,
-        data: &[Rule],
         n_sampled: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
-        self.recurse(data, n_sampled).and_then(|new_trss| {
+        self.recurse(n_sampled).and_then(|new_trss| {
             let mut trss = new_trss
                 .into_iter()
-                .filter_map(|trs| {
-                    trs.variablize(data).ok().map(|trss| {
-                        trss.into_iter()
-                            .sorted_by_key(|trs| trs.size())
-                            .collect_vec()
-                    })
-                })
+                .filter_map(|trs| trs.variablize().ok())
                 .flatten()
                 .collect_vec();
             trss.shuffle(rng);
-            if trss.is_empty() {
-                Err(SampleError::OptionsExhausted)
-            } else {
-                Ok(trss)
-            }
+            as_result(trss)
         })
     }
-    pub fn recurse(&self, data: &[Rule], n_sampled: usize) -> Result<Vec<TRS>, SampleError> {
-        let all_rules = self.clauses_for_learning(data)?;
+    pub fn recurse(&self, n_sampled: usize) -> Result<Vec<TRS>, SampleError> {
         let snapshot = self.lex.snapshot();
+        let clauses = self.clauses_for_learning(&[])?;
         let op = self
             .lex
             .has_op(Some("."), 2)
             .map_err(|_| SampleError::OptionsExhausted)?;
-        let (trss, ns): (Vec<_>, Vec<_>) = all_rules
+        let (trss, ns): (Vec<_>, Vec<_>) = clauses
             .iter()
+            // Find each transform.
             .flat_map(|r| TRS::find_transforms(r, &self.lex))
             .unique()
-            .filter_map(|(f, lhs_place, rhs_place, tp)| {
-                let mut trs = self.clone();
-                let new_ruless: Vec<_> = all_rules
-                    .windows(1)
-                    .filter_map(|rules| {
-                        let sub_new_rules = TRS::transform(
-                            &f, &lhs_place, &rhs_place, op, &rules[0], &self.lex, &tp,
-                        )
-                        .unwrap_or_else(|_| vec![]);
-                        if sub_new_rules.len() <= 1 {
-                            None
-                        } else {
-                            trs.remove_clauses(rules).unwrap();
-                            Some(sub_new_rules)
-                        }
-                    })
-                    .collect();
-                let mut new_bases = vec![];
-                let mut new_recursives = vec![];
-                for mut new_rules in new_ruless {
-                    // put base case in  new bases
-                    let new_base = new_rules.swap_remove(0);
-                    if new_bases
-                        .iter()
-                        .all(|c| Rule::alpha(&c, &new_base).is_none())
-                    {
-                        new_bases.push(new_base);
-                    }
-                    // put each recursive in new recursive
-                    for new_recursive in new_rules {
-                        if new_recursives
-                            .iter()
-                            .all(|c| Rule::alpha(&c, &new_recursive).is_none())
-                        {
-                            new_recursives.push(new_recursive);
-                        }
-                    }
-                }
-                let mut new_rules = vec![];
-                new_rules.append(&mut new_bases);
-                new_rules.append(&mut new_recursives);
-                let n = new_rules.len();
-                if n == 1 {
-                    return None;
-                }
-                trs.prepend_clauses(new_rules.clone()).ok()?;
-                let trs = trs.smart_delete(0, n).ok()?;
-                let trs2 = TRS::new(&self.lex, new_rules).unwrap();
-                Some(vec![
-                    (trs, (1.5 as f64).powi(n as i32)),
-                    (trs2, (1.5 as f64).powi(n as i32)),
-                ])
+            // Try each transform.
+            .filter_map(|transform| {
+                // Apply the transform in concert to all rules.
+                let new_ruless: Vec<_> =
+                    TRS::transform(&transform, op, &clauses, &self.lex).unwrap_or_else(|_| vec![]);
+                // Adopt the solution.
+                self.adopt_recursive_solution(new_ruless)
             })
-            .flatten()
             .unzip();
+        // Return the results.
         self.lex.rollback(snapshot);
-        // HACK: 20 is a constant but not a magic number.
-        let new_trss = weighted_permutation(&trss, &ns, Some(n_sampled));
-        Ok(new_trss)
+        as_result(weighted_permutation(&trss, &ns, Some(n_sampled)))
+    }
+    fn adopt_recursive_solution(&self, solution: Vec<(&Rule, Vec<Rule>)>) -> Option<(TRS, f64)> {
+        let (old_rules, new_ruless): (Vec<_>, Vec<_>) = solution.into_iter().unzip();
+        let new_rules = TRS::reorder_rules(new_ruless);
+        let old_rules = old_rules.into_iter().cloned().collect_vec(); // HACK
+        match new_rules.len() {
+            1 => None,
+            n => {
+                let mut trs = self.clone();
+                trs.remove_clauses(&old_rules).ok()?;
+                trs.prepend_clauses(new_rules).ok()?;
+                let trs = trs.smart_delete(0, n).ok()?;
+                Some((trs, (1.5 as f64).powi(n as i32)))
+            }
+        }
+    }
+    fn reorder_rules(new_ruless: Vec<Vec<Rule>>) -> Vec<Rule> {
+        let mut new_bases = vec![];
+        let mut new_recursives = vec![];
+        for mut new_rules in new_ruless {
+            // put base case in new bases
+            let new_base = new_rules.swap_remove(0);
+            if new_bases
+                .iter()
+                .all(|c| Rule::alpha(&c, &new_base).is_none())
+            {
+                new_bases.push(new_base);
+            }
+            // put each recursive in new recursive
+            for new_recursive in new_rules {
+                if new_recursives
+                    .iter()
+                    .all(|c| Rule::alpha(&c, &new_recursive).is_none())
+                {
+                    new_recursives.push(new_recursive);
+                }
+            }
+        }
+        let mut new_rules = vec![];
+        new_rules.append(&mut new_bases);
+        new_rules.append(&mut new_recursives);
+        new_rules
     }
     fn collect_recursive_fns<'a>(
         map: &HashMap<Place, Type>,
@@ -191,54 +171,60 @@ impl TRS {
         }
         transforms
     }
-    fn transform(
-        f: &Term,
-        lhs_place: &[usize],
-        rhs_place: &[usize],
+    fn transform<'a>(
+        (f, lhs, rhs, tp): &(Term, Vec<usize>, Vec<usize>, Type),
         op: Operator,
-        rule: &Rule,
+        rules: &'a [Rule],
         lex: &Lexicon,
-        tp: &Type,
-    ) -> Result<Vec<Rule>, SampleError> {
-        let mut new_rules = vec![rule.clone()];
-        // Iterate until failure.
-        while let Ok((new_rule1, new_rule2)) = TRS::transform_inner(
-            f,
-            lhs_place,
-            rhs_place,
-            op,
-            &new_rules[new_rules.len() - 1],
-            lex,
-            tp,
-        ) {
-            // Exit early if the LHS == the RHS; or the base case hasn't changed.
-            if new_rule1.lhs == new_rule1.rhs().unwrap() {
-                break;
-            } else if let Some(old_rule) = new_rules.pop() {
-                if Rule::alpha(&old_rule, &new_rule2).is_some() {
-                    break;
-                }
-            }
-            // Only add new recursive cases if they're alpha-unique.
-            let unique = new_rules
+    ) -> Result<Vec<(&'a Rule, Vec<Rule>)>, SampleError> {
+        // Try the transform once for each rule.
+        let (mut new_ruless, mut next_step): (Vec<_>, Vec<_>) = rules
+            .iter()
+            .filter_map(|rule| {
+                TRS::transform_inner(f, lhs, rhs, op, rule, lex, tp)
+                    .ok()
+                    .map(|tuple| ((rule, vec![rule.clone()]), tuple))
+            })
+            .unzip();
+        // Unroll the recursion until it causes a problem.
+        while TRS::update_solution(&mut new_ruless, next_step) {
+            next_step = new_ruless
                 .iter()
-                .all(|r| Rule::alpha(r, &new_rule1).is_none());
-            if unique {
-                new_rules.push(new_rule1);
-            }
-            new_rules.push(new_rule2);
-            // HACK: 12 is a constant, but not a magic number
-            if new_rules.len() > 12 {
-                break;
-            }
+                .filter_map(|(_, new_rules)| {
+                    let base_case = new_rules.last().unwrap();
+                    TRS::transform_inner(f, lhs, rhs, op, base_case, lex, tp).ok()
+                })
+                .collect_vec();
         }
-        // Return
-        if new_rules.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            new_rules.reverse();
-            Ok(new_rules)
+        // TODO: necessary? new_ruless = new_ruless.into_iter().filter(|(_, new_rules)| new_rules.len() > 1).collect_vec();
+        // Put the base case up front.
+        new_ruless
+            .iter_mut()
+            .for_each(|(_, new_rules)| new_rules.reverse());
+        as_result(new_ruless)
+    }
+    fn update_solution(solution: &mut [(&Rule, Vec<Rule>)], new: Vec<(Rule, Rule)>) -> bool {
+        let successful =
+            // succeeds on all rules
+            solution.len() == new.len()
+            // all base case LHSs are alpha unique
+            && new.iter().map(|(_, base)| base).combinations(2).all(|bs| Term::alpha(vec![(&bs[0].lhs, &bs[1].lhs)]).is_none())
+            // recursive cases aren't trivial (i.e. LHS == RHS)
+            && new.iter().all(|(rec, _)| rec.lhs != rec.rhs().unwrap())
+            // base case has changed
+            && new.iter().enumerate().all(|(i, (_, base))| Rule::alpha(&solution[i].1.last().unwrap(), base).is_none());
+        if successful {
+            new.into_iter().enumerate().for_each(|(i, (rec, base))| {
+                // Only add new recursive cases if they're alpha-unique.
+                let unique = solution[i].1.iter().all(|r| Rule::alpha(r, &rec).is_none());
+                solution[i].1.pop();
+                if unique {
+                    solution[i].1.push(rec);
+                }
+                solution[i].1.push(base);
+            })
         }
+        successful
     }
     fn transform_inner(
         f: &Term,
@@ -315,14 +301,15 @@ impl TRS {
 
 #[cfg(test)]
 mod tests {
-    use super::TRS;
+    use super::{Lexicon, TRS};
+    use itertools::Itertools;
     use polytype::Context as TypeContext;
+    use rand::thread_rng;
     use std::collections::HashMap;
     use trs::parser::{parse_lexicon, parse_rule, parse_term, parse_trs};
 
-    #[test]
-    fn find_transforms_test() {
-        let lex = parse_lexicon(
+    fn create_test_lexicon() -> Lexicon {
+        parse_lexicon(
             &[
                 "C/0: list -> list;",
                 "CONS/0: nat -> list -> list;",
@@ -341,7 +328,12 @@ mod tests {
             true,
             TypeContext::default(),
         )
-        .unwrap();
+        .expect("parsed lexicon")
+    }
+
+    #[test]
+    fn find_transforms_test() {
+        let lex = create_test_lexicon();
         let rule = parse_rule(
             "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)))",
             &lex,
@@ -357,26 +349,7 @@ mod tests {
 
     #[test]
     fn find_transforms_test_2() {
-        let lex = parse_lexicon(
-            &[
-                "C/0: list -> list;",
-                "CONS/0: nat -> list -> list;",
-                "NIL/0: list;",
-                "DECC/0: nat -> int -> nat;",
-                "DIGIT/0: int -> nat;",
-                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-                "0/0: int; 1/0: int; 2/0: int;",
-                "3/0: int; 4/0: int; 5/0: int;",
-                "6/0: int; 7/0: int; 8/0: int;",
-                "9/0: int;",
-            ]
-            .join(" "),
-            "",
-            "",
-            true,
-            TypeContext::default(),
-        )
-        .unwrap();
+        let lex = create_test_lexicon();
         let rule = parse_rule(
             "C (CONS (DIGIT 6) (CONS (DECC (DIGIT 6) 3) (CONS (DECC (DIGIT 8) 6 ) (CONS (DIGIT 8) (CONS (DIGIT 9) (CONS (DIGIT 4) (CONS (DIGIT 7) NIL))))))) = (CONS (DIGIT 6) (CONS (DIGIT 6) (CONS (DIGIT 6) (CONS (DIGIT 6) (CONS (DECC (DIGIT 6) 3) (CONS (DECC (DIGIT 8) 6 ) (CONS (DIGIT 8) (CONS (DIGIT 9) (CONS (DIGIT 4) (CONS (DIGIT 7) NIL))))))))))",
             &lex,
@@ -392,26 +365,7 @@ mod tests {
 
     #[test]
     fn transform_inner_test() {
-        let lex = parse_lexicon(
-            &[
-                "C/0: list -> list;",
-                "CONS/0: nat -> list -> list;",
-                "NIL/0: list;",
-                "DECC/0: nat -> int -> nat;",
-                "DIGIT/0: int -> nat;",
-                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-                "0/0: int; 1/0: int; 2/0: int;",
-                "3/0: int; 4/0: int; 5/0: int;",
-                "6/0: int; 7/0: int; 8/0: int;",
-                "9/0: int;",
-            ]
-            .join(" "),
-            "",
-            "",
-            true,
-            TypeContext::default(),
-        )
-        .unwrap();
+        let lex = create_test_lexicon();
         let op = lex.has_op(Some("."), 2).unwrap();
         let rule = parse_rule(
             "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)))",
@@ -448,41 +402,31 @@ mod tests {
 
     #[test]
     fn transform_test() {
-        let lex = parse_lexicon(
-            &[
-                "C/0: list -> list;",
-                "CONS/0: nat -> list -> list;",
-                "NIL/0: list;",
-                "DECC/0: nat -> int -> nat;",
-                "DIGIT/0: int -> nat;",
-                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-                "0/0: int; 1/0: int; 2/0: int;",
-                "3/0: int; 4/0: int; 5/0: int;",
-                "6/0: int; 7/0: int; 8/0: int;",
-                "9/0: int;",
-            ]
-            .join(" "),
-            "",
-            "",
-            true,
-            TypeContext::default(),
-        )
-        .unwrap();
+        let rule_str = ".(C .(.(CONS .(DIGIT 2)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(.(CONS .(DIGIT 9)) .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(.(CONS .(DIGIT 0)) .(.(CONS .(.(DECC .(DIGIT 5)) 4)) NIL)))))))))) = .(.(CONS .(DIGIT 2)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(.(CONS .(DIGIT 9)) .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(.(CONS .(DIGIT 0)) NIL))))))))";
+        let lex = create_test_lexicon();
         let op = lex.has_op(Some("."), 2).unwrap();
-        let rule = parse_rule(
-            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))))",
-            &lex,
-        )
-            .expect("parsed rule");
+        let rule = parse_rule(rule_str, &lex).expect("parsed rule");
+        let rules = &[rule];
         let f = parse_term("C", &lex).expect("parsed term");
         let lhs_place = vec![0, 1, 1];
         let rhs_place = vec![1, 1];
         let tp = tp![list];
-        let result = TRS::transform(&f, &lhs_place, &rhs_place, op, &rule, &lex, &tp);
-        assert!(result.is_ok());
-        let new_rules = result.unwrap();
-        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let tuple = (f, lhs_place, rhs_place, tp);
 
+        let result = TRS::transform(&tuple, op, rules, &lex);
+        assert!(result.is_ok());
+
+        let mut new_ruless = result.unwrap();
+        assert_eq!(1, new_ruless.len());
+
+        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let (old_rule, new_rules) = new_ruless.pop().unwrap();
+        println!("{}", old_rule.pretty(sig));
+        assert_eq!(rule_str, old_rule.display(sig));
+
+        for (i, rule) in new_rules.iter().enumerate() {
+            println!("{}. {}", i, rule.pretty(sig));
+        }
         assert_eq!(8, new_rules.len());
         assert_eq!(
             "C (CONS (DECC (DIGIT 5) 4) []) = []",
@@ -518,33 +462,14 @@ mod tests {
         );
     }
     #[test]
-    fn recurse_1_test() {
-        let lex = parse_lexicon(
-            &[
-                "C/0: list -> list;",
-                "CONS/0: nat -> list -> list;",
-                "NIL/0: list;",
-                "DECC/0: nat -> int -> nat;",
-                "DIGIT/0: int -> nat;",
-                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-                "0/0: int; 1/0: int; 2/0: int;",
-                "3/0: int; 4/0: int; 5/0: int;",
-                "6/0: int; 7/0: int; 8/0: int;",
-                "9/0: int;",
-            ]
-            .join(" "),
-            "",
-            "",
-            true,
-            TypeContext::default(),
-        )
-        .unwrap();
+    fn recurse_test_1() {
+        let lex = create_test_lexicon();
         let trs = parse_trs(
             "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))));",
             &lex,
         )
             .expect("parsed TRS");
-        let result = trs.recurse(&[], 20);
+        let result = trs.recurse(20);
         assert!(result.is_ok());
         let trss = result.unwrap();
 
@@ -555,33 +480,34 @@ mod tests {
         assert_eq!(20, trss.len());
     }
     #[test]
-    fn recurse_2_test() {
-        let lex = parse_lexicon(
-            &[
-                "C/0: list -> list;",
-                "CONS/0: nat -> list -> list;",
-                "NIL/0: list;",
-                "DECC/0: nat -> int -> nat;",
-                "DIGIT/0: int -> nat;",
-                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-                "0/0: int; 1/0: int; 2/0: int;",
-                "3/0: int; 4/0: int; 5/0: int;",
-                "6/0: int; 7/0: int; 8/0: int;",
-                "9/0: int;",
-            ]
-            .join(" "),
-            "",
-            "",
-            true,
-            TypeContext::default(),
+    fn recurse_test_2() {
+        let lex = create_test_lexicon();
+        // C [2 3 10 9 20 3 77 0 54] = [54]
+        // C [9 16 32 0] = [9 16 32]
+        let trs = parse_trs(
+            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DECC (DIGIT 5) 4)  NIL);C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 0) NIL);",
+            &lex,
         )
-        .unwrap();
+            .expect("parsed TRS");
+        let result = trs.recurse(20);
+        assert!(result.is_ok());
+        let trss = result.unwrap();
+
+        for trs in &trss {
+            println!("##\n{}\n##", trs);
+        }
+
+        assert_eq!(18, trss.len());
+    }
+    #[test]
+    fn recurse_test_3() {
+        let lex = create_test_lexicon();
         let trs = parse_trs(
             "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))));C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)));",
             &lex,
         )
             .expect("parsed TRS");
-        let result = trs.recurse(&[], 20);
+        let result = trs.recurse(20);
         assert!(result.is_ok());
         let trss = result.unwrap();
 
@@ -590,5 +516,24 @@ mod tests {
         }
 
         assert_eq!(20, trss.len());
+    }
+    #[test]
+    fn recurse_and_variablize_test() {
+        // This test is for easier debugging.
+        let lex = create_test_lexicon();
+        let trs = parse_trs(
+            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))));C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)));",
+            &lex,
+        )
+            .expect("parsed TRS");
+        let result = trs.recurse_and_variablize(5, &mut thread_rng());
+        assert!(result.is_ok());
+        let trss = result.unwrap();
+
+        for trs in trss.iter().sorted_by_key(|x| x.size()) {
+            println!("##\n{}\n##", trs);
+        }
+
+        assert!(true);
     }
 }

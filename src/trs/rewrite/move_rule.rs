@@ -16,7 +16,6 @@ impl TRS {
     /// # use rand::{thread_rng};
     /// # use polytype::Context as TypeContext;
     /// # use term_rewriting::{Context, RuleContext, Signature, parse_rule};
-    /// # fn main() {
     /// let mut sig = Signature::default();
     ///
     /// let mut ops = vec![];
@@ -61,7 +60,6 @@ impl TRS {
     ///
     /// assert_ne!(pretty_before, new_trs.to_string());
     /// assert_eq!(new_trs.to_string(), "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_));\nPLUS(x_ ZERO) = x_;");
-    /// # }
     /// ```
     pub fn move_rule<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
         let mut trs = self.clone();

@@ -200,12 +200,12 @@ fn make_atom(
 ) -> Atom {
     match name {
         AtomName::Variable(s) => {
-            let v = sig.new_var(Some(s.to_string()));
+            let v = sig.new_var(Some(s));
             vars.push(schema);
             Atom::Variable(v)
         }
         AtomName::Operator(s, a) => {
-            let o = sig.new_op(a, Some(s.to_string()));
+            let o = sig.new_op(a, Some(s));
             ops.push(schema);
             Atom::Operator(o)
         }
