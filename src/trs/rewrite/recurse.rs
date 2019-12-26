@@ -226,9 +226,15 @@ impl TRS {
     fn reconcile_base_cases(
         mut ruless: Vec<(&Rule, Vec<Case>)>,
     ) -> Option<Vec<(&Rule, Vec<Rule>)>> {
-        while !TRS::check_base_cases(&ruless) {
-            for (_, rules) in ruless.iter_mut() {
-                rules.pop().as_ref()?;
+        loop {
+            if ruless.iter().any(|(_, rules)| rules.is_empty()) {
+                return None;
+            } else if TRS::check_base_cases(&ruless) {
+                break;
+            } else {
+                for (_, rules) in ruless.iter_mut() {
+                    rules.pop().as_ref()?;
+                }
             }
         }
         let new_ruless = ruless
@@ -249,10 +255,13 @@ impl TRS {
         // Basecases are good if no rules have shared LHSs but differing RHSs
         ruless
             .iter()
-            .map(|(_, rules)| rules.last().unwrap())
+            .map(|(_, rules)| rules.last())
             .combinations(2)
-            .all(|bs| {
-                Term::alpha(vec![(&bs[0].1.lhs, &bs[1].1.lhs)]).is_none() || bs[0].1 == bs[1].1
+            .all(|bs| match (&bs[0], &bs[1]) {
+                (Some(x), Some(y)) => {
+                    Term::alpha(vec![(&x.1.lhs, &y.1.lhs)]).is_none() || x.1 == y.1
+                }
+                _ => false,
             })
     }
     fn transform_inner(
