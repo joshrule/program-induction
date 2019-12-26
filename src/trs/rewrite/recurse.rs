@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term};
 use utils::weighted_permutation;
 
+type Transform = (Term, Vec<usize>, Vec<usize>, Type);
+type Case = (Option<Rule>, Rule);
+
 impl TRS {
     pub fn recurse_and_generalize<R: Rng>(
         &self,
@@ -52,8 +55,8 @@ impl TRS {
             // Try each transform.
             .filter_map(|transform| {
                 // Apply the transform in concert to all rules.
-                let new_ruless: Vec<_> =
-                    TRS::transform(&transform, op, &clauses, &self.lex).unwrap_or_else(|_| vec![]);
+                let new_ruless: Vec<_> = TRS::transform_rules(&transform, op, &clauses, &self.lex)
+                    .unwrap_or_else(|_| vec![]);
                 // Adopt the solution.
                 self.adopt_recursive_solution(new_ruless)
             })
@@ -171,60 +174,86 @@ impl TRS {
         }
         transforms
     }
-    fn transform<'a>(
-        (f, lhs, rhs, tp): &(Term, Vec<usize>, Vec<usize>, Type),
+    fn transform_rules<'a>(
+        t: &Transform,
         op: Operator,
         rules: &'a [Rule],
         lex: &Lexicon,
     ) -> Result<Vec<(&'a Rule, Vec<Rule>)>, SampleError> {
-        // Try the transform once for each rule.
-        let (mut new_ruless, mut next_step): (Vec<_>, Vec<_>) = rules
+        // Collect the full transform for each rule that can be transformed.
+        let new_ruless = rules
             .iter()
-            .filter_map(|rule| {
-                TRS::transform_inner(f, lhs, rhs, op, rule, lex, tp)
-                    .ok()
-                    .map(|tuple| ((rule, vec![rule.clone()]), tuple))
-            })
-            .unzip();
-        // Unroll the recursion until it causes a problem.
-        while TRS::update_solution(&mut new_ruless, next_step) {
-            next_step = new_ruless
-                .iter()
-                .filter_map(|(_, new_rules)| {
-                    let base_case = new_rules.last().unwrap();
-                    TRS::transform_inner(f, lhs, rhs, op, base_case, lex, tp).ok()
-                })
-                .collect_vec();
-        }
-        // TODO: necessary? new_ruless = new_ruless.into_iter().filter(|(_, new_rules)| new_rules.len() > 1).collect_vec();
-        // Put the base case up front.
+            .filter_map(|rule| TRS::transform_rule(t, op, rule, lex).map(|rs| (rule, rs)))
+            .collect_vec();
+        // Reconcile the base cases.
+        let mut new_ruless =
+            TRS::reconcile_base_cases(new_ruless).ok_or(SampleError::OptionsExhausted)?;
+        // Put the base cases first.
         new_ruless
             .iter_mut()
             .for_each(|(_, new_rules)| new_rules.reverse());
         as_result(new_ruless)
     }
-    fn update_solution(solution: &mut [(&Rule, Vec<Rule>)], new: Vec<(Rule, Rule)>) -> bool {
-        let successful =
-            // succeeds on all rules
-            solution.len() == new.len()
-            // all base case LHSs are alpha unique
-            && new.iter().map(|(_, base)| base).combinations(2).all(|bs| Term::alpha(vec![(&bs[0].lhs, &bs[1].lhs)]).is_none())
-            // recursive cases aren't trivial (i.e. LHS == RHS)
-            && new.iter().all(|(rec, _)| rec.lhs != rec.rhs().unwrap())
-            // base case has changed
-            && new.iter().enumerate().all(|(i, (_, base))| Rule::alpha(&solution[i].1.last().unwrap(), base).is_none());
-        if successful {
-            new.into_iter().enumerate().for_each(|(i, (rec, base))| {
-                // Only add new recursive cases if they're alpha-unique.
-                let unique = solution[i].1.iter().all(|r| Rule::alpha(r, &rec).is_none());
-                solution[i].1.pop();
-                if unique {
-                    solution[i].1.push(rec);
-                }
-                solution[i].1.push(base);
-            })
+    fn transform_rule(
+        (f, lhs, rhs, tp): &Transform,
+        op: Operator,
+        rule: &Rule,
+        lex: &Lexicon,
+    ) -> Option<Vec<Case>> {
+        let mut transforms = vec![];
+        let mut basecase = rule.clone();
+        while let Some((rec, base)) = TRS::transform_inner(f, lhs, rhs, op, &basecase, lex, tp).ok()
+        {
+            // Only continue for a novel, nontrivial base case (to avoid loops)
+            if base.lhs != base.rhs().unwrap()
+                && !transforms
+                    .iter()
+                    .any(|(_, b)| Rule::alpha(b, &base).is_some())
+            {
+                transforms.push((Some(rec), basecase));
+                basecase = base;
+            } else {
+                break;
+            }
         }
-        successful
+        if transforms.is_empty() {
+            None
+        } else {
+            transforms.push((None, basecase));
+            Some(transforms)
+        }
+    }
+    fn reconcile_base_cases(
+        mut ruless: Vec<(&Rule, Vec<Case>)>,
+    ) -> Option<Vec<(&Rule, Vec<Rule>)>> {
+        while !TRS::check_base_cases(&ruless) {
+            for (_, rules) in ruless.iter_mut() {
+                rules.pop().as_ref()?;
+            }
+        }
+        let new_ruless = ruless
+            .into_iter()
+            .map(|(old, rules)| {
+                let n = rules.len() - 1;
+                let new_rules = rules
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (rec, base))| if i < n { rec.unwrap() } else { base })
+                    .collect_vec();
+                (old, new_rules)
+            })
+            .collect_vec();
+        Some(new_ruless)
+    }
+    fn check_base_cases(ruless: &[(&Rule, Vec<Case>)]) -> bool {
+        // Basecases are good if no rules have shared LHSs but differing RHSs
+        ruless
+            .iter()
+            .map(|(_, rules)| rules.last().unwrap())
+            .combinations(2)
+            .all(|bs| {
+                Term::alpha(vec![(&bs[0].1.lhs, &bs[1].1.lhs)]).is_none() || bs[0].1 == bs[1].1
+            })
     }
     fn transform_inner(
         f: &Term,
@@ -251,7 +280,7 @@ impl TRS {
         let rhs_structure = TRS::check_place(rule, rhs_place, var_type, lex, &map)?;
         let new_var = lex.invent_variable(var_type);
         // Swap lhs_structure for: new_var.
-        let mut new_rule1 = rule
+        let mut rec = rule
             .replace(lhs_place, Term::Variable(new_var))
             .ok_or(SampleError::Subterm)?;
         // Swap rhs_structure for: f new_var.
@@ -259,7 +288,7 @@ impl TRS {
             op,
             args: vec![f.clone(), Term::Variable(new_var)],
         };
-        new_rule1 = new_rule1
+        rec = rec
             .replace(rhs_place, new_subterm)
             .ok_or(SampleError::Subterm)?;
         // Create the rule: f lhs_structure = rhs_structure.
@@ -267,11 +296,10 @@ impl TRS {
             op,
             args: vec![f.clone(), lhs_structure.clone()],
         };
-        let new_rule2 =
-            Rule::new(new_lhs, vec![rhs_structure.clone()]).ok_or(SampleError::Subterm)?;
+        let base = Rule::new(new_lhs, vec![rhs_structure.clone()]).ok_or(SampleError::Subterm)?;
         // Return.
         lex.rollback(snapshot);
-        Ok((new_rule1, new_rule2))
+        Ok((rec, base))
     }
     fn leftmost_symbol_matches(
         rule: &Rule,
@@ -413,7 +441,7 @@ mod tests {
         let tp = tp![list];
         let tuple = (f, lhs_place, rhs_place, tp);
 
-        let result = TRS::transform(&tuple, op, rules, &lex);
+        let result = TRS::transform_rules(&tuple, op, rules, &lex);
         assert!(result.is_ok());
 
         let mut new_ruless = result.unwrap();
@@ -427,7 +455,7 @@ mod tests {
         for (i, rule) in new_rules.iter().enumerate() {
             println!("{}. {}", i, rule.pretty(sig));
         }
-        assert_eq!(8, new_rules.len());
+        assert_eq!(9, new_rules.len());
         assert_eq!(
             "C (CONS (DECC (DIGIT 5) 4) []) = []",
             new_rules[0].pretty(sig),
@@ -441,24 +469,28 @@ mod tests {
             new_rules[2].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DECC (DIGIT 2) 0) var4_) = CONS (DECC (DIGIT 2) 0) (C var4_)",
+            "C (CONS (DIGIT 3) var5_) = CONS (DIGIT 3) (C var5_)",
             new_rules[3].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 9) var3_) = CONS (DIGIT 9) (C var3_)",
+            "C (CONS (DECC (DIGIT 2) 0) var4_) = CONS (DECC (DIGIT 2) 0) (C var4_)",
             new_rules[4].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DECC (DIGIT 1) 0) var2_) = CONS (DECC (DIGIT 1) 0) (C var2_)",
+            "C (CONS (DIGIT 9) var3_) = CONS (DIGIT 9) (C var3_)",
             new_rules[5].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 3) var1_) = CONS (DIGIT 3) (C var1_)",
+            "C (CONS (DECC (DIGIT 1) 0) var2_) = CONS (DECC (DIGIT 1) 0) (C var2_)",
             new_rules[6].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 2) var0_) = CONS (DIGIT 2) (C var0_)",
+            "C (CONS (DIGIT 3) var1_) = CONS (DIGIT 3) (C var1_)",
             new_rules[7].pretty(sig),
+        );
+        assert_eq!(
+            "C (CONS (DIGIT 2) var0_) = CONS (DIGIT 2) (C var0_)",
+            new_rules[8].pretty(sig),
         );
     }
     #[test]
@@ -518,7 +550,28 @@ mod tests {
         assert_eq!(20, trss.len());
     }
     #[test]
-    fn recurse_and_variablize_test() {
+    #[ignore]
+    fn recurse_and_variablize_test_1() {
+        // This test is for easier debugging.
+        let lex = create_test_lexicon();
+        let trs = parse_trs(
+            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DECC (DIGIT 5) 4)  NIL);C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 0) NIL);",
+            &lex,
+        )
+            .expect("parsed TRS");
+        let result = trs.recurse_and_variablize(5, &mut thread_rng());
+        assert!(result.is_ok());
+        let trss = result.unwrap();
+
+        for trs in trss.iter().sorted_by_key(|x| x.size()) {
+            println!("##\n{}\n##", trs);
+        }
+
+        assert!(true);
+    }
+    #[test]
+    #[ignore]
+    fn recurse_and_variablize_test_2() {
         // This test is for easier debugging.
         let lex = create_test_lexicon();
         let trs = parse_trs(
