@@ -1,4 +1,4 @@
-use super::{SampleError, TRS};
+use super::{super::as_result, SampleError, TRS};
 use rand::{seq::SliceRandom, Rng};
 use std::collections::HashMap;
 
@@ -66,7 +66,6 @@ impl TRS {
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
         // TODO: fail if you sample an existing rule?
-        let mut trs = self.clone();
         let context = {
             let contexts = &self.lex.0.read().expect("poisoned lexicon").templates;
             contexts
@@ -74,15 +73,24 @@ impl TRS {
                 .ok_or(SampleError::OptionsExhausted)?
                 .clone()
         };
-        let rule = trs
+        let rule = self
             .lex
             .sample_rule_from_context(context, atom_weights, true, max_size)
             .drop()?;
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }
-        trs.lex.infer_rule(&rule, &mut HashMap::new()).drop()?;
-        trs.utrs.push(rule)?;
-        Ok(vec![trs])
+        self.lex.infer_rule(&rule, &mut HashMap::new()).drop()?;
+        let mut new_rules = vec![rule];
+        self.lex.filter_background(&mut new_rules);
+        let trss = new_rules
+            .into_iter()
+            .filter_map(|rule| {
+                let mut trs = self.clone();
+                trs.utrs.push(rule).ok()?;
+                Some(trs)
+            })
+            .collect();
+        as_result(trss)
     }
 }

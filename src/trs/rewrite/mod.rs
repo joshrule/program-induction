@@ -119,11 +119,11 @@ impl TRSMove {
     }
 }
 
-/// Manages the semantics of a term rewriting system.
+/// A typed term rewriting system.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TRS {
     pub(crate) lex: Lexicon,
-    // INVARIANT: UntypedTRS.rules ends with lex.background
+    // INVARIANT: utrs never contains background information
     pub(crate) utrs: UntypedTRS,
 }
 impl TRS {
@@ -168,43 +168,29 @@ impl TRS {
     ///
     /// assert_eq!(trs.size(), 12);
     /// ```
+    ///
     /// [`Lexicon`]: struct.Lexicon.html
-    pub fn new(lexicon: &Lexicon, mut rules: Vec<Rule>) -> Result<TRS, TypeError> {
-        let utrs = {
-            let utrs = {
-                let lex = lexicon.0.read().expect("poisoned lexicon");
-                rules.append(&mut lex.background.clone());
-                let mut utrs = UntypedTRS::new(rules);
-                if lexicon.0.read().expect("poisoned lexicon").deterministic {
-                    utrs.make_deterministic();
-                }
-                utrs
-            };
-            lexicon.infer_utrs(&utrs)?;
-            utrs
-        };
-        Ok(TRS {
-            lex: lexicon.clone(),
-            utrs,
-        })
+    pub fn new(lexicon: &Lexicon, rules: Vec<Rule>) -> Result<TRS, TypeError> {
+        let trs = TRS::new_unchecked(lexicon, rules);
+        lexicon.infer_utrs(&trs.utrs)?;
+        Ok(trs)
     }
 
     /// Like [`TRS::new`] but skips type inference. This is useful in scenarios
     /// where you are already confident in the type safety of the new rules.
     ///
-    ///
     /// [`TRS::new`]: struct.TRS.html#method.new
-    pub fn new_unchecked(lexicon: &Lexicon, mut rules: Vec<Rule>) -> TRS {
+    pub fn new_unchecked(lexicon: &Lexicon, rules: Vec<Rule>) -> TRS {
+        // Remove any rules already in the background
+        let mut utrs = UntypedTRS::new(rules);
+        let lex = lexicon.0.read().expect("poisoned lexicon");
+        for bg in lex.background.iter().flat_map(|r| r.clauses()) {
+            utrs.remove_clauses(&bg).ok();
+        }
+        if lexicon.is_deterministic() {
+            utrs.make_deterministic();
+        }
         let lex = lexicon.clone();
-        let utrs = {
-            let lex = lexicon.0.read().expect("poisoned lexicon");
-            rules.append(&mut lex.background.clone());
-            let mut utrs = UntypedTRS::new(rules);
-            if lex.deterministic {
-                utrs.make_deterministic();
-            }
-            utrs
-        };
         TRS { lex, utrs }
     }
 
@@ -216,8 +202,7 @@ impl TRS {
     ///
     /// [`term_rewriting::TRS`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.TRS.html#method.size
     pub fn size(&self) -> usize {
-        let n = self.num_learned_rules();
-        self.utrs.rules[..n].iter().map(Rule::size).sum()
+        self.utrs.rules.iter().map(Rule::size).sum()
     }
 
     /// The length of the underlying [`term_rewriting::TRS`].
@@ -241,6 +226,21 @@ impl TRS {
         self.utrs.clone()
     }
 
+    pub fn full_utrs(&self) -> UntypedTRS {
+        let mut utrs = self.utrs.clone();
+        utrs.inserts_idx(
+            utrs.len(),
+            self.lex
+                .0
+                .read()
+                .expect("poisoned lexicon")
+                .background
+                .clone(),
+        )
+        .ok();
+        utrs
+    }
+
     pub fn num_background_rules(&self) -> usize {
         self.lex
             .0
@@ -251,7 +251,7 @@ impl TRS {
     }
 
     pub fn num_learned_rules(&self) -> usize {
-        self.len() - self.num_background_rules()
+        self.len()
     }
 
     pub fn replace(
@@ -299,7 +299,6 @@ impl TRS {
         self.utrs
             .rules
             .iter()
-            .take(self.num_learned_rules())
             .enumerate()
             .flat_map(|(i, rule)| rule.clauses().into_iter().map(move |r| (i, r)))
             .collect_vec()
@@ -323,11 +322,7 @@ impl TRS {
     }
 
     fn clauses_for_learning(&self, data: &[Rule]) -> Result<Vec<Rule>, SampleError> {
-        let n_rules = self.num_learned_rules();
-        let mut all_rules = self.utrs.rules[..n_rules]
-            .iter()
-            .flat_map(Rule::clauses)
-            .collect_vec();
+        let mut all_rules = self.utrs.rules.iter().flat_map(Rule::clauses).collect_vec();
         if !data.is_empty() {
             all_rules.extend_from_slice(&self.novel_rules(data));
         }
@@ -367,13 +362,11 @@ impl TRS {
 }
 impl fmt::Display for TRS {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let true_len = self.num_learned_rules();
         let sig = &self.lex.0.read().expect("poisoned lexicon").signature;
         let trs_str = self
             .utrs
             .rules
             .iter()
-            .take(true_len)
             .map(|r| format!("{};", r.display(sig)))
             .join("\n");
 

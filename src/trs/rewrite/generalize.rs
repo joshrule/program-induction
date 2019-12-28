@@ -10,11 +10,13 @@ impl TRS {
         let mut trs = self.clone();
         let (lhs_context, clauses) = TRS::find_lhs_context(&all_rules)?;
         let (rhs_context, clauses) = TRS::find_rhs_context(&clauses)?;
-        let new_rules = TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
+        let mut new_rules =
+            TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
         trs.remove_clauses(&clauses)?;
-        let start = trs.num_learned_rules();
+        let start = trs.len();
+        trs.lex.filter_background(&mut new_rules);
         trs.append_clauses(new_rules)?;
-        let stop = trs.num_learned_rules();
+        let stop = trs.len();
         Ok(vec![trs.smart_delete(start, stop)?])
     }
     fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {

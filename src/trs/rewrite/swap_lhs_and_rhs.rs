@@ -1,8 +1,7 @@
+use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::Rule;
-
-use super::{SampleError, TRS};
 
 impl TRS {
     /// Selects a rule from the TRS at random, swaps the LHS and RHS if possible and inserts the resulting rules
@@ -51,6 +50,7 @@ impl TRS {
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
     ///
     /// let mut trs = TRS::new(&lexicon, rules).unwrap();
+    /// println!("{}", trs);
     ///
     /// assert_eq!(trs.len(), 1);
     ///
@@ -92,20 +92,13 @@ impl TRS {
     /// assert!(trs.swap_lhs_and_rhs(&mut rng).is_err());
     /// ```
     pub fn swap_lhs_and_rhs<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
-        let num_rules = self.len();
-        let num_background = self
-            .lex
-            .0
-            .read()
-            .expect("poisoned lexicon")
-            .background
-            .len();
-        if num_background <= num_rules {
-            let idx = rng.gen_range(num_background, num_rules);
+        if !self.is_empty() {
+            let idx = rng.gen_range(0, self.len());
             let mut trs = self.clone();
-            let new_rules = TRS::swap_rule_helper(&trs.utrs.rules[idx])?;
+            let mut new_rules = TRS::swap_rule(&trs.utrs.rules[idx])?;
+            self.lex.filter_background(&mut new_rules);
             trs.utrs.remove_idx(idx)?;
-            trs.utrs.inserts_idx(num_background, new_rules)?;
+            trs.utrs.inserts_idx(idx, new_rules)?;
             Ok(trs)
         } else {
             Err(SampleError::OptionsExhausted)
@@ -113,20 +106,16 @@ impl TRS {
     }
     /// returns a vector of a rules with each rhs being the lhs of the original
     /// rule and each lhs is each rhs of the original.
-    fn swap_rule_helper(rule: &Rule) -> Result<Vec<Rule>, SampleError> {
+    fn swap_rule(rule: &Rule) -> Result<Vec<Rule>, SampleError> {
         let rules = rule
             .clauses()
             .iter()
-            .filter_map(TRS::swap_clause_helper)
+            .filter_map(TRS::swap_clause)
             .collect_vec();
-        if rules.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(rules)
-        }
+        as_result(rules)
     }
     /// Swap lhs and rhs iff the rule is deterministic and swap is a valid rule.
-    fn swap_clause_helper(rule: &Rule) -> Option<Rule> {
+    fn swap_clause(rule: &Rule) -> Option<Rule> {
         rule.rhs()
             .and_then(|rhs| Rule::new(rhs, vec![rule.lhs.clone()]))
     }

@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::{seq::index::sample, Rng};
 
 use super::{SampleError, TRS};
 
@@ -62,17 +62,11 @@ impl TRS {
     /// assert_eq!(new_trs.to_string(), "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_));\nPLUS(x_ ZERO) = x_;");
     /// ```
     pub fn move_rule<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
-        let mut trs = self.clone();
-        let num_rules = self.len();
-        let background = &self.lex.0.read().expect("poisoned lexicon").background;
-        let num_background = background.len();
-        if num_background < num_rules - 1 {
-            let i = rng.gen_range(num_background, num_rules);
-            let mut j = rng.gen_range(num_background, num_rules);
-            while j == i {
-                j = rng.gen_range(num_background, num_rules);
-            }
-            trs.utrs.move_rule(i, j)?;
+        let len = self.len();
+        if len > 1 {
+            let mut trs = self.clone();
+            let idxs = sample(rng, len, 2);
+            trs.utrs.move_rule(idxs.index(0), idxs.index(1))?;
             Ok(trs)
         } else {
             Err(SampleError::OptionsExhausted)

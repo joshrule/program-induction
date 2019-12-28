@@ -1,4 +1,4 @@
-use super::{SampleError, TRS};
+use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::{Context, Rule, RuleContext};
@@ -12,24 +12,20 @@ impl TRS {
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
-        let new_rules = self.regenerate_helper(&clause, atom_weights, max_size)?;
+        let mut new_rules = self.regenerate_helper(&clause, atom_weights, max_size)?;
+        self.lex.filter_background(&mut new_rules);
         let new_trss = new_rules
             .into_iter()
             .filter_map(|new_clause| {
                 let mut trs = self.clone();
-                let okay = trs.replace(n, &clause, new_clause).is_ok();
-                if okay {
+                if trs.replace(n, &clause, new_clause).is_ok() {
                     Some(trs)
                 } else {
                     None
                 }
             })
             .collect_vec();
-        if new_trss.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(new_trss)
-        }
+        as_result(new_trss)
     }
     fn regenerate_helper(
         &self,
@@ -56,10 +52,6 @@ impl TRS {
                 }
             }
         }
-        if rules.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(rules)
-        }
+        as_result(rules)
     }
 }

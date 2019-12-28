@@ -269,6 +269,21 @@ impl Lexicon {
     pub fn fresh_type_variable(&self) -> Type {
         self.0.write().expect("poisoned lexicon").ctx.new_variable()
     }
+    pub fn filter_background(&self, rules: &mut Vec<Rule>) {
+        let bgs = &self.0.read().expect("poisoned lexicon").background;
+        for rule in rules.iter_mut() {
+            for bg in bgs {
+                rule.discard(bg);
+            }
+        }
+        if self.is_deterministic() {
+            rules.retain(|rule| {
+                bgs.iter()
+                    .all(|bg| Term::alpha(vec![(&bg.lhs, &rule.lhs)]).is_none())
+            });
+        }
+        rules.retain(|rule| !rule.is_empty());
+    }
     /// Infer the [`polytype::TypeSchema`] associated with a [`term_rewriting::Context`].
     ///
     /// # Example
@@ -991,8 +1006,7 @@ impl Lex {
         Ok(lhs_type.apply_compress(&mut self.ctx))
     }
     fn infer_utrs(&mut self, utrs: &UntypedTRS) -> Result<(), TypeError> {
-        let n = utrs.rules.len() - self.background.len();
-        for rule in &utrs.rules[..n] {
+        for rule in &utrs.rules {
             self.infer_rule_internal(rule, &mut HashMap::new())?;
         }
         Ok(())
@@ -1482,11 +1496,6 @@ impl Lex {
         }
         Ok(lp)
     }
-    fn n_learned_clauses(&self, utrs: &UntypedTRS) -> usize {
-        let n_clauses: usize = utrs.clauses().len();
-        let n_background_clauses: usize = self.background.iter().map(|x| x.clauses().len()).sum();
-        n_clauses - n_background_clauses
-    }
     fn logprior_utrs(
         &mut self,
         utrs: &UntypedTRS,
@@ -1494,12 +1503,12 @@ impl Lex {
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let n_learned_clauses = self.n_learned_clauses(utrs);
+        let clauses = utrs.clauses();
         let mut p_clauses = 0.0;
-        for clause in utrs.clauses().iter().take(n_learned_clauses) {
+        for clause in clauses.iter() {
             p_clauses += self.logprior_rule(clause, atom_weights, invent)?;
         }
-        Ok(p_number_of_clauses(n_learned_clauses) + p_clauses)
+        Ok(p_number_of_clauses(clauses.len()) + p_clauses)
     }
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
     fn logprior_srs(
@@ -1512,13 +1521,13 @@ impl Lex {
         t_max: usize,
         d_max: usize,
     ) -> Result<f64, SampleError> {
-        let n_learned_clauses = self.n_learned_clauses(utrs);
+        let clauses = utrs.clauses();
         let mut p_clauses = 0.0;
-        for clause in utrs.clauses().iter().take(n_learned_clauses) {
+        for clause in clauses.iter() {
             p_clauses +=
                 self.logprior_string_rule(clause, atom_weights, invent, dist, t_max, d_max)?;
         }
-        Ok(p_number_of_clauses(n_learned_clauses) + p_clauses)
+        Ok(p_number_of_clauses(clauses.len()) + p_clauses)
     }
     fn enumerate_n_terms_internal(
         &mut self,

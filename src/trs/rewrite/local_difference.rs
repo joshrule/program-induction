@@ -1,4 +1,4 @@
-use super::{SampleError, TRS};
+use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use rand::Rng;
 use std::iter::once;
@@ -61,7 +61,8 @@ impl TRS {
     /// ```
     pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
-        let new_rules = TRS::local_difference_helper(&clause);
+        let mut new_rules = TRS::local_difference_helper(&clause);
+        self.lex.filter_background(&mut new_rules);
         let new_trss = new_rules
             .into_iter()
             .filter_map(|r| {
@@ -70,11 +71,7 @@ impl TRS {
                 Some(trs)
             })
             .collect_vec();
-        if new_trss.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(new_trss)
-        }
+        as_result(new_trss)
     }
     /// Given a rule that has similar terms in the lhs and rhs,
     /// returns a list of rules where each similarity is removed one at a time
