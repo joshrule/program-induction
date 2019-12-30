@@ -66,8 +66,8 @@ pub enum TRSMove {
     Recurse(usize),
     RecurseVariablize(usize),
     RecurseGeneralize(usize),
-    DeleteRules,
-    Combine,
+    DeleteRules(usize),
+    Combine(usize),
 }
 impl TRSMove {
     pub fn take<R: Rng>(
@@ -89,14 +89,14 @@ impl TRSMove {
             TRSMove::Recurse(n) => parents[0].recurse(n),
             TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(n, rng),
             TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(n, rng),
-            TRSMove::DeleteRules => parents[0].clone().delete_rules(),
-            TRSMove::Combine => TRS::combine(&parents[0], &parents[1]),
+            TRSMove::DeleteRules(t) => parents[0].delete_rules(rng, t),
+            TRSMove::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
         }
     }
     pub fn get_parents<R: Rng>(&self, t: &Tournament<TRS>, rng: &mut R) -> Vec<TRS> {
         match *self {
             TRSMove::Memorize => vec![],
-            TRSMove::Combine => vec![t.sample(rng).clone(), t.sample(rng).clone()],
+            TRSMove::Combine(_) => vec![t.sample(rng).clone(), t.sample(rng).clone()],
             _ => vec![t.sample(rng).clone()],
         }
     }
@@ -113,8 +113,8 @@ impl TRSMove {
             TRSMove::Recurse(..) => TRSMoveName::Recurse,
             TRSMove::RecurseVariablize(..) => TRSMoveName::RecurseVariablize,
             TRSMove::RecurseGeneralize(..) => TRSMoveName::RecurseGeneralize,
-            TRSMove::DeleteRules => TRSMoveName::DeleteRules,
-            TRSMove::Combine => TRSMoveName::Combine,
+            TRSMove::DeleteRules(..) => TRSMoveName::DeleteRules,
+            TRSMove::Combine(..) => TRSMoveName::Combine,
         }
     }
 }

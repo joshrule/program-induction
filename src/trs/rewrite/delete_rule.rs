@@ -1,5 +1,6 @@
-use super::{SampleError, TRS};
+use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
+use rand::Rng;
 use term_rewriting::{Rule, Term};
 
 impl TRS {
@@ -26,29 +27,39 @@ impl TRS {
     }
 
     /// Delete all combinations of learned rules from the rewrite system.
-    pub fn delete_rules(self) -> Result<Vec<TRS>, SampleError> {
-        let deletable = self
-            .utrs
-            .rules
-            .iter()
-            .flat_map(|r| r.clauses())
-            .collect_vec();
-        if deletable.is_empty() {
-            Err(SampleError::OptionsExhausted)
+    pub fn delete_rules<R: Rng>(
+        &self,
+        rng: &mut R,
+        threshold: usize,
+    ) -> Result<Vec<TRS>, SampleError> {
+        let deletable = as_result(self.clauses())?;
+        let mut trss = vec![];
+        if 2usize.pow((1 + deletable.len()) as u32) - 2 > threshold {
+            while trss.len() < threshold {
+                let mut trs = self.clone();
+                // Flip a coin for each clause and remove the successes.
+                for (_, rule) in &deletable {
+                    if rng.gen() {
+                        trs.utrs.remove_clauses(rule)?;
+                    }
+                }
+                if !trss.contains(&trs) {
+                    trss.push(trs);
+                }
+            }
         } else {
-            let mut trss = vec![];
+            // Exhaustively try all non-trivial deletions.
             for n in 1..deletable.len() {
                 for rules in deletable.iter().combinations(n) {
                     let mut trs = self.clone();
-                    for rule in &rules {
+                    for (_, rule) in &rules {
                         trs.utrs.remove_clauses(rule)?;
                     }
                     trss.push(trs);
                 }
             }
-            trss.push(self);
-            Ok(trss)
         }
+        as_result(trss)
     }
 
     /// Delete rules from the rewrite system whose LHS matches a prior rule's.
