@@ -4,7 +4,6 @@ use itertools::Itertools;
 use polytype::TypeSchema;
 use rand::{distributions::Distribution, distributions::WeightedIndex, seq::IteratorRandom, Rng};
 use std::cmp::Ordering;
-use utils::{logsumexp, weighted_sample};
 
 use Task;
 
@@ -120,7 +119,11 @@ impl GPSelection {
                     *population = options;
                     options = rest;
                 }
-                population.append(&mut sample_pop(options, sample_size));
+                population.append(&mut sample_without_replacement(
+                    &mut options,
+                    sample_size,
+                    rng,
+                ));
             }
         }
     }
@@ -373,33 +376,6 @@ pub trait GP: Send + Sync + Sized {
             gpparams.population_size,
         );
     }
-}
-
-/// Given a `Vec` of item-score pairs sorted by score, and some `sample_size`,
-/// return a score-sorted sample selected in inverse proportion to its overall
-/// score.
-fn sample_pop<T: Clone>(options: Vec<(T, f64)>, sample_size: usize) -> Vec<(T, f64)> {
-    // TODO: Is this necessary. Could we just sample a weighted permutation
-    // rather than do all the combinatorics?
-    // https://softwareengineering.stackexchange.com/questions/233541
-    let (idxs, scores): (Vec<usize>, Vec<f64>) = options
-        .iter()
-        .map(|&(_, score)| score)
-        .combinations(sample_size)
-        .map(|combo| (-combo.iter().sum::<f64>()))
-        .enumerate()
-        .unzip();
-    let sum_scores = logsumexp(&scores);
-    let scores = scores
-        .iter()
-        .map(|x| (x - sum_scores).exp())
-        .collect::<Vec<_>>();
-    let idx = weighted_sample(&idxs, &scores);
-    options
-        .into_iter()
-        .combinations(sample_size)
-        .nth(*idx)
-        .unwrap()
 }
 
 /// Given a `Vec` of item-score pairs sorted by score, and some `sample_size`,
