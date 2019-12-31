@@ -237,16 +237,9 @@ impl TRS {
 
     pub fn full_utrs(&self) -> UntypedTRS {
         let mut utrs = self.utrs.clone();
-        utrs.inserts_idx(
-            utrs.len(),
-            self.lex
-                .0
-                .read()
-                .expect("poisoned lexicon")
-                .background
-                .clone(),
-        )
-        .ok();
+        self.lex.filter_background(&mut utrs.rules);
+        utrs.rules
+            .extend_from_slice(&self.lex.0.read().expect("poisoned lexicon").background);
         utrs
     }
 

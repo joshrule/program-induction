@@ -17,11 +17,7 @@ impl TRS {
     /// Compute the log likelihood for a single datum.
     fn single_log_likelihood(&self, datum: &Rule, params: ModelParams) -> f64 {
         let lex = self.lex.0.read().expect("poisoned lexicon");
-        let bg = lex.background.clone();
-        let mut utrs = self.utrs.clone();
-        if utrs.inserts_idx(utrs.len(), bg).is_err() {
-            return NEG_INFINITY;
-        }
+        let utrs = self.full_utrs();
         let sig = &lex.signature;
         if let Some(ref rhs) = datum.rhs() {
             let mut trace = Trace::new(
