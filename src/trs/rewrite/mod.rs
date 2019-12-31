@@ -6,6 +6,7 @@
 //! - (TAPL; Pierce, 2002, ch. 22)
 
 mod combine;
+mod compose;
 mod delete_rule;
 mod generalize;
 mod local_difference;
@@ -51,6 +52,8 @@ pub enum TRSMoveName {
     RecurseGeneralize,
     DeleteRules,
     Combine,
+    Compose,
+    ComposeVariablize,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +71,8 @@ pub enum TRSMove {
     RecurseGeneralize(usize),
     DeleteRules(usize),
     Combine(usize),
+    Compose,
+    ComposeVariablize,
 }
 impl TRSMove {
     pub fn take<R: Rng>(
@@ -90,6 +95,8 @@ impl TRSMove {
             TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(n, rng),
             TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(n, rng),
             TRSMove::DeleteRules(t) => parents[0].delete_rules(rng, t),
+            TRSMove::Compose => parents[0].compose(),
+            TRSMove::ComposeVariablize => parents[0].compose_and_variablize(rng),
             TRSMove::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
         }
     }
@@ -115,6 +122,8 @@ impl TRSMove {
             TRSMove::RecurseGeneralize(..) => TRSMoveName::RecurseGeneralize,
             TRSMove::DeleteRules(..) => TRSMoveName::DeleteRules,
             TRSMove::Combine(..) => TRSMoveName::Combine,
+            TRSMove::Compose => TRSMoveName::Compose,
+            TRSMove::ComposeVariablize => TRSMoveName::ComposeVariablize,
         }
     }
 }

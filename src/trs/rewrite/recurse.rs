@@ -108,7 +108,7 @@ impl TRS {
         new_rules.append(&mut new_recursives);
         new_rules
     }
-    fn collect_recursive_fns<'a>(
+    pub(crate) fn collect_recursive_fns<'a>(
         map: &HashMap<Place, Type>,
         lex: &Lexicon,
         rule: &'a Rule,
@@ -134,7 +134,7 @@ impl TRS {
         }
         fns
     }
-    fn partition_subrules(rule: &Rule) -> (Vec<Place>, Vec<Place>) {
+    pub(crate) fn partition_subrules(rule: &Rule) -> (Vec<Place>, Vec<Place>) {
         rule.subterms()
             .into_iter()
             .skip(1)

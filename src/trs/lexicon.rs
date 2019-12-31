@@ -185,7 +185,7 @@ impl Lexicon {
         lex
     }
     /// Return the specified operator if possible.
-    pub fn has_op(&self, name: Option<&str>, arity: u8) -> Result<Operator, ()> {
+    pub fn has_op(&self, name: Option<&str>, arity: u8) -> Result<Operator, SampleError> {
         let sig = &self.0.read().expect("poisoned lexicon").signature;
         sig.operators()
             .into_iter()
@@ -193,7 +193,7 @@ impl Lexicon {
                 op.arity() == arity
                     && op.name(sig).as_ref().map(std::string::String::as_str) == name
             })
-            .ok_or(())
+            .ok_or(SampleError::OptionsExhausted)
     }
     /// Is the `Lexicon` deterministic?
     pub fn is_deterministic(&self) -> bool {
