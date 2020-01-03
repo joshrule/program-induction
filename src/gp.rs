@@ -2,7 +2,12 @@
 
 use itertools::Itertools;
 use polytype::TypeSchema;
-use rand::{distributions::Distribution, distributions::WeightedIndex, seq::IteratorRandom, Rng};
+use rand::{
+    distributions::Distribution,
+    distributions::WeightedIndex,
+    seq::{IteratorRandom, SliceRandom},
+    Rng,
+};
 use std::cmp::Ordering;
 
 use Task;
@@ -76,6 +81,7 @@ impl GPSelection {
                 let fitness = oracle(&child);
                 (child, fitness)
             })
+            .filter(|(_, fitness)| fitness.is_finite())
             .collect_vec();
         match self {
             GPSelection::Sample => {
@@ -112,7 +118,9 @@ impl GPSelection {
                 options.append(&mut scored_children);
                 let mut sample_size = pop_size;
                 if let GPSelection::Hybrid(det_proportion) = self {
-                    let n_best = (pop_size as f64 * det_proportion).floor() as usize;
+                    let n_best = options
+                        .len()
+                        .min((pop_size as f64 * det_proportion).floor() as usize);
                     sample_size -= n_best;
                     options.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
                     let rest = options.split_off(n_best);
@@ -170,15 +178,16 @@ impl<'a, T> Tournament<'a, T> {
 impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> &'a T {
         if self.n == 1 {
-            if self.weighted {
-                let weights = self
+            if self.population.is_empty() {
+                panic!("tournament cannot select winner without contestants");
+            } else if self.population.len() == 1 {
+                &self.population[0].0
+            } else if self.weighted {
+                &self
                     .population
-                    .iter()
-                    .map(|(_, w)| (-w).exp())
-                    .collect_vec();
-                let dist = WeightedIndex::new(&weights[..]).unwrap();
-                let idx = dist.sample(rng);
-                &self.population[idx].0
+                    .choose_weighted(rng, |(_, w)| (-w).exp())
+                    .unwrap()
+                    .0
             } else {
                 &self.population[rng.gen_range(0, self.population.len())].0
             }
@@ -334,8 +343,10 @@ pub trait GP: Send + Sync + Sized {
     /// population, and returns a vector of offspring.
     fn reproduce<R: Rng>(
         &self,
+        task: &Task<Self::Representation, Self::Expression, Self::Observation>,
         rng: &mut R,
         params: &Self::Params,
+        gpparams: &GPParams,
         obs: &Self::Observation,
         tournament: &Tournament<Self::Expression>,
     ) -> Vec<Self::Expression>;
@@ -380,7 +391,8 @@ pub trait GP: Send + Sync + Sized {
         while children.len() < gpparams.n_delta {
             let tournament =
                 Tournament::new(gpparams.tournament_size, gpparams.weighted, population);
-            let mut offspring = self.reproduce(rng, params, &task.observation, &tournament);
+            let mut offspring =
+                self.reproduce(task, rng, params, gpparams, &task.observation, &tournament);
             let keep_n = gpparams.n_delta - children.len();
             self.validate_offspring(params, population, &children, seen, &mut offspring, keep_n);
             children.append(&mut offspring);
@@ -403,16 +415,22 @@ fn sample_without_replacement<R: Rng, T: Clone>(
     sample_size: usize,
     rng: &mut R,
 ) -> Vec<(T, f64)> {
-    let mut weights = options
+    let sample_size = sample_size.min(options.len());
+    if sample_size == 0 {
+        return vec![];
+    } else if sample_size == options.len() {
+        return options.clone();
+    }
+    let weights = options
         .iter()
-        .map(|(_, weight)| (-weight).exp() + 1e-6)
+        .map(|(_, weight)| (-weight).exp().max(1e-6))
         .collect_vec();
     let mut sample = Vec::with_capacity(sample_size);
+    let mut dist = WeightedIndex::new(&weights[..]).unwrap();
     for _ in 0..sample_size {
-        let dist = WeightedIndex::new(&weights[..]).unwrap();
         let sampled_idx = dist.sample(rng);
         sample.push(options[sampled_idx].clone());
-        weights[sampled_idx] = 0.0;
+        dist.update_weights(&[(sampled_idx, &0.0)]).ok();
     }
     sample.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
     sample

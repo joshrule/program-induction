@@ -41,6 +41,7 @@ fn gp_sum_arith() {
         selection: GPSelection::Deterministic,
         population_size: 10,
         tournament_size: 5,
+        weighted: false,
         n_delta: 1,
         weighted: false,
     };

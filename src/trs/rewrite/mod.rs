@@ -14,6 +14,7 @@ mod log_likelihood;
 mod log_posterior;
 mod log_prior;
 mod memorize;
+mod meta;
 mod move_rule;
 mod recurse;
 mod regenerate_rule;
@@ -21,17 +22,20 @@ mod sample_rule;
 mod swap_lhs_and_rhs;
 mod variablize;
 
-use super::{Lexicon, ModelParams, Prior, SampleError, TypeError};
-use gp::Tournament;
+use gp::{GPParams, Tournament};
 use itertools::Itertools;
 use rand::{distributions::Distribution, seq::IteratorRandom, Rng};
-use std::collections::HashMap;
-use std::fmt;
-use term_rewriting::{
-    MergeStrategy, Operator, Rule, RuleContext, Term, Variable, TRS as UntypedTRS,
+use std::{borrow::Borrow, collections::HashMap, fmt};
+use term_rewriting::{MergeStrategy, Operator, Rule, Term, Variable, TRS as UntypedTRS};
+use trs::{
+    lexicon::GeneticParamsFull, GPLexicon, Lexicon, ModelParams, Prior, SampleError, TypeError,
 };
+use Task;
 
 pub type TRSMoves = Vec<WeightedTRSMove>;
+pub(crate) type Rules = Vec<Rule>;
+pub(crate) type FactoredSolution<'a> = (Lexicon<'a>, Rules, Rules, Rules, Rules);
+// type Solution<'a> = (Vec<&'a Rule>, Rules);
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct WeightedTRSMove {
@@ -53,6 +57,9 @@ pub enum TRSMoveName {
     DeleteRules,
     Combine,
     Compose,
+    ComposeDeep,
+    RecurseDeep,
+    GeneralizeDeep,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -69,22 +76,30 @@ pub enum TRSMove {
     DeleteRules(usize),
     Combine(usize),
     Compose,
+    ComposeDeep,
+    RecurseDeep(usize),
+    GeneralizeDeep,
 }
 impl TRSMove {
     #[allow(clippy::too_many_arguments)]
     pub fn take<'a, 'b, R: Rng>(
         &self,
-        lex: &Lexicon<'b>,
-        deterministic: bool,
-        bg: &'a [Rule],
-        contexts: &[RuleContext],
+        gp_lex: &GPLexicon<'a, 'b>,
+        task: &Task<Lexicon<'b>, TRS<'a, 'b>, Vec<Rule>>,
         obs: &[Rule],
         rng: &mut R,
         parents: &[&TRS<'a, 'b>],
+        params: &GeneticParamsFull,
+        gpparams: &GPParams,
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         match *self {
-            TRSMove::Memorize => Ok(TRS::memorize(lex, deterministic, bg, obs)),
-            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(contexts, aw, mss, rng),
+            TRSMove::Memorize => Ok(TRS::memorize(
+                &gp_lex.lexicon,
+                params.deterministic,
+                &gp_lex.bg,
+                obs,
+            )),
+            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(&gp_lex.contexts, aw, mss, rng),
             TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
             TRSMove::MemorizeOne => parents[0].memorize_one(obs),
@@ -93,8 +108,17 @@ impl TRSMove {
             TRSMove::Generalize => parents[0].generalize(),
             TRSMove::Recurse(n) => parents[0].recurse(n),
             TRSMove::DeleteRules(t) => parents[0].delete_rules(rng, t),
-            TRSMove::Compose => parents[0].compose(),
             TRSMove::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
+            TRSMove::Compose => parents[0].compose(),
+            TRSMove::ComposeDeep => parents[0]
+                .compose()
+                .and_then(|trss| TRS::nest(&trss, task, gp_lex, rng, params, gpparams)),
+            TRSMove::RecurseDeep(n) => parents[0]
+                .recurse(n)
+                .and_then(|trss| TRS::nest(&trss, task, gp_lex, rng, params, gpparams)),
+            TRSMove::GeneralizeDeep => parents[0]
+                .generalize()
+                .and_then(|trss| TRS::nest(&trss, task, gp_lex, rng, params, gpparams)),
         }
     }
     pub fn get_parents<'a, 'b, 'c, R: Rng>(
@@ -122,6 +146,9 @@ impl TRSMove {
             TRSMove::DeleteRules(..) => TRSMoveName::DeleteRules,
             TRSMove::Combine(..) => TRSMoveName::Combine,
             TRSMove::Compose => TRSMoveName::Compose,
+            TRSMove::ComposeDeep => TRSMoveName::ComposeDeep,
+            TRSMove::RecurseDeep(..) => TRSMoveName::RecurseDeep,
+            TRSMove::GeneralizeDeep => TRSMoveName::GeneralizeDeep,
         }
     }
 }
@@ -362,14 +389,16 @@ impl<'a, 'b> TRS<'a, 'b> {
             .ok_or(SampleError::OptionsExhausted)?;
         Ok(clauses.swap_remove(idx))
     }
-
     fn contains(&self, rule: &Rule) -> bool {
         self.utrs.get_clause(rule).is_some()
     }
-    fn remove_clauses(&mut self, rules: &[Rule]) -> Result<(), SampleError> {
+    fn remove_clauses<R>(&mut self, rules: &[R]) -> Result<(), SampleError>
+    where
+        R: Borrow<Rule>,
+    {
         for rule in rules {
-            if self.contains(rule) {
-                self.utrs.remove_clauses(&rule)?;
+            if self.contains(rule.borrow()) {
+                self.utrs.remove_clauses(rule.borrow())?;
             }
         }
         Ok(())

@@ -1,4 +1,5 @@
 use super::{SampleError, TRSMoveName, TRSMoves, TypeError, TRS};
+use gp::{GPParams, Tournament, GP};
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type, TypeSchema, Variable as TypeVar};
 use rand::{
@@ -17,7 +18,8 @@ use term_rewriting::{
     Atom, Context, MergeStrategy, Operator, PStringDist, Place, Rule, RuleContext, Signature,
     SignatureChange, Term, Variable, TRS as UntypedTRS,
 };
-use {Tournament, GP};
+use trs::{ModelParams, TRSMove};
+use Task;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Parameters for [`Lexicon`] genetic programming ([`GP`]).
@@ -33,6 +35,36 @@ pub struct GeneticParams {
     pub atom_weights: (f64, f64, f64, f64),
     /// `true` if you want only deterministic TRSs during search, else `false`.
     pub deterministic: bool,
+    /// The number of times search can recurse.
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneticParamsFull {
+    // A list of the moves available during search.
+    pub moves: TRSMoves,
+    /// The maximum number of nodes a sampled `Term` can have without failing.
+    pub max_sample_size: usize,
+    /// The weight to assign variables, constants, and non-constant operators, respectively.
+    pub atom_weights: (f64, f64, f64, f64),
+    /// `true` if you want only deterministic TRSs during search, else `false`.
+    pub deterministic: bool,
+    /// The number of times search can recurse.
+    pub depth: usize,
+    /// A set of `ModelParams` to support search recursion.
+    pub model: ModelParams,
+}
+impl GeneticParamsFull {
+    pub fn new(g: &GeneticParams, m: ModelParams) -> Self {
+        GeneticParamsFull {
+            moves: g.moves.clone(),
+            max_sample_size: g.max_sample_size,
+            atom_weights: g.atom_weights,
+            deterministic: g.deterministic,
+            depth: g.depth,
+            model: m,
+        }
+    }
 }
 
 pub struct ContextPoint<'a, O, E> {
@@ -1675,22 +1707,26 @@ impl Lex {
         }
     }
 }
-impl<'a, 'b, 'c> From<&'a GPLexicon<'b>> for &'a Lexicon<'b> {
-    fn from(gp_lex: &'a GPLexicon<'b>) -> &'a Lexicon<'b> {
+impl<'a, 'b, 'c> From<&'c GPLexicon<'a, 'b>> for &'c Lexicon<'b> {
+    fn from(gp_lex: &'c GPLexicon<'a, 'b>) -> &'c Lexicon<'b> {
         &gp_lex.lexicon
     }
 }
 
 type Parents<'a, 'b> = Vec<TRS<'a, 'b>>;
 type Tried<'a, 'b> = HashMap<TRSMoveName, Vec<Parents<'a, 'b>>>;
-pub struct GPLexicon<'a> {
-    pub lexicon: Lexicon<'a>,
+pub struct GPLexicon<'a, 'b> {
+    pub lexicon: Lexicon<'b>,
     pub bg: &'a [Rule],
     pub contexts: Vec<RuleContext>,
-    pub(crate) tried: Arc<RwLock<Tried<'a, 'a>>>,
+    pub(crate) tried: Arc<RwLock<Tried<'a, 'b>>>,
 }
-impl<'a> GPLexicon<'a> {
-    pub fn new<'b>(lex: &Lexicon<'b>, bg: &'b [Rule], contexts: Vec<RuleContext>) -> GPLexicon<'b> {
+impl<'a, 'b> GPLexicon<'a, 'b> {
+    pub fn new<'c, 'd>(
+        lex: &Lexicon<'d>,
+        bg: &'c [Rule],
+        contexts: Vec<RuleContext>,
+    ) -> GPLexicon<'c, 'd> {
         let lexicon = lex.clone();
         let tried = Arc::new(RwLock::new(HashMap::new()));
         GPLexicon {
@@ -1704,7 +1740,7 @@ impl<'a> GPLexicon<'a> {
         let mut tried = self.tried.write().expect("poisoned");
         *tried = HashMap::new();
     }
-    pub fn add(&self, name: TRSMoveName, parents: Parents<'a, 'a>) {
+    pub fn add(&self, name: TRSMoveName, parents: Parents<'a, 'b>) {
         let mut tried = self.tried.write().expect("poisoned");
         let entry = tried.entry(name).or_insert_with(|| vec![]);
         entry.push(parents);
@@ -1722,16 +1758,22 @@ impl<'a> GPLexicon<'a> {
         };
         match name {
             TRSMoveName::Memorize => past.is_empty(),
-            TRSMoveName::Recurse | TRSMoveName::SampleRule | TRSMoveName::RegenerateRule => true,
+            TRSMoveName::Compose
+            | TRSMoveName::ComposeDeep
+            | TRSMoveName::RecurseDeep
+            | TRSMoveName::GeneralizeDeep
+            | TRSMoveName::Recurse
+            | TRSMoveName::SampleRule
+            | TRSMoveName::RegenerateRule => true,
             TRSMoveName::LocalDifference => parents[0].len() > 1 || check(),
             _ => check(),
         }
     }
 }
-impl<'a> GP for GPLexicon<'a> {
-    type Representation = Lexicon<'a>;
-    type Expression = TRS<'a, 'a>;
-    type Params = GeneticParams;
+impl<'a, 'b> GP for GPLexicon<'a, 'b> {
+    type Representation = Lexicon<'b>;
+    type Expression = TRS<'a, 'b>;
+    type Params = GeneticParamsFull;
     type Observation = Vec<Rule>;
     fn genesis<R: Rng>(
         &self,
@@ -1767,12 +1809,21 @@ impl<'a> GP for GPLexicon<'a> {
     }
     fn reproduce<R: Rng>(
         &self,
+        task: &Task<Self::Representation, Self::Expression, Self::Observation>,
         rng: &mut R,
         params: &Self::Params,
+        gpparams: &GPParams,
         obs: &Self::Observation,
         tournament: &Tournament<Self::Expression>,
     ) -> Vec<Self::Expression> {
-        let weights = params.moves.iter().map(|mv| mv.weight).collect_vec();
+        let weights = params
+            .moves
+            .iter()
+            .map(|mv| match mv.mv {
+                TRSMove::ComposeDeep => mv.weight * ((params.depth == 2) as usize),
+                _ => mv.weight,
+            })
+            .collect_vec();
         let dist = WeightedIndex::new(weights).unwrap();
         loop {
             // Choose a move
@@ -1784,15 +1835,7 @@ impl<'a> GP for GPLexicon<'a> {
             // Check the parents.
             if self.check(name, &parents) {
                 // Take the move.
-                if let Ok(trss) = mv.take(
-                    &self.lexicon,
-                    params.deterministic,
-                    self.bg,
-                    &self.contexts,
-                    obs,
-                    rng,
-                    &parents,
-                ) {
+                if let Ok(trss) = mv.take(&self, task, obs, rng, &parents, params, gpparams) {
                     self.add(name, parents.iter().map(|&t| t.clone()).collect());
                     return trss;
                 }

@@ -55,7 +55,7 @@ use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use {ECFrontier, Task, Tournament, EC, GP};
+use {ECFrontier, GPParams, Task, Tournament, EC, GP};
 
 /// (representation) Probabilistic context-free grammar. Currently cannot handle bound variables or
 /// polymorphism.
@@ -487,8 +487,10 @@ impl GP for Grammar {
     }
     fn reproduce<R: Rng>(
         &self,
+        _task: &Task<Self::Representation, Self::Expression, Self::Observation>,
         rng: &mut R,
         params: &Self::Params,
+        _gpparams: &GPParams,
         _obs: &Self::Observation,
         tournament: &Tournament<Self::Expression>,
     ) -> Vec<Self::Expression> {

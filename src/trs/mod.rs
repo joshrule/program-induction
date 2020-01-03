@@ -46,7 +46,7 @@
 mod lexicon;
 pub mod parser;
 mod rewrite;
-pub use self::lexicon::{GPLexicon, GeneticParams, Lexicon};
+pub use self::lexicon::{GPLexicon, GeneticParams, GeneticParamsFull, Lexicon};
 pub use self::parser::{
     parse_context, parse_lexicon, parse_rule, parse_rulecontext, parse_rulecontexts, parse_rules,
     parse_term, parse_trs,
