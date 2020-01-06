@@ -88,7 +88,11 @@ impl TRS {
                 stop = 1.max(stop) - 1;
                 rules = &rules[1..];
             }
-            Ok(TRS::new_unchecked(&self.lex, new_rules))
+            Ok(TRS::new_unchecked(
+                &self.lex,
+                self.background.clone(),
+                new_rules,
+            ))
         }
     }
 }

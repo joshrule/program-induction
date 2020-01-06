@@ -33,6 +33,6 @@ impl TRS {
                     rules.push(r1);
                 }
             });
-        Ok(TRS::new(&trs1.lex, rules)?)
+        Ok(TRS::new(&trs1.lex, trs1.background.clone(), rules)?)
     }
 }

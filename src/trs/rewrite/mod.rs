@@ -78,12 +78,13 @@ impl TRSMove {
     pub fn take<R: Rng>(
         &self,
         lex: &Lexicon,
+        bg: &[Rule],
         obs: &[Rule],
         rng: &mut R,
         parents: &[TRS],
     ) -> Result<Vec<TRS>, SampleError> {
         match *self {
-            TRSMove::Memorize => Ok(TRS::memorize(lex, obs)),
+            TRSMove::Memorize => Ok(TRS::memorize(lex, bg.to_vec(), obs)),
             TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
             TRSMove::RegenerateRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
@@ -133,6 +134,7 @@ impl TRSMove {
 pub struct TRS {
     pub(crate) lex: Lexicon,
     // INVARIANT: utrs never contains background information
+    pub(crate) background: Vec<Rule>,
     pub(crate) utrs: UntypedTRS,
 }
 impl TRS {
@@ -179,8 +181,12 @@ impl TRS {
     /// ```
     ///
     /// [`Lexicon`]: struct.Lexicon.html
-    pub fn new(lexicon: &Lexicon, rules: Vec<Rule>) -> Result<TRS, TypeError> {
-        let trs = TRS::new_unchecked(lexicon, rules);
+    pub fn new(
+        lexicon: &Lexicon,
+        background: Vec<Rule>,
+        rules: Vec<Rule>,
+    ) -> Result<TRS, TypeError> {
+        let trs = TRS::new_unchecked(lexicon, background, rules);
         lexicon.infer_utrs(&trs.utrs)?;
         Ok(trs)
     }
@@ -189,18 +195,21 @@ impl TRS {
     /// where you are already confident in the type safety of the new rules.
     ///
     /// [`TRS::new`]: struct.TRS.html#method.new
-    pub fn new_unchecked(lexicon: &Lexicon, rules: Vec<Rule>) -> TRS {
+    pub fn new_unchecked(lexicon: &Lexicon, background: Vec<Rule>, rules: Vec<Rule>) -> TRS {
         // Remove any rules already in the background
         let mut utrs = UntypedTRS::new(rules);
-        let lex = lexicon.0.read().expect("poisoned lexicon");
-        for bg in lex.background.iter().flat_map(|r| r.clauses()) {
+        for bg in background.iter().flat_map(|r| r.clauses()) {
             utrs.remove_clauses(&bg).ok();
         }
         if lexicon.is_deterministic() {
             utrs.make_deterministic();
         }
         let lex = lexicon.clone();
-        TRS { lex, utrs }
+        TRS {
+            lex,
+            background,
+            utrs,
+        }
     }
 
     pub fn lexicon(&self) -> Lexicon {

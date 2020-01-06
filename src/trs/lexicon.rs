@@ -1619,13 +1619,14 @@ type Parents = Vec<TRS>;
 type Tried = HashMap<TRSMoveName, Vec<Parents>>;
 pub struct GPLexicon {
     pub lexicon: Lexicon,
+    pub bg: Vec<Rule>,
     pub(crate) tried: Arc<RwLock<Tried>>,
 }
 impl GPLexicon {
-    pub fn new(lex: &Lexicon) -> GPLexicon {
+    pub fn new(lex: &Lexicon, bg: Vec<Rule>) -> GPLexicon {
         let lexicon = lex.clone();
         let tried = Arc::new(RwLock::new(HashMap::new()));
-        GPLexicon { lexicon, tried }
+        GPLexicon { lexicon, bg, tried }
     }
     pub fn clear(&self) {
         let mut tried = self.tried.write().expect("poisoned");
@@ -1671,7 +1672,7 @@ impl GP for GPLexicon {
         pop_size: usize,
         _tp: &TypeSchema,
     ) -> Vec<Self::Expression> {
-        match TRS::new(&self.lexicon, vec![]) {
+        match TRS::new(&self.lexicon, self.bg.clone(), vec![]) {
             Ok(mut trs) => {
                 if self.lexicon.is_deterministic() {
                     trs.utrs.make_deterministic();
@@ -1718,7 +1719,7 @@ impl GP for GPLexicon {
             // Check the parents.
             if let Some(parents) = self.check(name, parents) {
                 // Take the move.
-                if let Ok(trss) = mv.take(&self.lexicon, obs, rng, &parents) {
+                if let Ok(trss) = mv.take(&self.lexicon, &self.bg, obs, rng, &parents) {
                     self.add(name, parents);
                     return trss;
                 }

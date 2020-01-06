@@ -108,8 +108,8 @@ pub fn parse_lexicon(
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`TRS`]: struct.TRS.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_trs(input: &str, lex: &Lexicon) -> Result<TRS, ParseError> {
-    trs(CompleteStr(input), lex)
+pub fn parse_trs(input: &str, lex: &Lexicon, background: Vec<Rule>) -> Result<TRS, ParseError> {
+    trs(CompleteStr(input), lex, background)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
 }
@@ -278,14 +278,6 @@ fn lexicon<'a>(
     ctx: TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Lexicon> {
     let (remaining, lex) = simple_lexicon(input, sig, vars, ops, deterministic, ctx)?;
-    let rules = match trs(bg, &lex)? {
-        (CompleteStr(""), trs) => Some(trs.utrs.rules),
-        _ => None,
-    };
-    match rules {
-        Some(rules) => lex.0.write().expect("poisoned lexicon").background = rules,
-        _ => return Err(Err::Error(Nomtext::Code(bg, nom::ErrorKind::Custom(0)))),
-    }
     match templates(temp, &lex)? {
         (CompleteStr(""), templates) => {
             lex.0.write().expect("poisoned lexicon").templates = templates;
@@ -310,14 +302,14 @@ fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>
         nom::ErrorKind::Custom(0),
     )))
 }
-named_args!(trs<'a>(lex: &Lexicon) <CompleteStr<'a>, TRS>,
+named_args!(trs<'a>(lex: &Lexicon, background: Vec<Rule>) <CompleteStr<'a>, TRS>,
             ws!(do_parse!(many0!(ws!(comment)) >>
                           rules: many0!(do_parse!(many0!(ws!(comment)) >>
                                                   rule_text: take_until_and_consume!(";") >>
                                                   rule: expr_res!(typed_rule(&rule_text, lex)) >>
                                                   many0!(ws!(comment)) >>
                                                   (rule.1))) >>
-                          trs: expr_res!(TRS::new(lex, rules)) >>
+                          trs: expr_res!(TRS::new(lex, background, rules)) >>
                           (trs)))
 );
 fn add_parsed_variables_to_lexicon(lex: &Lexicon) {
