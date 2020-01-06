@@ -137,7 +137,7 @@ impl TRS {
                 }
             }
         }
-        self.lex.filter_background(&mut new_rules);
+        self.filter_background(&mut new_rules);
         let old_rules = old_rules.into_iter().cloned().collect_vec(); // HACK
         match new_rules.len() {
             1 => None,

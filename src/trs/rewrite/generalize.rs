@@ -14,7 +14,7 @@ impl TRS {
             TRS::generalize_clauses(&trs.lex, &lhs_context, &rhs_context, &clauses)?;
         trs.remove_clauses(&clauses)?;
         let start = trs.len();
-        trs.lex.filter_background(&mut new_rules);
+        trs.filter_background(&mut new_rules);
         trs.append_clauses(new_rules)?;
         let stop = trs.len();
         Ok(vec![trs.smart_delete(start, stop)?])

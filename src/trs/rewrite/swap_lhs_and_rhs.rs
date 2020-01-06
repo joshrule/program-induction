@@ -96,7 +96,7 @@ impl TRS {
             let idx = rng.gen_range(0, self.len());
             let mut trs = self.clone();
             let mut new_rules = TRS::swap_rule(&trs.utrs.rules[idx])?;
-            self.lex.filter_background(&mut new_rules);
+            self.filter_background(&mut new_rules);
             trs.utrs.remove_idx(idx)?;
             trs.utrs.inserts_idx(idx, new_rules)?;
             Ok(trs)

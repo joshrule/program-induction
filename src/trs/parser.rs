@@ -263,7 +263,7 @@ fn simple_lexicon<'a>(
                 >> many0!(ws!(comment))
                 >> ()
         ))),
-        |_| Lexicon::from_signature(sig, ops, vars, vec![], vec![], deterministic, ctx)
+        |_| Lexicon::from_signature(sig, ops, vars, vec![], deterministic, ctx)
     )
 }
 #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]

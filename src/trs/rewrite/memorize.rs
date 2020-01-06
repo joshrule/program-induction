@@ -11,7 +11,7 @@ impl TRS {
     /// Given a list of `Rule`s considered to be data, memorize a single datum.
     pub fn memorize_one(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
         let mut rules = data.to_vec();
-        self.lex.filter_background(&mut rules);
+        self.filter_background(&mut rules);
         let results = rules
             .into_iter()
             .filter_map(|rule| {

@@ -62,7 +62,7 @@ impl TRS {
     pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
         let mut new_rules = TRS::local_difference_helper(&clause);
-        self.lex.filter_background(&mut new_rules);
+        self.filter_background(&mut new_rules);
         let new_trss = new_rules
             .into_iter()
             .filter_map(|r| {

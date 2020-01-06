@@ -98,7 +98,6 @@ impl Lexicon {
             vars: vec![],
             free_vars: vec![],
             signature,
-            background: vec![],
             templates: vec![],
             deterministic,
             ctx,
@@ -163,7 +162,6 @@ impl Lexicon {
         signature: Signature,
         ops: Vec<TypeSchema>,
         vars: Vec<TypeSchema>,
-        background: Vec<Rule>,
         templates: Vec<RuleContext>,
         deterministic: bool,
         ctx: TypeContext,
@@ -173,7 +171,6 @@ impl Lexicon {
             vars,
             free_vars: vec![],
             signature,
-            background,
             templates,
             deterministic,
             ctx,
@@ -268,21 +265,6 @@ impl Lexicon {
     /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
     pub fn fresh_type_variable(&self) -> Type {
         self.0.write().expect("poisoned lexicon").ctx.new_variable()
-    }
-    pub fn filter_background(&self, rules: &mut Vec<Rule>) {
-        let bgs = &self.0.read().expect("poisoned lexicon").background;
-        for rule in rules.iter_mut() {
-            for bg in bgs {
-                rule.discard(bg);
-            }
-        }
-        if self.is_deterministic() {
-            rules.retain(|rule| {
-                bgs.iter()
-                    .all(|bg| Term::alpha(vec![(&bg.lhs, &rule.lhs)]).is_none())
-            });
-        }
-        rules.retain(|rule| !rule.is_empty());
     }
     /// Infer the [`polytype::TypeSchema`] associated with a [`term_rewriting::Context`].
     ///
@@ -658,7 +640,6 @@ pub(crate) struct Lex {
     pub(crate) vars: Vec<TypeSchema>,
     free_vars: Vec<TypeVar>,
     pub(crate) signature: Signature,
-    pub(crate) background: Vec<Rule>,
     /// Rule templates to use when sampling rules.
     pub(crate) templates: Vec<RuleContext>,
     /// If `true`, then the `TRS`s should be deterministic.
@@ -679,10 +660,6 @@ impl fmt::Display for Lex {
         }
         for (var, schema) in self.signature.variables().iter().zip(&self.vars) {
             writeln!(f, "{}: {}", var.display(&self.signature), schema)?;
-        }
-        writeln!(f, "\nBackground: {}", self.background.len())?;
-        for rule in &self.background {
-            writeln!(f, "{}", rule.pretty(&self.signature))?;
         }
         writeln!(f, "\nTemplates: {}", self.templates.len())?;
         for template in &self.templates {
@@ -1689,15 +1666,7 @@ impl GP for GPLexicon {
                 }
                 pop
             }
-            Err(err) => {
-                let lex = &self.lexicon.0.read().expect("poisoned lexicon");
-                let background_trs = UntypedTRS::new(lex.background.clone());
-                panic!(
-                    "invalid background knowledge {}: {}",
-                    background_trs.display(&lex.signature),
-                    err
-                )
-            }
+            Err(err) => panic!("invalid background knowledge: {}", err),
         }
     }
     fn reproduce<R: Rng>(

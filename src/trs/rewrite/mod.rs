@@ -27,7 +27,7 @@ use itertools::Itertools;
 use rand::{distributions::Distribution, seq::IteratorRandom, Rng};
 use std::collections::HashMap;
 use std::fmt;
-use term_rewriting::{Rule, TRS as UntypedTRS};
+use term_rewriting::{Rule, Term, TRS as UntypedTRS};
 
 pub type TRSMoves = Vec<WeightedTRSMove>;
 
@@ -246,19 +246,13 @@ impl TRS {
 
     pub fn full_utrs(&self) -> UntypedTRS {
         let mut utrs = self.utrs.clone();
-        self.lex.filter_background(&mut utrs.rules);
-        utrs.rules
-            .extend_from_slice(&self.lex.0.read().expect("poisoned lexicon").background);
+        self.filter_background(&mut utrs.rules);
+        utrs.rules.extend_from_slice(&self.background);
         utrs
     }
 
     pub fn num_background_rules(&self) -> usize {
-        self.lex
-            .0
-            .read()
-            .expect("poisoned lexicon")
-            .background
-            .len()
+        self.background.len()
     }
 
     pub fn num_learned_rules(&self) -> usize {
@@ -347,7 +341,6 @@ impl TRS {
     fn contains(&self, rule: &Rule) -> bool {
         self.utrs.get_clause(rule).is_some()
     }
-
     fn remove_clauses(&mut self, rules: &[Rule]) -> Result<(), SampleError> {
         for rule in rules {
             if self.contains(rule) {
@@ -356,19 +349,32 @@ impl TRS {
         }
         Ok(())
     }
-
     fn prepend_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
         self.utrs
             .pushes(rules)
             .map(|_| ())
             .map_err(SampleError::from)
     }
-
     fn append_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
         self.utrs
             .inserts_idx(self.num_learned_rules(), rules)
             .map(|_| ())
             .map_err(SampleError::from)
+    }
+    pub fn filter_background(&self, rules: &mut Vec<Rule>) {
+        let bgs = &self.background;
+        for rule in rules.iter_mut() {
+            for bg in bgs {
+                rule.discard(bg);
+            }
+        }
+        if self.utrs.is_deterministic() {
+            rules.retain(|rule| {
+                bgs.iter()
+                    .all(|bg| Term::alpha(vec![(&bg.lhs, &rule.lhs)]).is_none())
+            });
+        }
+        rules.retain(|rule| !rule.is_empty());
     }
 }
 impl fmt::Display for TRS {

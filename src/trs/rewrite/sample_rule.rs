@@ -82,7 +82,7 @@ impl TRS {
         }
         self.lex.infer_rule(&rule, &mut HashMap::new()).drop()?;
         let mut new_rules = vec![rule];
-        self.lex.filter_background(&mut new_rules);
+        self.filter_background(&mut new_rules);
         let trss = new_rules
             .into_iter()
             .filter_map(|rule| {

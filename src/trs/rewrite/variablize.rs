@@ -198,7 +198,7 @@ impl TRS {
             None
         } else {
             trs.swap_rules(&rules).ok()?;
-            trs.lex.filter_background(&mut trs.utrs.rules);
+            self.filter_background(&mut trs.utrs.rules);
             trs.smart_delete(0, 0).ok()
         }
     }

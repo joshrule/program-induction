@@ -68,7 +68,7 @@ impl TRS {
     fn adopt_recursive_solution(&self, solution: Vec<(&Rule, Vec<Rule>)>) -> Option<(TRS, f64)> {
         let (old_rules, new_ruless): (Vec<_>, Vec<_>) = solution.into_iter().unzip();
         let mut new_rules = TRS::reorder_rules(new_ruless);
-        self.lex.filter_background(&mut new_rules);
+        self.filter_background(&mut new_rules);
         let old_rules = old_rules.into_iter().cloned().collect_vec(); // HACK
         match new_rules.len() {
             1 => None,

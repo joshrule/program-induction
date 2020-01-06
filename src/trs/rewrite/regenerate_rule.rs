@@ -13,7 +13,7 @@ impl TRS {
     ) -> Result<Vec<TRS>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
         let mut new_rules = self.regenerate_helper(&clause, atom_weights, max_size)?;
-        self.lex.filter_background(&mut new_rules);
+        self.filter_background(&mut new_rules);
         let new_trss = new_rules
             .into_iter()
             .filter_map(|new_clause| {
