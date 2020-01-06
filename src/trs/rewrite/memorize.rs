@@ -4,8 +4,18 @@ use term_rewriting::Rule;
 
 impl TRS {
     /// Given a list of `Rule`s considered to be data, memorize them all.
-    pub fn memorize(lex: &Lexicon, background: Vec<Rule>, data: &[Rule]) -> Vec<TRS> {
-        vec![TRS::new_unchecked(lex, background, data.to_vec())]
+    pub fn memorize(
+        lex: &Lexicon,
+        deterministic: bool,
+        background: Vec<Rule>,
+        data: &[Rule],
+    ) -> Vec<TRS> {
+        vec![TRS::new_unchecked(
+            lex,
+            deterministic,
+            background,
+            data.to_vec(),
+        )]
     }
 
     /// Given a list of `Rule`s considered to be data, memorize a single datum.

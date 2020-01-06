@@ -90,6 +90,7 @@ impl TRS {
             }
             Ok(TRS::new_unchecked(
                 &self.lex,
+                self.is_deterministic(),
                 self.background.clone(),
                 new_rules,
             ))

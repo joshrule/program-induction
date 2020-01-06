@@ -174,7 +174,7 @@ impl TRS {
                 i += 1;
             }
         }
-        if self.lex.is_deterministic() {
+        if self.is_deterministic() {
             i = 0;
             while i < rules.len() {
                 let mut okay = true;

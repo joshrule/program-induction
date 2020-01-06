@@ -33,6 +33,8 @@ pub struct GeneticParams {
     pub max_sample_size: usize,
     /// The weight to assign variables, constants, and non-constant operators, respectively.
     pub atom_weights: (f64, f64, f64, f64),
+    /// `true` if you want only deterministic TRSs during search, else `false`.
+    pub deterministic: bool,
 }
 
 pub struct ContextPoint<O, E> {
@@ -82,11 +84,7 @@ impl Lexicon {
     /// [`polytype::ptp`]: https://docs.rs/polytype/~6.0/polytype/macro.ptp.html
     /// [`polytype::TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`term_rewriting::Operator`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Operator.html
-    pub fn new(
-        operators: Vec<(u8, Option<String>, TypeSchema)>,
-        deterministic: bool,
-        ctx: TypeContext,
-    ) -> Lexicon {
+    pub fn new(operators: Vec<(u8, Option<String>, TypeSchema)>, ctx: TypeContext) -> Lexicon {
         let signature = Signature::default();
         let mut ops = Vec::with_capacity(operators.len());
         for (id, name, tp) in operators {
@@ -98,7 +96,6 @@ impl Lexicon {
             vars: vec![],
             free_vars: vec![],
             signature,
-            deterministic,
             ctx,
         })));
         lex.0
@@ -161,7 +158,6 @@ impl Lexicon {
         signature: Signature,
         ops: Vec<TypeSchema>,
         vars: Vec<TypeSchema>,
-        deterministic: bool,
         ctx: TypeContext,
     ) -> Lexicon {
         let lex = Lexicon(Arc::new(RwLock::new(Lex {
@@ -169,7 +165,6 @@ impl Lexicon {
             vars,
             free_vars: vec![],
             signature,
-            deterministic,
             ctx,
         })));
         lex.0
@@ -188,10 +183,6 @@ impl Lexicon {
                     && op.name(sig).as_ref().map(std::string::String::as_str) == name
             })
             .ok_or(SampleError::OptionsExhausted)
-    }
-    /// Is the `Lexicon` deterministic?
-    pub fn is_deterministic(&self) -> bool {
-        self.0.read().expect("poisoned lexicon").deterministic
     }
     /// All the [`term_rewriting::Variable`]s in the `Lexicon`.
     ///
@@ -637,8 +628,6 @@ pub(crate) struct Lex {
     pub(crate) vars: Vec<TypeSchema>,
     free_vars: Vec<TypeVar>,
     pub(crate) signature: Signature,
-    /// If `true`, then the `TRS`s should be deterministic.
-    pub(crate) deterministic: bool,
     pub(crate) ctx: TypeContext,
 }
 impl fmt::Display for Lex {
@@ -656,7 +645,7 @@ impl fmt::Display for Lex {
         for (var, schema) in self.signature.variables().iter().zip(&self.vars) {
             writeln!(f, "{}: {}", var.display(&self.signature), schema)?;
         }
-        writeln!(f, "\nDeterministic: {}", self.deterministic)
+        Ok(())
     }
 }
 impl Lex {
@@ -1646,9 +1635,9 @@ impl GP for GPLexicon {
         pop_size: usize,
         _tp: &TypeSchema,
     ) -> Vec<Self::Expression> {
-        match TRS::new(&self.lexicon, self.bg.clone(), vec![]) {
+        match TRS::new(&self.lexicon, params.deterministic, self.bg.clone(), vec![]) {
             Ok(mut trs) => {
-                if self.lexicon.is_deterministic() {
+                if params.deterministic {
                     trs.utrs.make_deterministic();
                 }
                 let mut pop = Vec::with_capacity(pop_size);
@@ -1688,9 +1677,15 @@ impl GP for GPLexicon {
             // Check the parents.
             if let Some(parents) = self.check(name, parents) {
                 // Take the move.
-                if let Ok(trss) =
-                    mv.take(&self.lexicon, &self.bg, &self.contexts, obs, rng, &parents)
-                {
+                if let Ok(trss) = mv.take(
+                    &self.lexicon,
+                    params.deterministic,
+                    &self.bg,
+                    &self.contexts,
+                    obs,
+                    rng,
+                    &parents,
+                ) {
                     self.add(name, parents);
                     return trss;
                 }

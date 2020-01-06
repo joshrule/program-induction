@@ -81,17 +81,12 @@ impl ::std::error::Error for ParseError {
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 /// [`polytype`]: ../../../polytype/index.html
 /// [augmented Backus-Naur form]: https://en.wikipedia.org/wiki/Augmented_Backus–Naur_form
-pub fn parse_lexicon(
-    input: &str,
-    deterministic: bool,
-    ctx: TypeContext,
-) -> Result<Lexicon, ParseError> {
+pub fn parse_lexicon(input: &str, ctx: TypeContext) -> Result<Lexicon, ParseError> {
     lexicon(
         CompleteStr(input),
         Signature::default(),
         vec![],
         vec![],
-        deterministic,
         ctx,
     )
     .map(|(_, t)| t)
@@ -104,8 +99,13 @@ pub fn parse_lexicon(
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`TRS`]: struct.TRS.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_trs(input: &str, lex: &Lexicon, background: Vec<Rule>) -> Result<TRS, ParseError> {
-    trs(CompleteStr(input), lex, background)
+pub fn parse_trs(
+    input: &str,
+    lex: &Lexicon,
+    deterministic: bool,
+    background: Vec<Rule>,
+) -> Result<TRS, ParseError> {
+    trs(CompleteStr(input), lex, deterministic, background)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
 }
@@ -247,7 +247,6 @@ fn simple_lexicon<'a>(
     mut sig: Signature,
     mut vars: Vec<TypeSchema>,
     mut ops: Vec<TypeSchema>,
-    deterministic: bool,
     ctx: TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Lexicon> {
     map!(
@@ -259,7 +258,7 @@ fn simple_lexicon<'a>(
                 >> many0!(ws!(comment))
                 >> ()
         ))),
-        |_| Lexicon::from_signature(sig, ops, vars, deterministic, ctx)
+        |_| Lexicon::from_signature(sig, ops, vars, ctx)
     )
 }
 #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
@@ -268,10 +267,9 @@ fn lexicon<'a>(
     sig: Signature,
     vars: Vec<TypeSchema>,
     ops: Vec<TypeSchema>,
-    deterministic: bool,
     ctx: TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Lexicon> {
-    simple_lexicon(input, sig, vars, ops, deterministic, ctx)
+    simple_lexicon(input, sig, vars, ops, ctx)
 }
 fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
     let result = parse_untyped_rule(
@@ -289,14 +287,14 @@ fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>
         nom::ErrorKind::Custom(0),
     )))
 }
-named_args!(trs<'a>(lex: &Lexicon, background: Vec<Rule>) <CompleteStr<'a>, TRS>,
+named_args!(trs<'a>(lex: &Lexicon, deterministic: bool, background: Vec<Rule>) <CompleteStr<'a>, TRS>,
             ws!(do_parse!(many0!(ws!(comment)) >>
                           rules: many0!(do_parse!(many0!(ws!(comment)) >>
                                                   rule_text: take_until_and_consume!(";") >>
                                                   rule: expr_res!(typed_rule(&rule_text, lex)) >>
                                                   many0!(ws!(comment)) >>
                                                   (rule.1))) >>
-                          trs: expr_res!(TRS::new(lex, background, rules)) >>
+                          trs: expr_res!(TRS::new(lex, deterministic, background, rules)) >>
                           (trs)))
 );
 fn add_parsed_variables_to_lexicon(lex: &Lexicon) {

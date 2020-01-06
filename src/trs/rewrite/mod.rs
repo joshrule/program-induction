@@ -78,6 +78,7 @@ impl TRSMove {
     pub fn take<R: Rng>(
         &self,
         lex: &Lexicon,
+        deterministic: bool,
         bg: &[Rule],
         contexts: &[RuleContext],
         obs: &[Rule],
@@ -85,7 +86,7 @@ impl TRSMove {
         parents: &[TRS],
     ) -> Result<Vec<TRS>, SampleError> {
         match *self {
-            TRSMove::Memorize => Ok(TRS::memorize(lex, bg.to_vec(), obs)),
+            TRSMove::Memorize => Ok(TRS::memorize(lex, deterministic, bg.to_vec(), obs)),
             TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(contexts, aw, mss, rng),
             TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
@@ -184,10 +185,11 @@ impl TRS {
     /// [`Lexicon`]: struct.Lexicon.html
     pub fn new(
         lexicon: &Lexicon,
+        deterministic: bool,
         background: Vec<Rule>,
         rules: Vec<Rule>,
     ) -> Result<TRS, TypeError> {
-        let trs = TRS::new_unchecked(lexicon, background, rules);
+        let trs = TRS::new_unchecked(lexicon, deterministic, background, rules);
         lexicon.infer_utrs(&trs.utrs)?;
         Ok(trs)
     }
@@ -196,13 +198,18 @@ impl TRS {
     /// where you are already confident in the type safety of the new rules.
     ///
     /// [`TRS::new`]: struct.TRS.html#method.new
-    pub fn new_unchecked(lexicon: &Lexicon, background: Vec<Rule>, rules: Vec<Rule>) -> TRS {
+    pub fn new_unchecked(
+        lexicon: &Lexicon,
+        deterministic: bool,
+        background: Vec<Rule>,
+        rules: Vec<Rule>,
+    ) -> TRS {
         // Remove any rules already in the background
         let mut utrs = UntypedTRS::new(rules);
         for bg in background.iter().flat_map(|r| r.clauses()) {
             utrs.remove_clauses(&bg).ok();
         }
-        if lexicon.is_deterministic() {
+        if deterministic {
             utrs.make_deterministic();
         }
         let lex = lexicon.clone();
@@ -376,6 +383,10 @@ impl TRS {
             });
         }
         rules.retain(|rule| !rule.is_empty());
+    }
+    /// Is the `Lexicon` deterministic?
+    pub fn is_deterministic(&self) -> bool {
+        self.utrs.is_deterministic()
     }
 }
 impl fmt::Display for TRS {

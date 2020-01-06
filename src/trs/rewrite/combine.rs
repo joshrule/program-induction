@@ -26,13 +26,18 @@ impl TRS {
             .for_each(|r1| {
                 let unique = !rules.iter().any(|r2| {
                     Rule::alpha(&r1, r2).is_some()
-                        || (trs1.lex.is_deterministic()
+                        || (trs1.is_deterministic()
                             && Term::alpha(vec![(&r1.lhs, &r2.lhs)]).is_some())
                 });
                 if unique {
                     rules.push(r1);
                 }
             });
-        Ok(TRS::new(&trs1.lex, trs1.background.clone(), rules)?)
+        Ok(TRS::new(
+            &trs1.lex,
+            trs1.is_deterministic(),
+            trs1.background.clone(),
+            rules,
+        )?)
     }
 }
