@@ -27,7 +27,7 @@ use itertools::Itertools;
 use rand::{distributions::Distribution, seq::IteratorRandom, Rng};
 use std::collections::HashMap;
 use std::fmt;
-use term_rewriting::{Rule, Term, TRS as UntypedTRS};
+use term_rewriting::{Rule, RuleContext, Term, TRS as UntypedTRS};
 
 pub type TRSMoves = Vec<WeightedTRSMove>;
 
@@ -79,14 +79,15 @@ impl TRSMove {
         &self,
         lex: &Lexicon,
         bg: &[Rule],
+        contexts: &[RuleContext],
         obs: &[Rule],
         rng: &mut R,
         parents: &[TRS],
     ) -> Result<Vec<TRS>, SampleError> {
         match *self {
             TRSMove::Memorize => Ok(TRS::memorize(lex, bg.to_vec(), obs)),
-            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
-            TRSMove::RegenerateRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
+            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(contexts, aw, mss, rng),
+            TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
             TRSMove::MemorizeOne => parents[0].memorize_one(obs),
             TRSMove::DeleteRule => parents[0].delete_rule(),

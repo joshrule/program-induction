@@ -83,15 +83,11 @@ impl ::std::error::Error for ParseError {
 /// [augmented Backus-Naur form]: https://en.wikipedia.org/wiki/Augmented_Backus–Naur_form
 pub fn parse_lexicon(
     input: &str,
-    background: &str,
-    templates: &str,
     deterministic: bool,
     ctx: TypeContext,
 ) -> Result<Lexicon, ParseError> {
     lexicon(
         CompleteStr(input),
-        CompleteStr(background),
-        CompleteStr(templates),
         Signature::default(),
         vec![],
         vec![],
@@ -263,28 +259,19 @@ fn simple_lexicon<'a>(
                 >> many0!(ws!(comment))
                 >> ()
         ))),
-        |_| Lexicon::from_signature(sig, ops, vars, vec![], deterministic, ctx)
+        |_| Lexicon::from_signature(sig, ops, vars, deterministic, ctx)
     )
 }
 #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
 fn lexicon<'a>(
     input: CompleteStr<'a>,
-    bg: CompleteStr<'a>,
-    temp: CompleteStr<'a>,
     sig: Signature,
     vars: Vec<TypeSchema>,
     ops: Vec<TypeSchema>,
     deterministic: bool,
     ctx: TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Lexicon> {
-    let (remaining, lex) = simple_lexicon(input, sig, vars, ops, deterministic, ctx)?;
-    match templates(temp, &lex)? {
-        (CompleteStr(""), templates) => {
-            lex.0.write().expect("poisoned lexicon").templates = templates;
-            Ok((remaining, lex))
-        }
-        _ => Err(Err::Error(Nomtext::Code(bg, nom::ErrorKind::Custom(0)))),
-    }
+    simple_lexicon(input, sig, vars, ops, deterministic, ctx)
 }
 fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
     let result = parse_untyped_rule(

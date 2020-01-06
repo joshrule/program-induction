@@ -1,6 +1,7 @@
 use super::{super::as_result, SampleError, TRS};
 use rand::{seq::SliceRandom, Rng};
 use std::collections::HashMap;
+use term_rewriting::RuleContext;
 
 impl TRS {
     /// Sample a rule and add it to the rewrite system.
@@ -61,18 +62,16 @@ impl TRS {
     /// ```
     pub fn sample_rule<R: Rng>(
         &self,
+        contexts: &[RuleContext],
         atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS>, SampleError> {
         // TODO: fail if you sample an existing rule?
-        let context = {
-            let contexts = &self.lex.0.read().expect("poisoned lexicon").templates;
-            contexts
-                .choose(rng)
-                .ok_or(SampleError::OptionsExhausted)?
-                .clone()
-        };
+        let context = contexts
+            .choose(rng)
+            .ok_or(SampleError::OptionsExhausted)?
+            .clone();
         let rule = self
             .lex
             .sample_rule_from_context(context, atom_weights, true, max_size)

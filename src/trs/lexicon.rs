@@ -98,7 +98,6 @@ impl Lexicon {
             vars: vec![],
             free_vars: vec![],
             signature,
-            templates: vec![],
             deterministic,
             ctx,
         })));
@@ -162,7 +161,6 @@ impl Lexicon {
         signature: Signature,
         ops: Vec<TypeSchema>,
         vars: Vec<TypeSchema>,
-        templates: Vec<RuleContext>,
         deterministic: bool,
         ctx: TypeContext,
     ) -> Lexicon {
@@ -171,7 +169,6 @@ impl Lexicon {
             vars,
             free_vars: vec![],
             signature,
-            templates,
             deterministic,
             ctx,
         })));
@@ -640,8 +637,6 @@ pub(crate) struct Lex {
     pub(crate) vars: Vec<TypeSchema>,
     free_vars: Vec<TypeVar>,
     pub(crate) signature: Signature,
-    /// Rule templates to use when sampling rules.
-    pub(crate) templates: Vec<RuleContext>,
     /// If `true`, then the `TRS`s should be deterministic.
     pub(crate) deterministic: bool,
     pub(crate) ctx: TypeContext,
@@ -660,10 +655,6 @@ impl fmt::Display for Lex {
         }
         for (var, schema) in self.signature.variables().iter().zip(&self.vars) {
             writeln!(f, "{}: {}", var.display(&self.signature), schema)?;
-        }
-        writeln!(f, "\nTemplates: {}", self.templates.len())?;
-        for template in &self.templates {
-            writeln!(f, "{}", template.pretty(&self.signature))?;
         }
         writeln!(f, "\nDeterministic: {}", self.deterministic)
     }
@@ -1597,13 +1588,19 @@ type Tried = HashMap<TRSMoveName, Vec<Parents>>;
 pub struct GPLexicon {
     pub lexicon: Lexicon,
     pub bg: Vec<Rule>,
+    pub contexts: Vec<RuleContext>,
     pub(crate) tried: Arc<RwLock<Tried>>,
 }
 impl GPLexicon {
-    pub fn new(lex: &Lexicon, bg: Vec<Rule>) -> GPLexicon {
+    pub fn new(lex: &Lexicon, bg: Vec<Rule>, contexts: Vec<RuleContext>) -> GPLexicon {
         let lexicon = lex.clone();
         let tried = Arc::new(RwLock::new(HashMap::new()));
-        GPLexicon { lexicon, bg, tried }
+        GPLexicon {
+            lexicon,
+            bg,
+            tried,
+            contexts,
+        }
     }
     pub fn clear(&self) {
         let mut tried = self.tried.write().expect("poisoned");
@@ -1656,9 +1653,12 @@ impl GP for GPLexicon {
                 }
                 let mut pop = Vec::with_capacity(pop_size);
                 while pop.len() < pop_size {
-                    if let Ok(mut new_trs) =
-                        trs.sample_rule(params.atom_weights, params.max_sample_size, rng)
-                    {
+                    if let Ok(mut new_trs) = trs.sample_rule(
+                        &self.contexts,
+                        params.atom_weights,
+                        params.max_sample_size,
+                        rng,
+                    ) {
                         if !pop.iter().any(|p: &TRS| TRS::is_alpha(&p, &new_trs[0])) {
                             pop.append(&mut new_trs);
                         }
@@ -1688,7 +1688,9 @@ impl GP for GPLexicon {
             // Check the parents.
             if let Some(parents) = self.check(name, parents) {
                 // Take the move.
-                if let Ok(trss) = mv.take(&self.lexicon, &self.bg, obs, rng, &parents) {
+                if let Ok(trss) =
+                    mv.take(&self.lexicon, &self.bg, &self.contexts, obs, rng, &parents)
+                {
                     self.add(name, parents);
                     return trss;
                 }
