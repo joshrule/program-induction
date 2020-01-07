@@ -8,8 +8,8 @@ use term_rewriting::{Operator, Place, Rule, Term, Variable};
 type Transform = (Term, Vec<usize>, Vec<usize>, Type);
 type Case<'a> = (&'a Rule, Vec<Rule>);
 
-impl TRS {
-    pub fn compose_and_variablize<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
+impl<'a> TRS<'a> {
+    pub fn compose_and_variablize<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS<'a>>, SampleError> {
         self.compose().and_then(|new_trss| {
             let mut trss = new_trss
                 .into_iter()
@@ -20,7 +20,7 @@ impl TRS {
             as_result(trss)
         })
     }
-    pub fn compose(&self) -> Result<Vec<TRS>, SampleError> {
+    pub fn compose(&self) -> Result<Vec<TRS<'a>>, SampleError> {
         let clauses = self.clauses_for_learning(&[])?;
         let snapshot = self.lex.snapshot();
         let op = self.lex.has_op(Some("."), 2)?;
@@ -65,12 +65,12 @@ impl TRS {
         }
         transforms
     }
-    fn try_composition<'a>(
+    fn try_composition<'b>(
         t: &Transform,
         op: Operator,
-        rules: &'a [Rule],
+        rules: &'b [Rule],
         lex: &Lexicon,
-    ) -> Result<(Rule, Vec<Case<'a>>), SampleError> {
+    ) -> Result<(Rule, Vec<Case<'b>>), SampleError> {
         // 1. Define two new operators F and G.
         let tp = Type::arrow(t.3.clone(), t.3.clone());
         let f = lex.invent_operator(None, 0, &tp);
@@ -127,7 +127,7 @@ impl TRS {
         .ok_or(SampleError::Subterm)?;
         Rule::new(lhs, vec![rhs]).ok_or(SampleError::Subterm)
     }
-    fn adopt_composition(&self, master: Rule, solution: Vec<Case>) -> Option<TRS> {
+    fn adopt_composition(&self, master: Rule, solution: Vec<Case>) -> Option<TRS<'a>> {
         let (old_rules, new_ruless): (Vec<_>, Vec<_>) = solution.into_iter().unzip();
         let mut new_rules = vec![];
         for rules in new_ruless {

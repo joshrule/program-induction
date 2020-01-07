@@ -3,18 +3,18 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::{Rule, Term};
 
-impl TRS {
-    pub fn combine<R: Rng>(
-        parent1: &TRS,
+impl<'a> TRS<'a> {
+    pub fn combine<'b, R: Rng>(
+        parent1: &TRS<'b>,
         parent2: &TRS,
         rng: &mut R,
         threshold: usize,
-    ) -> Result<Vec<TRS>, SampleError> {
+    ) -> Result<Vec<TRS<'b>>, SampleError> {
         TRS::merge(parent1, parent2)?
             .smart_delete(0, 0)?
             .delete_rules(rng, threshold)
     }
-    fn merge(trs1: &TRS, trs2: &TRS) -> Result<TRS, SampleError> {
+    fn merge<'b>(trs1: &TRS<'b>, trs2: &TRS) -> Result<TRS<'b>, SampleError> {
         if trs1.lex != trs2.lex {
             return Err(SampleError::OptionsExhausted);
         }
@@ -36,7 +36,7 @@ impl TRS {
         Ok(TRS::new(
             &trs1.lex,
             trs1.is_deterministic(),
-            trs1.background.clone(),
+            trs1.background,
             rules,
         )?)
     }

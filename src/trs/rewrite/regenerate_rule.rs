@@ -3,14 +3,14 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::{Context, Rule, RuleContext};
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// Regenerate some portion of a rule
     pub fn regenerate_rule<R: Rng>(
         &self,
         atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
-    ) -> Result<Vec<TRS>, SampleError> {
+    ) -> Result<Vec<TRS<'a>>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
         let mut new_rules = self.regenerate_helper(&clause, atom_weights, max_size)?;
         self.filter_background(&mut new_rules);

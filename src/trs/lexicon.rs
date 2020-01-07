@@ -1566,22 +1566,22 @@ impl Lex {
         }
     }
 }
-impl<'a> From<&'a GPLexicon> for &'a Lexicon {
+impl<'a, 'b> From<&'a GPLexicon<'b>> for &'a Lexicon {
     fn from(gp_lex: &'a GPLexicon) -> &'a Lexicon {
         &gp_lex.lexicon
     }
 }
 
-type Parents = Vec<TRS>;
-type Tried = HashMap<TRSMoveName, Vec<Parents>>;
-pub struct GPLexicon {
+type Parents<'a> = Vec<TRS<'a>>;
+type Tried<'a> = HashMap<TRSMoveName, Vec<Parents<'a>>>;
+pub struct GPLexicon<'a> {
     pub lexicon: Lexicon,
-    pub bg: Vec<Rule>,
+    pub bg: &'a [Rule],
     pub contexts: Vec<RuleContext>,
-    pub(crate) tried: Arc<RwLock<Tried>>,
+    pub(crate) tried: Arc<RwLock<Tried<'a>>>,
 }
-impl GPLexicon {
-    pub fn new(lex: &Lexicon, bg: Vec<Rule>, contexts: Vec<RuleContext>) -> GPLexicon {
+impl<'a> GPLexicon<'a> {
+    pub fn new<'b>(lex: &Lexicon, bg: &'b [Rule], contexts: Vec<RuleContext>) -> GPLexicon<'b> {
         let lexicon = lex.clone();
         let tried = Arc::new(RwLock::new(HashMap::new()));
         GPLexicon {
@@ -1595,12 +1595,12 @@ impl GPLexicon {
         let mut tried = self.tried.write().expect("poisoned");
         *tried = HashMap::new();
     }
-    pub fn add(&self, name: TRSMoveName, parents: Parents) {
+    pub fn add(&self, name: TRSMoveName, parents: Parents<'a>) {
         let mut tried = self.tried.write().expect("poisoned");
         let entry = tried.entry(name).or_insert_with(|| vec![]);
         entry.push(parents);
     }
-    pub fn check(&self, name: TRSMoveName, parents: Parents) -> Option<Parents> {
+    pub fn check(&self, name: TRSMoveName, parents: Parents<'a>) -> Option<Parents<'a>> {
         let mut tried = self.tried.write().expect("poisoned");
         let past_parents = tried.entry(name).or_insert_with(|| vec![]);
         if self.novelty_possible(name, &parents, &past_parents) {
@@ -1623,9 +1623,9 @@ impl GPLexicon {
         }
     }
 }
-impl GP for GPLexicon {
+impl<'a> GP for GPLexicon<'a> {
     type Representation = Lexicon;
-    type Expression = TRS;
+    type Expression = TRS<'a>;
     type Params = GeneticParams;
     type Observation = Vec<Rule>;
     fn genesis<R: Rng>(
@@ -1635,7 +1635,7 @@ impl GP for GPLexicon {
         pop_size: usize,
         _tp: &TypeSchema,
     ) -> Vec<Self::Expression> {
-        match TRS::new(&self.lexicon, params.deterministic, self.bg.clone(), vec![]) {
+        match TRS::new(&self.lexicon, params.deterministic, self.bg, vec![]) {
             Ok(mut trs) => {
                 if params.deterministic {
                     trs.utrs.make_deterministic();
@@ -1680,7 +1680,7 @@ impl GP for GPLexicon {
                 if let Ok(trss) = mv.take(
                     &self.lexicon,
                     params.deterministic,
-                    &self.bg,
+                    self.bg,
                     &self.contexts,
                     obs,
                     rng,

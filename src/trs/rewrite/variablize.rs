@@ -10,11 +10,11 @@ type AffectedRules<'a> = Vec<&'a Rule>;
 type NewRules = Vec<Rule>;
 type Cluster<'a> = (AffectedRules<'a>, Vec<(&'a Variablization, NewRules)>);
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// Replace subterms of [`term_rewriting::Rule`]s with [`term_rewriting::Variable`]s.
     /// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
     /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
-    pub fn variablize(&self) -> Result<Vec<TRS>, SampleError> {
+    pub fn variablize(&self) -> Result<Vec<TRS<'a>>, SampleError> {
         let snapshot = self.lex.snapshot();
         let clauses = self.clauses_for_learning(&[])?;
         let mut trss = vec![];
@@ -101,22 +101,22 @@ impl TRS {
             .collect_vec();
         Some(map)
     }
-    fn apply_variablizations<'a, 'b>(
-        vs: &'b [(Type, Vec<Place>)],
-        clauses: &'a [Rule],
+    fn apply_variablizations<'b, 'c>(
+        vs: &'c [(Type, Vec<Place>)],
+        clauses: &'b [Rule],
         lex: &Lexicon,
-    ) -> Vec<(&'b Variablization, Vec<Transformation<'a>>)> {
+    ) -> Vec<(&'c Variablization, Vec<Transformation<'b>>)> {
         vs.iter()
             .map(|v| (v, TRS::apply_variablization(&v.0, &v.1, clauses, lex)))
             .filter(|(_, x)| !x.is_empty())
             .collect_vec()
     }
-    fn apply_variablization<'a>(
+    fn apply_variablization<'b>(
         tp: &Type,
         places: &[Place],
-        clauses: &'a [Rule],
+        clauses: &'b [Rule],
         lex: &Lexicon,
-    ) -> Vec<Transformation<'a>> {
+    ) -> Vec<Transformation<'b>> {
         clauses
             .iter()
             .filter_map(|rule| {
@@ -146,21 +146,21 @@ impl TRS {
                 }
             })
     }
-    fn make_solution<'a>(new_rules: &[Rule], old_rules: &'a [&Rule]) -> Vec<(Rule, &'a Rule)> {
+    fn make_solution<'b>(new_rules: &[Rule], old_rules: &'b [&Rule]) -> Vec<(Rule, &'b Rule)> {
         new_rules
             .iter()
             .cloned()
             .zip(old_rules.iter().copied())
             .collect_vec()
     }
-    fn store_solution(&self, new_trss: &mut Vec<TRS>, solution: Vec<(Rule, &Rule)>) {
+    fn store_solution(&self, new_trss: &mut Vec<TRS<'a>>, solution: Vec<(Rule, &Rule)>) {
         if let Some(trs) = self.adopt_solution(solution) {
             if new_trss.iter().all(|new_trs| !TRS::is_alpha(new_trs, &trs)) {
                 new_trss.push(trs);
             }
         }
     }
-    fn adopt_solution(&self, mut rules: Vec<(Rule, &Rule)>) -> Option<TRS> {
+    fn adopt_solution(&self, mut rules: Vec<(Rule, &Rule)>) -> Option<TRS<'a>> {
         let mut trs = self.clone();
         let mut i = 0;
         while i < rules.len() {

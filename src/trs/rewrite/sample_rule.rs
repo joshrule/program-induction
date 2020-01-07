@@ -3,7 +3,7 @@ use rand::{seq::SliceRandom, Rng};
 use std::collections::HashMap;
 use term_rewriting::RuleContext;
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// Sample a rule and add it to the rewrite system.
     ///
     /// # Example
@@ -66,7 +66,7 @@ impl TRS {
         atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
-    ) -> Result<Vec<TRS>, SampleError> {
+    ) -> Result<Vec<TRS<'a>>, SampleError> {
         // TODO: fail if you sample an existing rule?
         let context = contexts
             .choose(rng)

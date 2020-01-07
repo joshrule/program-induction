@@ -3,9 +3,9 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::{Rule, Term};
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// Delete a learned rule from the rewrite system.
-    pub fn delete_rule(&self) -> Result<Vec<TRS>, SampleError> {
+    pub fn delete_rule(&self) -> Result<Vec<TRS<'a>>, SampleError> {
         let rules = self
             .utrs
             .rules
@@ -31,7 +31,7 @@ impl TRS {
         &self,
         rng: &mut R,
         threshold: usize,
-    ) -> Result<Vec<TRS>, SampleError> {
+    ) -> Result<Vec<TRS<'a>>, SampleError> {
         let deletable = as_result(self.clauses())?;
         let mut trss = vec![];
         if 2usize.pow((1 + deletable.len()) as u32) - 2 > threshold {
@@ -63,7 +63,7 @@ impl TRS {
     }
 
     /// Delete rules from the rewrite system whose LHS matches a prior rule's.
-    pub fn smart_delete(&self, mut start: usize, mut stop: usize) -> Result<TRS, SampleError> {
+    pub fn smart_delete(&self, mut start: usize, mut stop: usize) -> Result<TRS<'a>, SampleError> {
         let mut rules = &self.utrs.rules[..];
         if rules.is_empty() {
             Err(SampleError::OptionsExhausted)
@@ -91,7 +91,7 @@ impl TRS {
             Ok(TRS::new_unchecked(
                 &self.lex,
                 self.is_deterministic(),
-                self.background.clone(),
+                self.background,
                 new_rules,
             ))
         }

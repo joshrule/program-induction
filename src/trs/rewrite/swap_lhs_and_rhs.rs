@@ -3,7 +3,7 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::Rule;
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// Selects a rule from the TRS at random, swaps the LHS and RHS if possible and inserts the resulting rules
     /// back into the TRS imediately after the background.
     ///

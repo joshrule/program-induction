@@ -3,7 +3,7 @@ use term_rewriting::{trace::Trace, Rule, TRS as UntypedTRS};
 
 use super::{Likelihood, ModelParams, TRS};
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// A log likelihood for a `TRS`: the probability of `data`'s RHSs appearing
     /// in [`term_rewriting::Trace`]s rooted at its LHSs.
     ///

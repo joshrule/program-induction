@@ -4,7 +4,7 @@ use rand::Rng;
 use std::iter::once;
 use term_rewriting::{Rule, Term};
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// Selects a rule from the TRS at random, finds all differences in the LHS and RHS,
     /// and makes rules from those differences and inserts them back into the TRS imediately after the background.
     ///
@@ -59,7 +59,7 @@ impl TRS {
     ///
     /// assert_eq!(Some(2), num_new_trss)
     /// ```
-    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS>, SampleError> {
+    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS<'a>>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
         let mut new_rules = TRS::local_difference_helper(&clause);
         self.filter_background(&mut new_rules);

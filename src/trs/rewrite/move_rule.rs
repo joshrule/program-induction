@@ -2,7 +2,7 @@ use rand::{seq::index::sample, Rng};
 
 use super::{SampleError, TRS};
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// Move a Rule from one place in the TRS to another at random, excluding the background.
     ///
     /// # Example

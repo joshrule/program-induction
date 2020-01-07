@@ -75,18 +75,18 @@ pub enum TRSMove {
     ComposeVariablize,
 }
 impl TRSMove {
-    pub fn take<R: Rng>(
+    pub fn take<'a, R: Rng>(
         &self,
         lex: &Lexicon,
         deterministic: bool,
-        bg: &[Rule],
+        bg: &'a [Rule],
         contexts: &[RuleContext],
         obs: &[Rule],
         rng: &mut R,
-        parents: &[TRS],
-    ) -> Result<Vec<TRS>, SampleError> {
+        parents: &[TRS<'a>],
+    ) -> Result<Vec<TRS<'a>>, SampleError> {
         match *self {
-            TRSMove::Memorize => Ok(TRS::memorize(lex, deterministic, bg.to_vec(), obs)),
+            TRSMove::Memorize => Ok(TRS::memorize(lex, deterministic, bg, obs)),
             TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(contexts, aw, mss, rng),
             TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
@@ -103,7 +103,7 @@ impl TRSMove {
             TRSMove::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
         }
     }
-    pub fn get_parents<R: Rng>(&self, t: &Tournament<TRS>, rng: &mut R) -> Vec<TRS> {
+    pub fn get_parents<'a, R: Rng>(&self, t: &Tournament<TRS<'a>>, rng: &mut R) -> Vec<TRS<'a>> {
         match *self {
             TRSMove::Memorize => vec![],
             TRSMove::Combine(_) => vec![t.sample(rng).clone(), t.sample(rng).clone()],
@@ -133,13 +133,13 @@ impl TRSMove {
 
 /// A typed term rewriting system.
 #[derive(Debug, PartialEq, Clone)]
-pub struct TRS {
+pub struct TRS<'a> {
     pub(crate) lex: Lexicon,
     // INVARIANT: utrs never contains background information
-    pub(crate) background: Vec<Rule>,
+    pub(crate) background: &'a [Rule],
     pub(crate) utrs: UntypedTRS,
 }
-impl TRS {
+impl<'a> TRS<'a> {
     /// Create a new `TRS` under the given [`Lexicon`]. Any background knowledge
     /// will be appended to the given ruleset.
     ///
@@ -183,12 +183,12 @@ impl TRS {
     /// ```
     ///
     /// [`Lexicon`]: struct.Lexicon.html
-    pub fn new(
+    pub fn new<'b>(
         lexicon: &Lexicon,
         deterministic: bool,
-        background: Vec<Rule>,
+        background: &'b [Rule],
         rules: Vec<Rule>,
-    ) -> Result<TRS, TypeError> {
+    ) -> Result<TRS<'b>, TypeError> {
         let trs = TRS::new_unchecked(lexicon, deterministic, background, rules);
         lexicon.infer_utrs(&trs.utrs)?;
         Ok(trs)
@@ -198,12 +198,12 @@ impl TRS {
     /// where you are already confident in the type safety of the new rules.
     ///
     /// [`TRS::new`]: struct.TRS.html#method.new
-    pub fn new_unchecked(
+    pub fn new_unchecked<'b>(
         lexicon: &Lexicon,
         deterministic: bool,
-        background: Vec<Rule>,
+        background: &'b [Rule],
         rules: Vec<Rule>,
-    ) -> TRS {
+    ) -> TRS<'b> {
         // Remove any rules already in the background
         let mut utrs = UntypedTRS::new(rules);
         for bg in background.iter().flat_map(|r| r.clauses()) {
@@ -272,7 +272,7 @@ impl TRS {
         n: usize,
         old_clause: &Rule,
         new_clause: Rule,
-    ) -> Result<&mut TRS, SampleError> {
+    ) -> Result<&mut TRS<'a>, SampleError> {
         // TODO: why are we type-checking here?
         self.lex
             .infer_rule(&new_clause, &mut HashMap::new())
@@ -281,14 +281,14 @@ impl TRS {
         Ok(self)
     }
 
-    pub fn swap_rules(&mut self, rules: &[(Rule, &Rule)]) -> Result<&mut TRS, SampleError> {
+    pub fn swap_rules(&mut self, rules: &[(Rule, &Rule)]) -> Result<&mut TRS<'a>, SampleError> {
         for (new_rule, old_rule) in rules {
             self.swap(old_rule, new_rule.clone())?;
         }
         Ok(self)
     }
 
-    pub fn swap(&mut self, old_rule: &Rule, new_rule: Rule) -> Result<&mut TRS, SampleError> {
+    pub fn swap(&mut self, old_rule: &Rule, new_rule: Rule) -> Result<&mut TRS<'a>, SampleError> {
         if let Some((n, _)) = self.utrs.get_clause(old_rule) {
             self.utrs.replace(n, old_rule, new_rule)?;
         } else {
@@ -370,15 +370,15 @@ impl TRS {
             .map_err(SampleError::from)
     }
     pub fn filter_background(&self, rules: &mut Vec<Rule>) {
-        let bgs = &self.background;
         for rule in rules.iter_mut() {
-            for bg in bgs {
+            for bg in self.background {
                 rule.discard(bg);
             }
         }
         if self.utrs.is_deterministic() {
             rules.retain(|rule| {
-                bgs.iter()
+                self.background
+                    .iter()
                     .all(|bg| Term::alpha(vec![(&bg.lhs, &rule.lhs)]).is_none())
             });
         }
@@ -389,7 +389,7 @@ impl TRS {
         self.utrs.is_deterministic()
     }
 }
-impl fmt::Display for TRS {
+impl<'a> fmt::Display for TRS<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let sig = &self.lex.0.read().expect("poisoned lexicon").signature;
         let trs_str = self

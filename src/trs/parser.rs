@@ -99,12 +99,12 @@ pub fn parse_lexicon(input: &str, ctx: TypeContext) -> Result<Lexicon, ParseErro
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`TRS`]: struct.TRS.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_trs(
+pub fn parse_trs<'a>(
     input: &str,
     lex: &Lexicon,
     deterministic: bool,
-    background: Vec<Rule>,
-) -> Result<TRS, ParseError> {
+    background: &'a [Rule],
+) -> Result<TRS<'a>, ParseError> {
     trs(CompleteStr(input), lex, deterministic, background)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
@@ -261,7 +261,6 @@ fn simple_lexicon<'a>(
         |_| Lexicon::from_signature(sig, ops, vars, ctx)
     )
 }
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
 fn lexicon<'a>(
     input: CompleteStr<'a>,
     sig: Signature,
@@ -270,6 +269,29 @@ fn lexicon<'a>(
     ctx: TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Lexicon> {
     simple_lexicon(input, sig, vars, ops, ctx)
+}
+fn trs<'a, 'b>(
+    input: CompleteStr<'a>,
+    lex: &Lexicon,
+    deterministic: bool,
+    background: &'b [Rule],
+) -> nom::IResult<CompleteStr<'a>, TRS<'b>> {
+    ws!(
+        input,
+        do_parse!(
+            many0!(ws!(comment))
+                >> rules:
+                    many0!(do_parse!(
+                        many0!(ws!(comment))
+                            >> rule_text: take_until_and_consume!(";")
+                            >> rule: expr_res!(typed_rule(&rule_text, lex))
+                            >> many0!(ws!(comment))
+                            >> (rule.1)
+                    ))
+                >> trs: expr_res!(TRS::new(lex, deterministic, background, rules))
+                >> (trs)
+        )
+    )
 }
 fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
     let result = parse_untyped_rule(
@@ -287,16 +309,6 @@ fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>
         nom::ErrorKind::Custom(0),
     )))
 }
-named_args!(trs<'a>(lex: &Lexicon, deterministic: bool, background: Vec<Rule>) <CompleteStr<'a>, TRS>,
-            ws!(do_parse!(many0!(ws!(comment)) >>
-                          rules: many0!(do_parse!(many0!(ws!(comment)) >>
-                                                  rule_text: take_until_and_consume!(";") >>
-                                                  rule: expr_res!(typed_rule(&rule_text, lex)) >>
-                                                  many0!(ws!(comment)) >>
-                                                  (rule.1))) >>
-                          trs: expr_res!(TRS::new(lex, deterministic, background, rules)) >>
-                          (trs)))
-);
 fn add_parsed_variables_to_lexicon(lex: &Lexicon) {
     let mut vars = lex
         .0

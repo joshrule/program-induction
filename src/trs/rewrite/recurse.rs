@@ -9,12 +9,12 @@ use utils::weighted_permutation;
 type Transform = (Term, Vec<usize>, Vec<usize>, Type);
 type Case = (Option<Rule>, Rule);
 
-impl TRS {
+impl<'a> TRS<'a> {
     pub fn recurse_and_generalize<R: Rng>(
         &self,
         n_sampled: usize,
         rng: &mut R,
-    ) -> Result<Vec<TRS>, SampleError> {
+    ) -> Result<Vec<TRS<'a>>, SampleError> {
         self.recurse(n_sampled).and_then(|new_trss| {
             let mut trss = new_trss
                 .into_iter()
@@ -29,7 +29,7 @@ impl TRS {
         &self,
         n_sampled: usize,
         rng: &mut R,
-    ) -> Result<Vec<TRS>, SampleError> {
+    ) -> Result<Vec<TRS<'a>>, SampleError> {
         self.recurse(n_sampled).and_then(|new_trss| {
             let mut trss = new_trss
                 .into_iter()
@@ -40,7 +40,7 @@ impl TRS {
             as_result(trss)
         })
     }
-    pub fn recurse(&self, n_sampled: usize) -> Result<Vec<TRS>, SampleError> {
+    pub fn recurse(&self, n_sampled: usize) -> Result<Vec<TRS<'a>>, SampleError> {
         let snapshot = self.lex.snapshot();
         let clauses = self.clauses_for_learning(&[])?;
         let op = self
@@ -65,7 +65,10 @@ impl TRS {
         self.lex.rollback(snapshot);
         as_result(weighted_permutation(&trss, &ns, Some(n_sampled)))
     }
-    fn adopt_recursive_solution(&self, solution: Vec<(&Rule, Vec<Rule>)>) -> Option<(TRS, f64)> {
+    fn adopt_recursive_solution(
+        &self,
+        solution: Vec<(&Rule, Vec<Rule>)>,
+    ) -> Option<(TRS<'a>, f64)> {
         let (old_rules, new_ruless): (Vec<_>, Vec<_>) = solution.into_iter().unzip();
         let mut new_rules = TRS::reorder_rules(new_ruless);
         self.filter_background(&mut new_rules);
@@ -108,11 +111,11 @@ impl TRS {
         new_rules.append(&mut new_recursives);
         new_rules
     }
-    pub(crate) fn collect_recursive_fns<'a>(
+    pub(crate) fn collect_recursive_fns<'b>(
         map: &HashMap<Place, Type>,
         lex: &Lexicon,
-        rule: &'a Rule,
-    ) -> Vec<(&'a Term, Place, Type)> {
+        rule: &'b Rule,
+    ) -> Vec<(&'b Term, Place, Type)> {
         let mut headmost = vec![0];
         while map.contains_key(&headmost) {
             headmost.push(0);
@@ -175,12 +178,12 @@ impl TRS {
         }
         transforms
     }
-    fn transform_rules<'a>(
+    fn transform_rules<'b>(
         t: &Transform,
         op: Operator,
-        rules: &'a [Rule],
+        rules: &'b [Rule],
         lex: &Lexicon,
-    ) -> Result<Vec<(&'a Rule, Vec<Rule>)>, SampleError> {
+    ) -> Result<Vec<(&'b Rule, Vec<Rule>)>, SampleError> {
         // Collect the full transform for each rule that can be transformed.
         let new_ruless = rules
             .iter()
@@ -323,13 +326,13 @@ impl TRS {
             .map(|_| ())
             .ok_or(SampleError::Subterm)
     }
-    fn check_place<'a>(
-        rule: &'a Rule,
+    fn check_place<'b>(
+        rule: &'b Rule,
         place: &[usize],
         tp: &Type,
         lex: &Lexicon,
         map: &HashMap<Place, Type>,
-    ) -> Result<&'a Term, SampleError> {
+    ) -> Result<&'b Term, SampleError> {
         map.get(place)
             .and_then(|place_tp| lex.unify(tp, place_tp).ok())
             .and_then(|_| rule.at(place))

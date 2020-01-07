@@ -4,8 +4,8 @@ use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Atom, Context, Operator, Rule, Term, Variable};
 
-impl TRS {
-    pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS>, SampleError> {
+impl<'a> TRS<'a> {
+    pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS<'a>>, SampleError> {
         let all_rules = self.clauses_for_learning(data)?;
         let mut trs = self.clone();
         let (lhs_context, clauses) = TRS::find_lhs_context(&all_rules)?;
@@ -189,14 +189,14 @@ impl TRS {
         rhs.replace(place, subctx).ok_or(SampleError::Subterm)
     }
     #[allow(clippy::type_complexity)]
-    fn collect_information<'a>(
+    fn collect_information<'b>(
         lex: &Lexicon,
         lhs: &Term,
         lhs_place: &[usize],
         rhs_place: &[usize],
-        clauses: &'a [Rule],
+        clauses: &'b [Rule],
         var: Variable,
-    ) -> Result<(Vec<Type>, Vec<(&'a Term, Term)>, Vec<Variable>), SampleError> {
+    ) -> Result<(Vec<Type>, Vec<(&'b Term, Term)>, Vec<Variable>), SampleError> {
         let mut terms = vec![];
         let mut types = vec![];
         let mut vars = vec![var];

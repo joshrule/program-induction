@@ -3,7 +3,7 @@ use std::f64::NEG_INFINITY;
 use super::{ModelParams, Prior, TRS};
 use utils::{block_generative_logpdf, fail_geometric_logpdf};
 
-impl TRS {
+impl<'a> TRS<'a> {
     /// A pseudo log prior for a `TRS`: the negative [`size`] of the `TRS`
     /// scaled by some cost per token.
     ///
