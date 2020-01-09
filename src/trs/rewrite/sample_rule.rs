@@ -3,7 +3,7 @@ use rand::{seq::SliceRandom, Rng};
 use std::collections::HashMap;
 use term_rewriting::RuleContext;
 
-impl<'a> TRS<'a> {
+impl<'a, 'b> TRS<'a, 'b> {
     /// Sample a rule and add it to the rewrite system.
     ///
     /// # Example
@@ -46,9 +46,9 @@ impl<'a> TRS<'a> {
     ///     }
     /// ];
     ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], contexts, false, TypeContext::default());
+    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
     ///
-    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
+    /// let mut trs = TRS::new(&lexicon, true, &[], rules).unwrap();
     ///
     /// assert_eq!(trs.len(), 2);
     ///
@@ -56,7 +56,7 @@ impl<'a> TRS<'a> {
     /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
     /// let max_size = 50;
     ///
-    /// if let Ok(new_trss) = trs.sample_rule(atom_weights, max_size, &mut rng) {
+    /// if let Ok(new_trss) = trs.sample_rule(&contexts, atom_weights, max_size, &mut rng) {
     ///     assert_eq!(new_trss[0].len(), 3);
     /// }
     /// ```
@@ -66,13 +66,14 @@ impl<'a> TRS<'a> {
         atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
-    ) -> Result<Vec<TRS<'a>>, SampleError> {
+    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         // TODO: fail if you sample an existing rule?
         let context = contexts
             .choose(rng)
             .ok_or(SampleError::OptionsExhausted)?
             .clone();
-        let rule = self
+        let mut trs = self.clone();
+        let rule = trs
             .lex
             .sample_rule_from_context(context, atom_weights, true, max_size)
             .drop()?;
@@ -82,14 +83,9 @@ impl<'a> TRS<'a> {
         self.lex.infer_rule(&rule, &mut HashMap::new()).drop()?;
         let mut new_rules = vec![rule];
         self.filter_background(&mut new_rules);
-        let trss = new_rules
-            .into_iter()
-            .filter_map(|rule| {
-                let mut trs = self.clone();
-                trs.utrs.push(rule).ok()?;
-                Some(trs)
-            })
-            .collect();
-        as_result(trss)
+        // INVARIANT: there's at most one rule in new_rules
+        let mut new_rules = as_result(new_rules)?;
+        trs.utrs.push(new_rules.pop().unwrap())?;
+        Ok(vec![trs])
     }
 }

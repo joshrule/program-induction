@@ -2,7 +2,7 @@ use rand::{seq::index::sample, Rng};
 
 use super::{SampleError, TRS};
 
-impl<'a> TRS<'a> {
+impl<'a, 'b> TRS<'a, 'b> {
     /// Move a Rule from one place in the TRS to another at random, excluding the background.
     ///
     /// # Example
@@ -48,9 +48,9 @@ impl<'a> TRS<'a> {
     /// }
     ///
     /// let ctx = TypeContext::default();
-    /// let lexicon = Lexicon::from_signature(sig.clone(), ops, vars, vec![], vec![], false, ctx);
+    /// let lexicon = Lexicon::from_signature(sig.clone(), ops, vars, ctx);
     ///
-    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
+    /// let mut trs = TRS::new(&lexicon, true, &[], rules).unwrap();
     ///
     /// let pretty_before = trs.to_string();
     ///
@@ -61,7 +61,7 @@ impl<'a> TRS<'a> {
     /// assert_ne!(pretty_before, new_trs.to_string());
     /// assert_eq!(new_trs.to_string(), "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_));\nPLUS(x_ ZERO) = x_;");
     /// ```
-    pub fn move_rule<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
+    pub fn move_rule<R: Rng>(&self, rng: &mut R) -> Result<TRS<'a, 'b>, SampleError> {
         let len = self.len();
         if len > 1 {
             let mut trs = self.clone();

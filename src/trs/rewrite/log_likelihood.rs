@@ -3,7 +3,7 @@ use term_rewriting::{trace::Trace, Rule, TRS as UntypedTRS};
 
 use super::{Likelihood, ModelParams, TRS};
 
-impl<'a> TRS<'a> {
+impl<'a, 'b> TRS<'a, 'b> {
     /// A log likelihood for a `TRS`: the probability of `data`'s RHSs appearing
     /// in [`term_rewriting::Trace`]s rooted at its LHSs.
     ///
@@ -16,9 +16,8 @@ impl<'a> TRS<'a> {
 
     /// Compute the log likelihood for a single datum.
     fn single_log_likelihood(&self, datum: &Rule, params: ModelParams) -> f64 {
-        let lex = self.lex.0.read().expect("poisoned lexicon");
         let utrs = self.full_utrs();
-        let sig = &lex.signature;
+        let sig = &self.lex.0.signature;
         if let Some(ref rhs) = datum.rhs() {
             let mut trace = Trace::new(
                 &utrs,

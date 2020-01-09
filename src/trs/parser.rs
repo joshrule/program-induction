@@ -81,7 +81,7 @@ impl ::std::error::Error for ParseError {
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 /// [`polytype`]: ../../../polytype/index.html
 /// [augmented Backus-Naur form]: https://en.wikipedia.org/wiki/Augmented_Backus–Naur_form
-pub fn parse_lexicon(input: &str, ctx: TypeContext) -> Result<Lexicon, ParseError> {
+pub fn parse_lexicon<'a>(input: &str, ctx: TypeContext) -> Result<Lexicon<'a>, ParseError> {
     lexicon(
         CompleteStr(input),
         Signature::default(),
@@ -99,12 +99,12 @@ pub fn parse_lexicon(input: &str, ctx: TypeContext) -> Result<Lexicon, ParseErro
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`TRS`]: struct.TRS.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_trs<'a>(
+pub fn parse_trs<'a, 'b>(
     input: &str,
-    lex: &Lexicon,
+    lex: &mut Lexicon<'b>,
     deterministic: bool,
     background: &'a [Rule],
-) -> Result<TRS<'a>, ParseError> {
+) -> Result<TRS<'a, 'b>, ParseError> {
     trs(CompleteStr(input), lex, deterministic, background)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
@@ -116,7 +116,7 @@ pub fn parse_trs<'a>(
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Term`]: ../../../term_rewriting/enum.Term.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_term(input: &str, lex: &Lexicon) -> Result<Term, ParseError> {
+pub fn parse_term(input: &str, lex: &mut Lexicon) -> Result<Term, ParseError> {
     typed_term(CompleteStr(input), lex)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
@@ -128,7 +128,7 @@ pub fn parse_term(input: &str, lex: &Lexicon) -> Result<Term, ParseError> {
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Context`]: ../../../term_rewriting/enum.Context.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_context(input: &str, lex: &Lexicon) -> Result<Context, ParseError> {
+pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseError> {
     typed_context(CompleteStr(input), lex)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
@@ -140,7 +140,7 @@ pub fn parse_context(input: &str, lex: &Lexicon) -> Result<Context, ParseError> 
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`RuleContext`]: ../../../term_rewriting/struct.RuleContext.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_rulecontext(input: &str, lex: &Lexicon) -> Result<RuleContext, ParseError> {
+pub fn parse_rulecontext(input: &str, lex: &mut Lexicon) -> Result<RuleContext, ParseError> {
     typed_rulecontext(CompleteStr(input), lex)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
@@ -152,7 +152,7 @@ pub fn parse_rulecontext(input: &str, lex: &Lexicon) -> Result<RuleContext, Pars
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Rule`]: ../../../term_rewriting/struct.Rule.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_rule(input: &str, lex: &Lexicon) -> Result<Rule, ParseError> {
+pub fn parse_rule(input: &str, lex: &mut Lexicon) -> Result<Rule, ParseError> {
     typed_rule(input, lex)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
@@ -242,13 +242,13 @@ named_args!(declaration<'a>(sig: &mut Signature, vars: &mut Vec<TypeSchema>, ops
                       (name, schema))),
             |(n, s)| (make_atom(n, sig, s.clone(), vars, ops), s)
        ));
-fn simple_lexicon<'a>(
+fn simple_lexicon<'a, 'b>(
     input: CompleteStr<'a>,
     mut sig: Signature,
     mut vars: Vec<TypeSchema>,
     mut ops: Vec<TypeSchema>,
     ctx: TypeContext,
-) -> nom::IResult<CompleteStr<'a>, Lexicon> {
+) -> nom::IResult<CompleteStr<'a>, Lexicon<'b>> {
     map!(
         input,
         ws!(many0!(do_parse!(
@@ -261,21 +261,21 @@ fn simple_lexicon<'a>(
         |_| Lexicon::from_signature(sig, ops, vars, ctx)
     )
 }
-fn lexicon<'a>(
+fn lexicon<'a, 'b>(
     input: CompleteStr<'a>,
     sig: Signature,
     vars: Vec<TypeSchema>,
     ops: Vec<TypeSchema>,
     ctx: TypeContext,
-) -> nom::IResult<CompleteStr<'a>, Lexicon> {
+) -> nom::IResult<CompleteStr<'a>, Lexicon<'b>> {
     simple_lexicon(input, sig, vars, ops, ctx)
 }
-fn trs<'a, 'b>(
+fn trs<'a, 'b, 'c>(
     input: CompleteStr<'a>,
-    lex: &Lexicon,
+    lex: &mut Lexicon<'c>,
     deterministic: bool,
     background: &'b [Rule],
-) -> nom::IResult<CompleteStr<'a>, TRS<'b>> {
+) -> nom::IResult<CompleteStr<'a>, TRS<'b, 'c>> {
     ws!(
         input,
         do_parse!(
@@ -293,11 +293,8 @@ fn trs<'a, 'b>(
         )
     )
 }
-fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
-    let result = parse_untyped_rule(
-        &mut lex.0.write().expect("poisoned lexicon").signature,
-        input,
-    );
+fn typed_rule<'a>(input: &'a str, lex: &mut Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
+    let result = parse_untyped_rule(&mut lex.0.to_mut().signature, input);
     if let Ok(rule) = result {
         add_parsed_variables_to_lexicon(lex);
         if lex.infer_rule(&rule, &mut HashMap::new()).drop().is_ok() {
@@ -309,27 +306,28 @@ fn typed_rule<'a>(input: &'a str, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>
         nom::ErrorKind::Custom(0),
     )))
 }
-fn add_parsed_variables_to_lexicon(lex: &Lexicon) {
-    let mut vars = lex
-        .0
-        .read()
-        .expect("poisoned lexicon")
-        .signature
-        .variables();
+fn add_parsed_variables_to_lexicon(lex: &mut Lexicon) {
+    let mut vars = lex.0.to_mut().signature.variables();
     vars.sort_unstable_by_key(|var| var.id());
     for var in vars {
-        if var.id() == lex.0.read().expect("poisoned lexicon").vars.len() {
-            let tp = lex.0.write().expect("poisoned lexicon").ctx.new_variable();
+        if var.id() == lex.0.vars.len() {
+            let tp = lex
+                .0
+                .to_mut()
+                .ctx
+                .write()
+                .expect("poisoned context")
+                .new_variable();
             let schema = TypeSchema::Monotype(tp);
-            lex.0.write().expect("poisoned lexicon").vars.push(schema);
+            lex.0.to_mut().vars.push(schema);
         }
     }
 }
-fn typed_term<'a>(input: CompleteStr<'a>, lex: &Lexicon) -> nom::IResult<CompleteStr<'a>, Term> {
-    let result = parse_untyped_term(
-        &mut lex.0.write().expect("poisoned lexicon").signature,
-        *input,
-    );
+fn typed_term<'a>(
+    input: CompleteStr<'a>,
+    lex: &mut Lexicon,
+) -> nom::IResult<CompleteStr<'a>, Term> {
+    let result = parse_untyped_term(&mut lex.0.to_mut().signature, *input);
     if let Ok(term) = result {
         add_parsed_variables_to_lexicon(lex);
         if lex.infer_term(&term, &mut HashMap::new()).drop().is_ok() {
@@ -340,12 +338,9 @@ fn typed_term<'a>(input: CompleteStr<'a>, lex: &Lexicon) -> nom::IResult<Complet
 }
 fn typed_context<'a>(
     input: CompleteStr<'a>,
-    lex: &Lexicon,
+    lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, Context> {
-    let result = parse_untyped_context(
-        &mut lex.0.write().expect("poisoned lexicon").signature,
-        *input,
-    );
+    let result = parse_untyped_context(&mut lex.0.to_mut().signature, *input);
     if let Ok(context) = result {
         add_parsed_variables_to_lexicon(lex);
         if lex
@@ -360,12 +355,9 @@ fn typed_context<'a>(
 }
 fn typed_rulecontext<'a>(
     input: CompleteStr<'a>,
-    lex: &Lexicon,
+    lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, RuleContext> {
-    let result = parse_untyped_rulecontext(
-        &mut lex.0.write().expect("poisoned lexicon").signature,
-        *input,
-    );
+    let result = parse_untyped_rulecontext(&mut lex.0.to_mut().signature, *input);
     if let Ok(rule) = result {
         add_parsed_variables_to_lexicon(lex);
         if lex.infer_rulecontext(&rule).is_ok() {
@@ -374,7 +366,7 @@ fn typed_rulecontext<'a>(
     }
     Err(Err::Error(Nomtext::Code(input, nom::ErrorKind::Custom(0))))
 }
-named_args!(templates<'a>(lex: &Lexicon) <CompleteStr<'a>, Vec<RuleContext>>,
+named_args!(templates<'a>(lex: &mut Lexicon) <CompleteStr<'a>, Vec<RuleContext>>,
             ws!(do_parse!(templates: many0!(do_parse!(many0!(ws!(comment)) >>
                                                       rc_text: take_until_and_consume!(";") >>
                                                       rc: expr_res!(typed_rulecontext(rc_text, lex)) >>
@@ -425,12 +417,9 @@ mod tests {
     fn lexicon_test() {
         let res = lexicon(
             CompleteStr("# COMMENT\nSUCC: int -> int;\nx_: list(int);"),
-            CompleteStr(""),
-            CompleteStr(""),
             Signature::default(),
             vec![],
             vec![],
-            false,
             TypeContext::default(),
         );
         assert!(res.is_ok());
@@ -440,18 +429,15 @@ mod tests {
     fn typed_rule_test() {
         let mut lex = lexicon(
             CompleteStr("ZERO/0: int; SUCC/1: int -> int;"),
-            CompleteStr(""),
-            CompleteStr(""),
             Signature::default(),
             vec![],
             vec![],
-            false,
             TypeContext::default(),
         )
         .unwrap()
         .1;
         let res = typed_rule("SUCC(x_) = ZERO", &mut lex);
-        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let sig = &lex.0.signature;
 
         assert_eq!(res.unwrap().1.display(sig), "SUCC(x_) = ZERO");
     }
@@ -460,12 +446,9 @@ mod tests {
     fn trs_test() {
         let mut lex = lexicon(
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            CompleteStr(""),
-            CompleteStr(""),
             Signature::default(),
             vec![],
             vec![],
-            false,
             TypeContext::default(),
         )
         .unwrap()
@@ -473,8 +456,10 @@ mod tests {
         let res = trs(
             CompleteStr("PLUS(ZERO x_) = ZERO; PLUS(SUCC(x_) y_) = SUCC(PLUS(x_ y_));"),
             &mut lex,
+            true,
+            &[],
         );
-        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let sig = &lex.0.signature;
 
         assert_eq!(
             res.unwrap().1.utrs.display(sig),
@@ -486,18 +471,15 @@ mod tests {
     fn context_test() {
         let mut lex = lexicon(
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            CompleteStr(""),
-            CompleteStr(""),
             Signature::default(),
             vec![],
             vec![],
-            false,
             TypeContext::default(),
         )
         .unwrap()
         .1;
         let res = typed_context(CompleteStr("PLUS(x_ [!])"), &mut lex);
-        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let sig = &lex.0.signature;
 
         assert_eq!(res.unwrap().1.display(sig), "PLUS(x_ [!])");
     }
@@ -506,18 +488,15 @@ mod tests {
     fn rulecontext_test() {
         let mut lex = lexicon(
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            CompleteStr(""),
-            CompleteStr(""),
             Signature::default(),
             vec![],
             vec![],
-            false,
             TypeContext::default(),
         )
         .unwrap()
         .1;
         let res = typed_rulecontext(CompleteStr("PLUS(x_ [!]) = ZERO"), &mut lex);
-        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let sig = &lex.0.signature;
 
         assert_eq!(res.unwrap().1.display(sig), "PLUS(x_ [!]) = ZERO");
     }
@@ -526,12 +505,9 @@ mod tests {
     fn templates_test() {
         let mut lex = lexicon(
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            CompleteStr(""),
-            CompleteStr(""),
             Signature::default(),
             vec![],
             vec![],
-            false,
             TypeContext::default(),
         )
         .unwrap()
@@ -540,7 +516,7 @@ mod tests {
             CompleteStr("PLUS(x_ [!]) = ZERO; [!] = SUCC(ZERO);"),
             &mut lex,
         );
-        let sig = &lex.0.read().expect("poisoned lexicon").signature;
+        let sig = &lex.0.signature;
 
         let res_string = res
             .unwrap()

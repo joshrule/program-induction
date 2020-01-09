@@ -6,6 +6,7 @@ use rand::{
     Rng,
 };
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::HashMap,
     f64::NEG_INFINITY,
@@ -13,8 +14,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 use term_rewriting::{
-    Atom, Context, Operator, PStringDist, Place, Rule, RuleContext, Signature, Term, Variable,
-    TRS as UntypedTRS,
+    Atom, Context, MergeStrategy, Operator, PStringDist, Place, Rule, RuleContext, Signature,
+    SignatureChange, Term, Variable, TRS as UntypedTRS,
 };
 use utils::{logsumexp, weighted_sample};
 use {Tournament, GP};
@@ -37,15 +38,19 @@ pub struct GeneticParams {
     pub deterministic: bool,
 }
 
-pub struct ContextPoint<O, E> {
+pub struct ContextPoint<'a, O, E> {
     result: Result<O, E>,
     snapshot: usize,
-    lex: Lexicon,
+    lex: Lexicon<'a>,
 }
-impl<O, E> ContextPoint<O, E> {
+impl<'a, O, E> ContextPoint<'a, O, E> {
     pub fn drop(self) -> Result<O, E> {
-        let mut lex = self.lex.0.write().expect("poisoned lexicon");
-        lex.ctx.rollback(self.snapshot);
+        self.lex
+            .0
+            .ctx
+            .write()
+            .expect("poisoned context")
+            .rollback(self.snapshot);
         self.result
     }
     pub fn keep(self) -> Result<O, E> {
@@ -58,8 +63,9 @@ impl<O, E> ContextPoint<O, E> {
 
 /// (representation) Manages the syntax of a term rewriting system.
 #[derive(Clone)]
-pub struct Lexicon(pub(crate) Arc<RwLock<Lex>>);
-impl Lexicon {
+pub struct Lexicon<'a>(pub(crate) Cow<'a, Lex>);
+impl<'a> Eq for Lexicon<'a> {}
+impl<'a> Lexicon<'a> {
     /// Construct a `Lexicon` with only background [`term_rewriting::Operator`]s.
     ///
     /// # Example
@@ -76,32 +82,31 @@ impl Lexicon {
     ///     (1, Some("SUCC".to_string()), ptp![@arrow[tp!(int), tp!(int)]]),
     ///     (0, Some("ZERO".to_string()), ptp![int]),
     /// ];
-    /// let deterministic = false;
     ///
-    /// let lexicon = Lexicon::new(operators, deterministic, TypeContext::default());
+    /// let lexicon = Lexicon::new(operators, TypeContext::default());
     /// ```
     ///
     /// [`polytype::ptp`]: https://docs.rs/polytype/~6.0/polytype/macro.ptp.html
     /// [`polytype::TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`term_rewriting::Operator`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Operator.html
-    pub fn new(operators: Vec<(u8, Option<String>, TypeSchema)>, ctx: TypeContext) -> Lexicon {
+    pub fn new<'b>(
+        operators: Vec<(u8, Option<String>, TypeSchema)>,
+        ctx: TypeContext,
+    ) -> Lexicon<'b> {
         let signature = Signature::default();
         let mut ops = Vec::with_capacity(operators.len());
         for (id, name, tp) in operators {
             signature.new_op(id, name);
             ops.push(tp);
         }
-        let lex = Lexicon(Arc::new(RwLock::new(Lex {
+        let mut lex = Lexicon(Cow::Owned(Lex {
             ops,
             vars: vec![],
             free_vars: vec![],
             signature,
-            ctx,
-        })));
-        lex.0
-            .write()
-            .expect("poisoned lexicon")
-            .recompute_free_vars();
+            ctx: Arc::new(RwLock::new(ctx)),
+        }));
+        lex.0.to_mut().recompute_free_vars();
         lex
     }
     /// Convert a [`term_rewriting::Signature`] into a `Lexicon`:
@@ -123,8 +128,6 @@ impl Lexicon {
     /// # use polytype::Context as TypeContext;
     /// let mut sig = Signature::default();
     ///
-    /// let vars = vec![];
-    ///
     /// let mut ops = vec![];
     /// sig.new_op(2, Some("PLUS".to_string()));
     /// ops.push(ptp![@arrow[tp!(int), tp!(int), tp!(int)]]);
@@ -133,18 +136,9 @@ impl Lexicon {
     /// sig.new_op(0, Some("ZERO".to_string()));
     /// ops.push(ptp![int]);
     ///
-    /// let background = vec![
-    ///     parse_rule(&mut sig, "PLUS(x_ ZERO) = x_").expect("parsed rule"),
-    ///     parse_rule(&mut sig, "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_))").expect("parsed rule"),
-    /// ];
+    /// let vars = vec![];
     ///
-    /// let templates = vec![
-    ///     parse_rulecontext(&mut sig, "[!] = [!]").expect("parsed rulecontext"),
-    /// ];
-    ///
-    /// let deterministic = false;
-    ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, background, templates, deterministic, TypeContext::default());
+    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
     /// ```
     ///
     /// [`polytype::ptp`]: https://docs.rs/polytype/~6.0/polytype/macro.ptp.html
@@ -154,28 +148,73 @@ impl Lexicon {
     /// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
     /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
     /// [`term_rewriting::RuleContext`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.RuleContext.html
-    pub fn from_signature(
+    pub fn from_signature<'b>(
         signature: Signature,
         ops: Vec<TypeSchema>,
         vars: Vec<TypeSchema>,
         ctx: TypeContext,
-    ) -> Lexicon {
-        let lex = Lexicon(Arc::new(RwLock::new(Lex {
+    ) -> Lexicon<'b> {
+        let mut lex = Lexicon(Cow::Owned(Lex {
             ops,
             vars,
             free_vars: vec![],
             signature,
-            ctx,
-        })));
-        lex.0
-            .write()
-            .expect("poisoned lexicon")
-            .recompute_free_vars();
+            ctx: Arc::new(RwLock::new(ctx)),
+        }));
+        lex.0.to_mut().recompute_free_vars();
         lex
+    }
+    /// Merge two `Lexicons` into a single `Lexicon`
+    pub fn merge(
+        lex1: &Lexicon<'a>,
+        lex2: &Lexicon<'a>,
+        strategy: MergeStrategy,
+    ) -> Result<(Lexicon<'a>, SignatureChange), ()> {
+        // 1. Merge the signatures.
+        // TODO: expensive
+        let sig = lex1.0.signature.deep_copy();
+        let sig_change = sig.merge(&lex2.0.signature.deep_copy(), strategy)?;
+        let mut inv_map = HashMap::new();
+        for (k, v) in sig_change.op_map.iter() {
+            inv_map.insert(v, k);
+        }
+        // 2. Merge the type contexts.
+        let mut ctx = lex1.0.ctx.read().expect("poisoned context").clone();
+        // TODO: Are these the right things to share?
+        let sacreds = lex2
+            .0
+            .free_vars
+            .iter()
+            .filter(|fv| lex1.0.free_vars.contains(fv))
+            .cloned()
+            .collect_vec();
+        let ctx_change = ctx.merge(
+            lex2.0.ctx.read().expect("poisoned context").clone(),
+            sacreds,
+        );
+        // 3. Update ops.
+        let mut ops = lex1.0.ops.clone();
+        for op in &sig.operators() {
+            let id = op.id();
+            if id >= lex1.0.ops.len() {
+                let mut schema = lex2.0.ops[*inv_map[&id]].clone();
+                ctx_change.reify_typeschema(&mut schema);
+                ops.push(schema);
+            }
+        }
+        // 4. Update vars.
+        let mut vars = lex1.0.vars.clone();
+        for schema in &lex2.0.vars {
+            let mut schema = schema.clone();
+            ctx_change.reify_typeschema(&mut schema);
+            vars.push(schema);
+        }
+        // 5. Create and return a new Lexicon from parts.
+        Ok((Lexicon::from_signature(sig, ops, vars, ctx), sig_change))
     }
     /// Return the specified operator if possible.
     pub fn has_op(&self, name: Option<&str>, arity: u8) -> Result<Operator, SampleError> {
-        let sig = &self.0.read().expect("poisoned lexicon").signature;
+        let sig = &self.0.signature;
         sig.operators()
             .into_iter()
             .find(|op| {
@@ -188,71 +227,52 @@ impl Lexicon {
     ///
     /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
     pub fn variables(&self) -> Vec<Variable> {
-        self.0.read().expect("poisoned lexicon").variables()
+        self.0.variables()
     }
     /// All the free type variables in the `Lexicon`.
     pub fn free_vars(&self) -> Vec<TypeVar> {
-        self.0
-            .read()
-            .expect("poisoned lexicon")
-            .free_vars()
-            .to_vec()
+        self.0.free_vars().to_vec()
     }
     /// Add a new variable to the `Lexicon`.
-    pub fn invent_variable(&self, tp: &Type) -> Variable {
-        self.0
-            .write()
-            .expect("poisoned lexicon")
-            .invent_variable(tp)
+    pub fn invent_variable(&mut self, tp: &Type) -> Variable {
+        self.0.to_mut().invent_variable(tp)
     }
     /// Add a new operator to the `Lexicon`.
-    pub fn invent_operator(&self, name: Option<String>, arity: u8, tp: &Type) -> Operator {
-        self.0
-            .write()
-            .expect("poisoned lexicon")
-            .invent_operator(name, arity, tp)
+    pub fn invent_operator(&mut self, name: Option<String>, arity: u8, tp: &Type) -> Operator {
+        self.0.to_mut().invent_operator(name, arity, tp)
     }
     /// Shrink the universe of symbols.
-    pub fn contract(&self, ids: &[usize]) -> usize {
-        self.0.write().expect("poisoned lexicon").contract(ids)
+    pub fn contract(&mut self, ids: &[usize]) -> usize {
+        self.0.to_mut().contract(ids)
     }
     /// Return the `Lexicon`'s [`TypeContext`].
     ///
     /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
     pub fn context(&self) -> TypeContext {
-        self.0.read().expect("poisoned lexicon").ctx.clone()
+        self.0.ctx.read().expect("poisoned context").clone()
     }
     /// Return the `Lexicon`'s `Signature`.
     pub fn signature(&self) -> Signature {
-        self.0.read().expect("poisoned lexicon").signature.clone()
+        self.0.signature.clone()
     }
     pub fn snapshot(&self) -> usize {
-        self.0.read().expect("poisoned lexicon").ctx.len()
+        self.0.snapshot()
     }
     pub fn rollback(&self, snapshot: usize) {
-        self.0
-            .write()
-            .expect("poisoned lexicon")
-            .ctx
-            .rollback(snapshot);
+        self.0.rollback(snapshot);
     }
     pub fn instantiate(&self, schema: &TypeSchema) -> Type {
-        schema.instantiate(&mut self.0.write().expect("poisoned lexicon").ctx)
+        schema.instantiate(&mut self.0.ctx.write().expect("poisoned context"))
     }
     pub fn unify(&self, t1: &Type, t2: &Type) -> Result<(), ()> {
-        self.0
-            .write()
-            .expect("poisoned lexicon")
-            .ctx
-            .unify(t1, t2)
-            .map_err(|_| ())
+        self.0.unify(t1, t2).map_err(|_| ())
     }
     /// Return a new [`Type::Variable`] from the `Lexicon`'s [`TypeContext`].
     ///
     /// [`Type::Variable`]: https://docs.rs/polytype/~6.0/polytype/enum.Type.html
     /// [`TypeContext`]: https://docs.rs/polytype/~6.0/polytype/struct.Context.html
     pub fn fresh_type_variable(&self) -> Type {
-        self.0.write().expect("poisoned lexicon").ctx.new_variable()
+        self.0.ctx.write().expect("poisoned context").new_variable()
     }
     /// Infer the [`polytype::TypeSchema`] associated with a [`term_rewriting::Context`].
     ///
@@ -278,12 +298,7 @@ impl Lexicon {
     /// sig.new_op(0, Some("ZERO".to_string()));
     /// ops.push(ptp![int]);
     ///
-    /// let background = vec![];
-    /// let templates = vec![];
-    ///
-    /// let deterministic = false;
-    ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, background, templates, deterministic, TypeContext::default());
+    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
     ///
     /// let context = Context::Application {
     ///     op: succ,
@@ -303,12 +318,10 @@ impl Lexicon {
         context: &Context,
         types: &mut HashMap<Place, Type>,
     ) -> ContextPoint<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.infer_context(context, types);
+        let snapshot = self.snapshot();
+        let result = self.0.infer_context(context, types);
         for (_, v) in types.iter_mut() {
-            v.apply_mut_compress(&mut lex.ctx);
-            v.apply_mut_compress(&mut lex.ctx);
+            v.apply_mut_compress(&mut self.0.ctx.write().expect("poisoned context"));
         }
         ContextPoint {
             snapshot,
@@ -318,10 +331,9 @@ impl Lexicon {
     }
     /// Infer the `TypeSchema` associated with a `RuleContext`.
     pub fn infer_rulecontext(&self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.infer_rulecontext(context);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.infer_rulecontext(context);
+        self.rollback(snapshot);
         result
     }
     /// Infer the `TypeSchema` associated with a `Rule`.
@@ -330,12 +342,10 @@ impl Lexicon {
         rule: &Rule,
         types: &mut HashMap<Place, Type>,
     ) -> ContextPoint<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.infer_rule(rule, types);
+        let snapshot = self.snapshot();
+        let result = self.0.infer_rule(rule, types);
         for (_, v) in types.iter_mut() {
-            v.apply_mut_compress(&mut lex.ctx);
-            v.apply_mut_compress(&mut lex.ctx);
+            v.apply_mut_compress(&mut self.0.ctx.write().expect("poisoned lexicon"));
         }
         ContextPoint {
             snapshot,
@@ -345,26 +355,23 @@ impl Lexicon {
     }
     /// Infer the `TypeSchema` associated with a collection of `Rules`.
     pub fn infer_rules(&self, rules: &[Rule]) -> Result<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.infer_rules(rules);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.infer_rules(rules);
+        self.rollback(snapshot);
         result
     }
     /// Infer the `TypeSchema` associated with an `Operator`.
     pub fn infer_op(&self, op: Operator) -> Result<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.op_tp(op).map(|tp| tp.clone());
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.op_tp(op).map(|tp| tp.clone());
+        self.rollback(snapshot);
         result
     }
     /// Infer the `TypeSchema` associated with a `Variable`.
     pub fn infer_var(&self, var: Variable) -> Result<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.var_tp(var).map(|tp| tp.clone());
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.var_tp(var).map(|tp| tp.clone());
+        self.rollback(snapshot);
         result
     }
     /// Infer the `TypeSchema` associated with a `Term`.
@@ -373,12 +380,10 @@ impl Lexicon {
         term: &Term,
         types: &mut HashMap<Place, Type>,
     ) -> ContextPoint<TypeSchema, TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.infer_term(term, types);
+        let snapshot = self.snapshot();
+        let result = self.0.infer_term(term, types);
         for (_, v) in types.iter_mut() {
-            v.apply_mut_compress(&mut lex.ctx);
-            v.apply_mut_compress(&mut lex.ctx);
+            v.apply_mut_compress(&mut self.0.ctx.write().expect("poisoned context"));
         }
         ContextPoint {
             snapshot,
@@ -388,10 +393,9 @@ impl Lexicon {
     }
     /// Infer the `TypeSchema` associated with a `TRS`.
     pub fn infer_utrs(&self, utrs: &UntypedTRS) -> Result<(), TypeError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.infer_utrs(utrs);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.infer_utrs(utrs);
+        self.rollback(snapshot);
         result
     }
     /// Sample a [`term_rewriting::Term`].
@@ -408,8 +412,7 @@ impl Lexicon {
     ///     (1, Some("SUCC".to_string()), ptp![@arrow[tp!(int), tp!(int)]]),
     ///     (0, Some("ZERO".to_string()), ptp![int]),
     /// ];
-    /// let deterministic = false;
-    /// let mut lexicon = Lexicon::new(operators, deterministic, TypeContext::default());
+    /// let mut lexicon = Lexicon::new(operators, TypeContext::default());
     ///
     /// let schema = ptp![int];
     /// let mut ctx = lexicon.context();
@@ -424,7 +427,7 @@ impl Lexicon {
     ///
     /// [`term_rewriting::Term`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Term.html
     pub fn sample_term(
-        &self,
+        &mut self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
@@ -432,10 +435,12 @@ impl Lexicon {
         max_size: usize,
         vars: &mut Vec<Variable>,
     ) -> Result<Term, SampleError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.sample_term(schema, atom_weights, invent, variable, max_size, vars);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result =
+            self.0
+                .to_mut()
+                .sample_term(schema, atom_weights, invent, variable, max_size, vars);
+        self.rollback(snapshot);
         result
     }
     /// Sample a `Term` conditioned on a `Context` rather than a `TypeSchema`.
@@ -447,11 +452,15 @@ impl Lexicon {
         variable: bool,
         max_size: usize,
     ) -> Result<Term, SampleError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result =
-            lex.sample_term_from_context(context, atom_weights, invent, variable, max_size);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.to_mut().sample_term_from_context(
+            context,
+            atom_weights,
+            invent,
+            variable,
+            max_size,
+        );
+        self.rollback(snapshot);
         result
     }
     /// Sample a `Rule`.
@@ -462,23 +471,27 @@ impl Lexicon {
         invent: bool,
         max_size: usize,
     ) -> Result<Rule, SampleError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.sample_rule(schema, atom_weights, invent, max_size);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self
+            .0
+            .to_mut()
+            .sample_rule(schema, atom_weights, invent, max_size);
+        self.rollback(snapshot);
         result
     }
     /// Sample a `Rule` conditioned on a `Context` rather than a `TypeSchema`.
     pub fn sample_rule_from_context(
-        &self,
+        &mut self,
         context: RuleContext,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
     ) -> ContextPoint<Rule, SampleError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.sample_rule_from_context(context, atom_weights, invent, max_size);
+        let snapshot = self.snapshot();
+        let result =
+            self.0
+                .to_mut()
+                .sample_rule_from_context(context, atom_weights, invent, max_size);
         ContextPoint {
             snapshot,
             result,
@@ -492,10 +505,12 @@ impl Lexicon {
         associative: bool,
         n: usize,
     ) -> Vec<Term> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let vec = lex.enumerate_to_n_terms(schema, invent, associative, n);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let vec = self
+            .0
+            .to_mut()
+            .enumerate_to_n_terms(schema, invent, associative, n);
+        self.rollback(snapshot);
         vec
     }
     pub fn enumerate_n_terms(
@@ -505,10 +520,12 @@ impl Lexicon {
         associative: bool,
         n: usize,
     ) -> Vec<Term> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let vec = lex.enumerate_n_terms(schema, invent, associative, n);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let vec = self
+            .0
+            .to_mut()
+            .enumerate_n_terms(schema, invent, associative, n);
+        self.rollback(snapshot);
         vec
     }
     pub fn enumerate_to_n_rules(
@@ -518,10 +535,12 @@ impl Lexicon {
         associative: bool,
         n: usize,
     ) -> Vec<Rule> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let vec = lex.enumerate_to_n_rules(schema, invent, associative, n);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let vec = self
+            .0
+            .to_mut()
+            .enumerate_to_n_rules(schema, invent, associative, n);
+        self.rollback(snapshot);
         vec
     }
     pub fn enumerate_n_rules(
@@ -531,10 +550,12 @@ impl Lexicon {
         associative: bool,
         n: usize,
     ) -> Vec<Rule> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let vec = lex.enumerate_n_rules(schema, invent, associative, n);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let vec = self
+            .0
+            .to_mut()
+            .enumerate_n_rules(schema, invent, associative, n);
+        self.rollback(snapshot);
         vec
     }
     /// Give the log probability of sampling a Term.
@@ -545,10 +566,9 @@ impl Lexicon {
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let mut lex = self.0.write().expect("posioned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.logprior_term(term, schema, atom_weights, invent);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.logprior_term(term, schema, atom_weights, invent);
+        self.rollback(snapshot);
         result
     }
     /// Give the log probability of sampling a Rule.
@@ -558,10 +578,9 @@ impl Lexicon {
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.logprior_rule(rule, atom_weights, invent);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self.0.logprior_rule(rule, atom_weights, invent);
+        self.rollback(snapshot);
         result
     }
     /// Give the log probability of sampling a TRS.
@@ -572,10 +591,11 @@ impl Lexicon {
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.logprior_utrs(utrs, p_number_of_rules, atom_weights, invent);
-        lex.ctx.rollback(snapshot);
+        let snapshot = self.snapshot();
+        let result = self
+            .0
+            .logprior_utrs(utrs, p_number_of_rules, atom_weights, invent);
+        self.rollback(snapshot);
         result
     }
     /// Give the log probability of sampling an SRS.
@@ -590,9 +610,8 @@ impl Lexicon {
         t_max: usize,
         d_max: usize,
     ) -> Result<f64, SampleError> {
-        let mut lex = self.0.write().expect("poisoned lexicon");
-        let snapshot = lex.ctx.len();
-        let result = lex.logprior_srs(
+        let snapshot = self.snapshot();
+        let result = self.0.logprior_srs(
             utrs,
             p_number_of_rules,
             atom_weights,
@@ -601,34 +620,53 @@ impl Lexicon {
             t_max,
             d_max,
         );
-        lex.ctx.rollback(snapshot);
+        self.rollback(snapshot);
         result
     }
 }
-impl fmt::Debug for Lexicon {
+impl<'a> fmt::Debug for Lexicon<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let lex = self.0.read();
-        write!(f, "Lexicon({:?})", lex)
+        write!(f, "Lexicon({:?})", self.0)
     }
 }
-impl PartialEq for Lexicon {
+impl<'a> PartialEq for Lexicon<'a> {
     fn eq(&self, other: &Lexicon) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        self.0 == other.0
     }
 }
-impl fmt::Display for Lexicon {
+impl<'a> fmt::Display for Lexicon<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.0.read().expect("poisoned lexicon").fmt(f)
+        self.0.fmt(f)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Lex {
     pub(crate) ops: Vec<TypeSchema>,
     pub(crate) vars: Vec<TypeSchema>,
     free_vars: Vec<TypeVar>,
     pub(crate) signature: Signature,
-    pub(crate) ctx: TypeContext,
+    pub(crate) ctx: Arc<RwLock<TypeContext>>,
+}
+impl PartialEq for Lex {
+    fn eq(&self, other: &Self) -> bool {
+        self.ops == other.ops && self.vars == other.vars && self.signature == other.signature
+    }
+}
+impl Eq for Lex {}
+impl std::clone::Clone for Lex {
+    fn clone(&self) -> Self {
+        Lex {
+            ops: self.ops.clone(),
+            vars: self.vars.clone(),
+            free_vars: self.free_vars.clone(),
+            // TODO: confirm that we don't need a deep copy here.
+            signature: self.signature.deep_copy(),
+            ctx: Arc::new(RwLock::new(
+                self.ctx.read().expect("poisoned context").clone(),
+            )),
+        }
+    }
 }
 impl fmt::Display for Lex {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -655,11 +693,11 @@ impl Lex {
     fn free_vars(&self) -> &[TypeVar] {
         &self.free_vars
     }
-    fn free_vars_applied(&mut self) -> Vec<TypeVar> {
+    fn free_vars_applied(&self) -> Vec<TypeVar> {
         let mut vars = vec![];
         for x in &self.free_vars {
             let mut v = Type::Variable(*x);
-            v.apply_mut_compress(&mut self.ctx);
+            v.apply_mut_compress(&mut self.ctx.write().expect("poisoned context"));
             vars.append(&mut v.vars());
         }
         vars.sort();
@@ -688,6 +726,22 @@ impl Lex {
         self.recompute_free_vars();
         n
     }
+    fn snapshot(&self) -> usize {
+        self.ctx.read().expect("poisoned context").len()
+    }
+    fn rollback(&self, snapshot: usize) {
+        self.ctx
+            .write()
+            .expect("poisoned context")
+            .rollback(snapshot);
+    }
+    fn unify(&self, t1: &Type, t2: &Type) -> Result<(), TypeError> {
+        self.ctx
+            .write()
+            .expect("poisoned context")
+            .unify(t1, t2)
+            .map_err(TypeError::from)
+    }
     fn recompute_free_vars(&mut self) -> &[TypeVar] {
         self.free_vars.clear();
         for op in &self.ops {
@@ -700,21 +754,16 @@ impl Lex {
         self.free_vars.dedup();
         &self.free_vars
     }
-    fn fit_atom(
-        &mut self,
-        atom: &Atom,
-        tp: &Type,
-        rollback: bool,
-    ) -> Result<Vec<Type>, SampleError> {
+    fn fit_atom(&self, atom: &Atom, tp: &Type, rollback: bool) -> Result<Vec<Type>, SampleError> {
         let atom_tp = self.instantiate_atom(atom)?;
-        let rollback_n = self.ctx.len();
+        let rollback_n = self.snapshot();
         let unify_tp = match atom {
             Atom::Operator(o) if o.arity() > 0 => atom_tp.returns().ok_or(TypeError::Malformed)?,
             _ => &atom_tp,
         };
-        let result = self.ctx.unify(unify_tp, tp);
+        let result = self.unify(unify_tp, tp);
         if rollback {
-            self.ctx.rollback(rollback_n);
+            self.rollback(rollback_n);
         }
         result
             .map(|_| match atom {
@@ -723,7 +772,7 @@ impl Lex {
                 }
                 _ => Vec::with_capacity(0),
             })
-            .map_err(|e| SampleError::TypeError(TypeError::Unification(e)))
+            .map_err(SampleError::from)
     }
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
     fn place_atom(
@@ -739,11 +788,12 @@ impl Lex {
             Atom::Variable(v) => Ok(Term::Variable(v)),
             Atom::Operator(op) => {
                 let mut size = 1;
-                let snapshot = self.ctx.len(); // for "undo" semantics
+                let snapshot = self.snapshot(); // for "undo" semantics
                 let mut args = Vec::with_capacity(arg_types.len());
                 let can_be_variable = true; // subterms can always be variables
                 for arg_tp in arg_types {
-                    let subtype = arg_tp.apply_compress(&mut self.ctx);
+                    let subtype =
+                        arg_tp.apply_compress(&mut self.ctx.write().expect("poisoned context"));
                     let lex_vars = self.free_vars_applied();
                     let arg_schema = subtype.generalize(&lex_vars);
                     if size > max_size {
@@ -762,8 +812,13 @@ impl Lex {
                         .and_then(|subterm| {
                             let tp = self
                                 .infer_term(&subterm, &mut HashMap::new())?
-                                .instantiate_owned(&mut self.ctx);
-                            self.ctx.unify_fast(subtype, tp)?;
+                                .instantiate_owned(
+                                    &mut self.ctx.write().expect("poisoned context"),
+                                );
+                            self.ctx
+                                .write()
+                                .expect("poisoned context")
+                                .unify_fast(subtype, tp)?;
                             Ok(subterm)
                         });
                     match result {
@@ -772,7 +827,7 @@ impl Lex {
                             args.push(subterm);
                         }
                         Err(e) => {
-                            self.ctx.rollback(snapshot);
+                            self.rollback(snapshot);
                             return Err(e);
                         }
                     }
@@ -781,10 +836,10 @@ impl Lex {
             }
         }
     }
-    fn instantiate_atom(&mut self, atom: &Atom) -> Result<Type, TypeError> {
+    fn instantiate_atom(&self, atom: &Atom) -> Result<Type, TypeError> {
         let schema = self.infer_atom(atom)?.clone();
-        let mut tp = schema.instantiate_owned(&mut self.ctx);
-        tp.apply_mut_compress(&mut self.ctx);
+        let mut tp = schema.instantiate_owned(&mut self.ctx.write().expect("poisoned context"));
+        tp.apply_mut_compress(&mut self.ctx.write().expect("poisoned context"));
         Ok(tp)
     }
     fn var_tp(&self, v: Variable) -> Result<&TypeSchema, TypeError> {
@@ -811,16 +866,18 @@ impl Lex {
         }
     }
     fn infer_term(
-        &mut self,
+        &self,
         term: &Term,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_term_internal(term, vec![], tps)?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
+        Ok(tp
+            .apply_compress(&mut self.ctx.write().expect("poisoned context"))
+            .generalize(&lex_vars))
     }
     fn infer_term_internal(
-        &mut self,
+        &self,
         term: &Term,
         place: Place,
         tps: &mut HashMap<Place, Type>,
@@ -836,17 +893,17 @@ impl Lex {
                         new_place.push(i);
                         pre_types.push(self.infer_term_internal(a, new_place, tps)?);
                     }
-                    pre_types.push(self.ctx.new_variable());
+                    pre_types.push(self.ctx.write().expect("poisoned context").new_variable());
                     Type::from(pre_types)
                 };
-                self.ctx.unify(&head_type, &body_type)?;
+                self.unify(&head_type, &body_type)?;
                 if op.arity() > 0 {
                     head_type
                         .returns()
                         .unwrap_or(&head_type)
-                        .apply_compress(&mut self.ctx)
+                        .apply_compress(&mut self.ctx.write().expect("poisoned context"))
                 } else {
-                    head_type.apply_compress(&mut self.ctx)
+                    head_type.apply_compress(&mut self.ctx.write().expect("poisoned context"))
                 }
             }
         };
@@ -854,22 +911,24 @@ impl Lex {
         Ok(tp)
     }
     fn infer_context(
-        &mut self,
+        &self,
         context: &Context,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_context_internal(context, vec![], tps)?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
+        Ok(tp
+            .apply_compress(&mut self.ctx.write().expect("poisoned context"))
+            .generalize(&lex_vars))
     }
     fn infer_context_internal(
-        &mut self,
+        &self,
         context: &Context,
         place: Place,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
         let tp = match *context {
-            Context::Hole => self.ctx.new_variable(),
+            Context::Hole => self.ctx.write().expect("poisoned context").new_variable(),
             Context::Variable(v) => self.instantiate_atom(&Atom::from(v))?,
             Context::Application { op, ref args } => {
                 let head_type = self.instantiate_atom(&Atom::from(op))?;
@@ -880,17 +939,17 @@ impl Lex {
                         new_place.push(i);
                         pre_types.push(self.infer_context_internal(a, new_place, tps)?);
                     }
-                    pre_types.push(self.ctx.new_variable());
+                    pre_types.push(self.ctx.write().expect("poisoned context").new_variable());
                     Type::from(pre_types)
                 };
-                self.ctx.unify(&head_type, &body_type)?;
+                self.unify(&head_type, &body_type)?;
                 if op.arity() == 0 {
-                    head_type.apply_compress(&mut self.ctx)
+                    head_type.apply_compress(&mut self.ctx.write().expect("poisoned context"))
                 } else {
                     head_type
                         .returns()
                         .unwrap_or(&head_type)
-                        .apply_compress(&mut self.ctx)
+                        .apply_compress(&mut self.ctx.write().expect("poisoned context"))
                 }
             }
         };
@@ -898,16 +957,18 @@ impl Lex {
         Ok(tp)
     }
     fn infer_rule(
-        &mut self,
+        &self,
         rule: &Rule,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_rule_internal(rule, tps)?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
+        Ok(tp
+            .apply_compress(&mut self.ctx.write().expect("poisoned context"))
+            .generalize(&lex_vars))
     }
     fn infer_rule_internal(
-        &mut self,
+        &self,
         rule: &Rule,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
@@ -920,32 +981,37 @@ impl Lex {
             .collect::<Result<Vec<Type>, _>>()?;
         // unify to introduce rule-level constraints
         for rhs_type in rhs_types {
-            self.ctx.unify(&lhs_type, &rhs_type)?;
+            self.unify(&lhs_type, &rhs_type)?;
         }
-        Ok(lhs_type.apply_compress(&mut self.ctx))
+        Ok(lhs_type.apply_compress(&mut self.ctx.write().expect("poisoned context")))
     }
-    fn infer_rules(&mut self, rules: &[Rule]) -> Result<TypeSchema, TypeError> {
+    fn infer_rules(&self, rules: &[Rule]) -> Result<TypeSchema, TypeError> {
         let rule_tps = rules
             .iter()
             .map(|rule| {
-                self.infer_rule(rule, &mut HashMap::new())
-                    .map(|rule_tp| rule_tp.instantiate(&mut self.ctx))
+                self.infer_rule(rule, &mut HashMap::new()).map(|rule_tp| {
+                    rule_tp.instantiate(&mut self.ctx.write().expect("poisoned context"))
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let tp = self.ctx.new_variable();
+        let tp = self.ctx.write().expect("poisoned context").new_variable();
         for rule_tp in rule_tps {
-            self.ctx.unify(&tp, &rule_tp)?;
+            self.unify(&tp, &rule_tp)?;
         }
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
+        Ok(tp
+            .apply_compress(&mut self.ctx.write().expect("poisoned context"))
+            .generalize(&lex_vars))
     }
-    fn infer_rulecontext(&mut self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
+    fn infer_rulecontext(&self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
         let tp = self.infer_rulecontext_internal(context, &mut HashMap::new())?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp.apply_compress(&mut self.ctx).generalize(&lex_vars))
+        Ok(tp
+            .apply_compress(&mut self.ctx.write().expect("poisoned context"))
+            .generalize(&lex_vars))
     }
     fn infer_rulecontext_internal(
-        &mut self,
+        &self,
         context: &RuleContext,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
@@ -958,11 +1024,11 @@ impl Lex {
             .collect::<Result<Vec<Type>, _>>()?;
         // unify to introduce rule-level constraints
         for rhs_type in rhs_types {
-            self.ctx.unify(&lhs_type, &rhs_type)?;
+            self.unify(&lhs_type, &rhs_type)?;
         }
-        Ok(lhs_type.apply_compress(&mut self.ctx))
+        Ok(lhs_type.apply_compress(&mut self.ctx.write().expect("poisoned context")))
     }
-    fn infer_utrs(&mut self, utrs: &UntypedTRS) -> Result<(), TypeError> {
+    fn infer_utrs(&self, utrs: &UntypedTRS) -> Result<(), TypeError> {
         for rule in &utrs.rules {
             self.infer_rule_internal(rule, &mut HashMap::new())?;
         }
@@ -988,7 +1054,7 @@ impl Lex {
         max_size: usize,
         vars: &mut Vec<Variable>,
     ) -> Result<Term, SampleError> {
-        let tp = schema.instantiate(&mut self.ctx);
+        let tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
         let (atom, arg_types) = self.prepare_option(vars, atom_weights, invent, variable, &tp)?;
         self.place_atom(&atom, arg_types, atom_weights, invent, max_size, vars)
     }
@@ -1074,7 +1140,9 @@ impl Lex {
         let mut context_vars = context.variables();
         for p in &hole_places {
             size = context.size();
-            let schema = &map[p].apply_compress(&mut self.ctx).generalize(&lex_vars);
+            let schema = &map[p]
+                .apply_compress(&mut self.ctx.write().expect("poisoned context"))
+                .generalize(&lex_vars);
             let subterm = self.sample_term_internal(
                 &schema,
                 atom_weights,
@@ -1095,7 +1163,7 @@ impl Lex {
         max_size: usize,
     ) -> Result<Rule, SampleError> {
         loop {
-            let snapshot = self.ctx.len();
+            let snapshot = self.snapshot();
             let mut vars = vec![];
             let lhs = self.sample_term_internal(
                 schema,
@@ -1116,7 +1184,7 @@ impl Lex {
             if let Some(rule) = Rule::new(lhs, vec![rhs]) {
                 return Ok(rule);
             } else {
-                self.ctx.rollback(snapshot);
+                self.rollback(snapshot);
             }
         }
     }
@@ -1137,7 +1205,9 @@ impl Lex {
         self.infer_rulecontext_internal(&context, &mut tps)?;
         for p in &hole_places {
             size = context.size();
-            let schema = TypeSchema::Monotype(tps[p].apply_compress(&mut self.ctx));
+            let schema = TypeSchema::Monotype(
+                tps[p].apply_compress(&mut self.ctx.write().expect("poisoned context")),
+            );
             let can_invent = p[0] == 0 && invent;
             let can_be_variable = p != &vec![0];
             let subterm = self.sample_term_internal(
@@ -1195,12 +1265,12 @@ impl Lex {
         if n == 0 {
             return vec![];
         }
-        let snapshot = self.ctx.len();
+        let snapshot = self.snapshot();
         let lhss = self.enumerate_to_n_terms(schema, invent, associative, n - 1);
-        self.ctx.rollback(snapshot);
+        self.rollback(snapshot);
         lhss.iter()
             .flat_map(|lhs| {
-                let snapshot = self.ctx.len();
+                let snapshot = self.snapshot();
                 let rhss = if let Ok(schema) = self.infer_term(lhs, &mut HashMap::new()) {
                     self.enumerate_n_terms_internal(
                         &schema,
@@ -1212,13 +1282,13 @@ impl Lex {
                 } else {
                     vec![]
                 };
-                self.ctx.rollback(snapshot);
+                self.rollback(snapshot);
                 rhss.into_iter()
                     .filter_map(|rhs| {
                         Rule::new(lhs.clone(), vec![rhs]).and_then(|rule| {
-                            let snapshot = self.ctx.len();
+                            let snapshot = self.snapshot();
                             let result = self.infer_rule(&rule, &mut HashMap::new());
-                            self.ctx.rollback(snapshot);
+                            self.rollback(snapshot);
                             result.ok().map(|_| rule)
                         })
                     })
@@ -1233,7 +1303,7 @@ impl Lex {
         complex: bool,
         vars: &mut Vec<Variable>,
     ) -> Vec<Atom> {
-        let tp = schema.instantiate(&mut self.ctx);
+        let tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
         let ops = self.signature.operators();
         let mut options: Vec<_> = ops
             .into_iter()
@@ -1259,7 +1329,7 @@ impl Lex {
             .collect_vec()
     }
     fn prepare_prior_options(
-        &mut self,
+        &self,
         tp: &Type,
         term: &Term,
         invent: bool,
@@ -1346,31 +1416,31 @@ impl Lex {
         (vlp - log_z, clp - log_z, olp - log_z, ilp - log_z)
     }
     fn logprior_term(
-        &mut self,
+        &self,
         term: &Term,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
-        let proposed_type = schema.instantiate(&mut self.ctx);
+        let proposed_type = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
         let actual_type = self
             .infer_term(term, &mut HashMap::new())?
-            .instantiate_owned(&mut self.ctx);
-        if self.ctx.unify(&proposed_type, &actual_type).is_err() {
+            .instantiate_owned(&mut self.ctx.write().expect("poisoned context"));
+        if self.unify(&proposed_type, &actual_type).is_err() {
             Ok(NEG_INFINITY)
         } else {
             self.logprior_term_internal(term, &proposed_type, atom_weights, invent, &mut vec![])
         }
     }
     fn logprior_term_internal(
-        &mut self,
+        &self,
         term: &Term,
         tp: &Type,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         variables: &mut Vec<Variable>,
     ) -> Result<f64, SampleError> {
-        let tp = tp.apply_compress(&mut self.ctx);
+        let tp = tp.apply_compress(&mut self.ctx.write().expect("poisoned context"));
         // setup the existing options
         let (vs, cs, os) = self.prepare_prior_options(&tp, term, invent, variables);
         // compute the log probability of each kind of head
@@ -1398,7 +1468,7 @@ impl Lex {
             Some((Atom::Operator(_), arg_types)) => {
                 let mut lp = olp;
                 for (subterm, mut arg_tp) in term.args().iter().zip(arg_types) {
-                    arg_tp.apply_mut_compress(&mut self.ctx);
+                    arg_tp.apply_mut_compress(&mut self.ctx.write().expect("poisoned context"));
                     lp += self.logprior_term_internal(
                         subterm,
                         &arg_tp,
@@ -1415,13 +1485,13 @@ impl Lex {
         }
     }
     fn logprior_rule(
-        &mut self,
+        &self,
         rule: &Rule,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
         let schema = self.infer_rule(rule, &mut HashMap::new())?;
-        let tp = schema.instantiate(&mut self.ctx);
+        let tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
         let mut variables = vec![];
         let lp_lhs =
             self.logprior_term_internal(&rule.lhs, &tp, atom_weights, invent, &mut variables)?;
@@ -1433,7 +1503,7 @@ impl Lex {
         Ok(lp)
     }
     fn logprior_string_rule(
-        &mut self,
+        &self,
         rule: &Rule,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
@@ -1442,7 +1512,7 @@ impl Lex {
         d_max: usize,
     ) -> Result<f64, SampleError> {
         let schema = self.infer_rule(rule, &mut HashMap::new())?;
-        let tp = schema.instantiate(&mut self.ctx);
+        let tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
         let lp_lhs =
             self.logprior_term_internal(&rule.lhs, &tp, atom_weights, invent, &mut vec![])?;
         let mut lp = 0.0;
@@ -1454,7 +1524,7 @@ impl Lex {
         Ok(lp)
     }
     fn logprior_utrs(
-        &mut self,
+        &self,
         utrs: &UntypedTRS,
         p_number_of_clauses: Box<dyn Fn(usize) -> f64>,
         atom_weights: (f64, f64, f64, f64),
@@ -1469,7 +1539,7 @@ impl Lex {
     }
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
     fn logprior_srs(
-        &mut self,
+        &self,
         utrs: &UntypedTRS,
         p_number_of_clauses: Box<dyn Fn(usize) -> f64>,
         atom_weights: (f64, f64, f64, f64),
@@ -1538,7 +1608,7 @@ impl Lex {
                     }
                     let lex_vars = self.free_vars_applied();
                     let schema = tps[hole]
-                        .apply_compress(&mut self.ctx)
+                        .apply_compress(&mut self.ctx.write().expect("poisoned context"))
                         .generalize(&lex_vars);
                     // find all the atoms that could fill that hole; recursively try each
                     self.prepare_options(&schema, invent, complex, variables)
@@ -1566,22 +1636,22 @@ impl Lex {
         }
     }
 }
-impl<'a, 'b> From<&'a GPLexicon<'b>> for &'a Lexicon {
-    fn from(gp_lex: &'a GPLexicon) -> &'a Lexicon {
+impl<'a, 'b, 'c> From<&'a GPLexicon<'b>> for &'a Lexicon<'b> {
+    fn from(gp_lex: &'a GPLexicon<'b>) -> &'a Lexicon<'b> {
         &gp_lex.lexicon
     }
 }
 
-type Parents<'a> = Vec<TRS<'a>>;
-type Tried<'a> = HashMap<TRSMoveName, Vec<Parents<'a>>>;
+type Parents<'a, 'b> = Vec<TRS<'a, 'b>>;
+type Tried<'a, 'b> = HashMap<TRSMoveName, Vec<Parents<'a, 'b>>>;
 pub struct GPLexicon<'a> {
-    pub lexicon: Lexicon,
+    pub lexicon: Lexicon<'a>,
     pub bg: &'a [Rule],
     pub contexts: Vec<RuleContext>,
-    pub(crate) tried: Arc<RwLock<Tried<'a>>>,
+    pub(crate) tried: Arc<RwLock<Tried<'a, 'a>>>,
 }
 impl<'a> GPLexicon<'a> {
-    pub fn new<'b>(lex: &Lexicon, bg: &'b [Rule], contexts: Vec<RuleContext>) -> GPLexicon<'b> {
+    pub fn new<'b>(lex: &Lexicon<'b>, bg: &'b [Rule], contexts: Vec<RuleContext>) -> GPLexicon<'b> {
         let lexicon = lex.clone();
         let tried = Arc::new(RwLock::new(HashMap::new()));
         GPLexicon {
@@ -1595,12 +1665,12 @@ impl<'a> GPLexicon<'a> {
         let mut tried = self.tried.write().expect("poisoned");
         *tried = HashMap::new();
     }
-    pub fn add(&self, name: TRSMoveName, parents: Parents<'a>) {
+    pub fn add(&self, name: TRSMoveName, parents: Parents<'a, 'a>) {
         let mut tried = self.tried.write().expect("poisoned");
         let entry = tried.entry(name).or_insert_with(|| vec![]);
         entry.push(parents);
     }
-    pub fn check(&self, name: TRSMoveName, parents: Parents<'a>) -> Option<Parents<'a>> {
+    pub fn check(&self, name: TRSMoveName, parents: Parents<'a, 'a>) -> Option<Parents<'a, 'a>> {
         let mut tried = self.tried.write().expect("poisoned");
         let past_parents = tried.entry(name).or_insert_with(|| vec![]);
         if self.novelty_possible(name, &parents, &past_parents) {
@@ -1613,19 +1683,18 @@ impl<'a> GPLexicon<'a> {
         let check = || !past.iter().any(|p| &p[..] == parents);
         match name {
             TRSMoveName::Memorize => past.is_empty(),
-            TRSMoveName::SampleRule
-            | TRSMoveName::RegenerateRule
-            | TRSMoveName::Recurse
-            | TRSMoveName::RecurseVariablize
-            | TRSMoveName::RecurseGeneralize => true,
+            TRSMoveName::SampleRule | TRSMoveName::RegenerateRule => true,
+            // | TRSMoveName::Recurse
+            // | TRSMoveName::RecurseVariablize
+            // | TRSMoveName::RecurseGeneralize => true,
             TRSMoveName::LocalDifference => parents[0].num_learned_rules() > 1 || check(),
             _ => check(),
         }
     }
 }
 impl<'a> GP for GPLexicon<'a> {
-    type Representation = Lexicon;
-    type Expression = TRS<'a>;
+    type Representation = Lexicon<'a>;
+    type Expression = TRS<'a, 'a>;
     type Params = GeneticParams;
     type Observation = Vec<Rule>;
     fn genesis<R: Rng>(

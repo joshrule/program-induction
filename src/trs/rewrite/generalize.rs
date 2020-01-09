@@ -4,8 +4,8 @@ use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Atom, Context, Operator, Rule, Term, Variable};
 
-impl<'a> TRS<'a> {
-    pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS<'a>>, SampleError> {
+impl<'a, 'b> TRS<'a, 'b> {
+    pub fn generalize(&self, data: &[Rule]) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let all_rules = self.clauses_for_learning(data)?;
         let mut trs = self.clone();
         let (lhs_context, clauses) = TRS::find_lhs_context(&all_rules)?;
@@ -189,14 +189,14 @@ impl<'a> TRS<'a> {
         rhs.replace(place, subctx).ok_or(SampleError::Subterm)
     }
     #[allow(clippy::type_complexity)]
-    fn collect_information<'b>(
+    fn collect_information<'c>(
         lex: &Lexicon,
         lhs: &Term,
         lhs_place: &[usize],
         rhs_place: &[usize],
-        clauses: &'b [Rule],
+        clauses: &'c [Rule],
         var: Variable,
-    ) -> Result<(Vec<Type>, Vec<(&'b Term, Term)>, Vec<Variable>), SampleError> {
+    ) -> Result<(Vec<Type>, Vec<(&'c Term, Term)>, Vec<Variable>), SampleError> {
         let mut terms = vec![];
         let mut types = vec![];
         let mut vars = vec![var];
@@ -226,7 +226,7 @@ impl<'a> TRS<'a> {
             lex.unify(&return_tp, tp)
                 .map_err(|_| SampleError::Subterm)?;
         }
-        Ok(return_tp.apply(&lex.0.read().expect("poisoned lexicon").ctx))
+        Ok(return_tp.apply(&lex.0.ctx.read().expect("poisoned context")))
     }
     // Patch a one-hole `Context` with a `Variable`.
     fn fill_hole_with_variable(

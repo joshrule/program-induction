@@ -3,7 +3,7 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::Rule;
 
-impl<'a> TRS<'a> {
+impl<'a, 'b> TRS<'a, 'b> {
     /// Selects a rule from the TRS at random, swaps the LHS and RHS if possible and inserts the resulting rules
     /// back into the TRS imediately after the background.
     ///
@@ -40,16 +40,9 @@ impl<'a> TRS<'a> {
     ///     ptp![int],
     /// ];
     ///
-    /// for op in sig.operators() {
-    ///     println!("{:?}/{}", op.name(&sig), op.arity())
-    /// }
-    /// for r in &rules {
-    ///     println!("{:?}", r.pretty(&sig));
-    /// }
+    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
     ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
-    ///
-    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
+    /// let mut trs = TRS::new(&lexicon, false, &[], rules).unwrap();
     /// println!("{}", trs);
     ///
     /// assert_eq!(trs.len(), 1);
@@ -85,9 +78,9 @@ impl<'a> TRS<'a> {
     ///     ptp![int],
     /// ];
     ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
+    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
     ///
-    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
+    /// let mut trs = TRS::new(&lexicon, true, &[], rules).unwrap();
     ///
     /// assert!(trs.swap_lhs_and_rhs(&mut rng).is_err());
     /// ```

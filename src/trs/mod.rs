@@ -38,9 +38,9 @@
 //!     ptp![int],
 //! ];
 //!
-//! let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
+//! let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
 //!
-//! let trs = TRS::new(&lexicon, rules);
+//! let trs = TRS::new(&lexicon, true, &[], rules);
 //! ```
 
 mod lexicon;
@@ -214,12 +214,12 @@ pub enum Likelihood {
 /// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
 /// [`Task`]: ../struct.Task.html
 /// [`TRS`]: struct.TRS.html
-pub fn task_by_rewrite<'a, 'b, O: Sync>(
+pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
     data: &'a [Rule],
     params: ModelParams,
     lex: &Lexicon,
     observation: O,
-) -> Result<Task<'a, Lexicon, TRS<'b>, O>, TypeError> {
+) -> Result<Task<'a, Lexicon<'c>, TRS<'b, 'c>, O>, TypeError> {
     Ok(Task {
         oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.log_posterior(data, params)),
         // assuming the data have no variables, we can use the Lexicon's ctx.

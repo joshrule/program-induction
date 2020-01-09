@@ -8,8 +8,11 @@ use term_rewriting::{Operator, Place, Rule, Term, Variable};
 type Transform = (Term, Vec<usize>, Vec<usize>, Type);
 type Case<'a> = (&'a Rule, Vec<Rule>);
 
-impl<'a> TRS<'a> {
-    pub fn compose_and_variablize<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS<'a>>, SampleError> {
+impl<'a, 'b> TRS<'a, 'b> {
+    pub fn compose_and_variablize<R: Rng>(
+        &self,
+        rng: &mut R,
+    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         self.compose().and_then(|new_trss| {
             let mut trss = new_trss
                 .into_iter()
@@ -20,7 +23,7 @@ impl<'a> TRS<'a> {
             as_result(trss)
         })
     }
-    pub fn compose(&self) -> Result<Vec<TRS<'a>>, SampleError> {
+    pub fn compose(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let clauses = self.clauses_for_learning(&[])?;
         let snapshot = self.lex.snapshot();
         let op = self.lex.has_op(Some("."), 2)?;
@@ -29,9 +32,11 @@ impl<'a> TRS<'a> {
             .flat_map(|r| TRS::find_compositions(r, &self.lex))
             .unique()
             .filter_map(|c| {
-                TRS::try_composition(&c, op, &clauses, &self.lex)
+                TRS::try_composition(&c, op, &clauses, self.lex.clone())
                     .ok()
-                    .and_then(|(master, new_ruless)| self.adopt_composition(master, new_ruless))
+                    .and_then(|(master, new_ruless, lex)| {
+                        self.adopt_composition(master, new_ruless, lex)
+                    })
             })
             .collect_vec();
         self.lex.rollback(snapshot);
@@ -55,7 +60,7 @@ impl<'a> TRS<'a> {
                 for rhs_place in &rhss {
                     let inner_snapshot = lex.snapshot();
                     if rhs_place.len() > 1 && lex.unify(&tp, &map[rhs_place]).is_ok() {
-                        let tp = tp.apply(&lex.0.read().expect("poisoned lexicon").ctx);
+                        let tp = tp.apply(&lex.0.ctx.read().expect("poisoned context"));
                         transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone(), tp));
                     }
                     lex.rollback(inner_snapshot);
@@ -65,12 +70,12 @@ impl<'a> TRS<'a> {
         }
         transforms
     }
-    fn try_composition<'b>(
+    fn try_composition<'c>(
         t: &Transform,
         op: Operator,
-        rules: &'b [Rule],
-        lex: &Lexicon,
-    ) -> Result<(Rule, Vec<Case<'b>>), SampleError> {
+        rules: &'c [Rule],
+        mut lex: Lexicon<'b>,
+    ) -> Result<(Rule, Vec<Case<'c>>, Lexicon<'b>), SampleError> {
         // 1. Define two new operators F and G.
         let tp = Type::arrow(t.3.clone(), t.3.clone());
         let f = lex.invent_operator(None, 0, &tp);
@@ -91,7 +96,7 @@ impl<'a> TRS<'a> {
                 new_rules.push((rule, vec![g_rule, f_rule]));
             }
         }
-        Ok((master, new_rules))
+        Ok((master, new_rules, lex))
     }
     fn make_fxy_rule(f: Operator, x: Term, y: Term, op: Operator) -> Result<Rule, SampleError> {
         let lhs = Term::apply(
@@ -127,7 +132,12 @@ impl<'a> TRS<'a> {
         .ok_or(SampleError::Subterm)?;
         Rule::new(lhs, vec![rhs]).ok_or(SampleError::Subterm)
     }
-    fn adopt_composition(&self, master: Rule, solution: Vec<Case>) -> Option<TRS<'a>> {
+    fn adopt_composition(
+        &self,
+        master: Rule,
+        solution: Vec<Case>,
+        lex: Lexicon<'b>,
+    ) -> Option<TRS<'a, 'b>> {
         let (old_rules, new_ruless): (Vec<_>, Vec<_>) = solution.into_iter().unzip();
         let mut new_rules = vec![];
         for rules in new_ruless {
@@ -143,6 +153,7 @@ impl<'a> TRS<'a> {
             1 => None,
             n => {
                 let mut trs = self.clone();
+                trs.lex = lex;
                 trs.remove_clauses(&old_rules).ok()?;
                 trs.utrs.push(master).ok()?;
                 trs.prepend_clauses(new_rules).ok()?;
@@ -161,7 +172,7 @@ mod tests {
     use rand::thread_rng;
     use trs::parser::{parse_lexicon, parse_rule, parse_trs};
 
-    fn create_test_lexicon() -> Lexicon {
+    fn create_test_lexicon<'b>() -> Lexicon<'b> {
         parse_lexicon(
             &[
                 "C/0: list -> list;",
@@ -176,9 +187,6 @@ mod tests {
                 "9/0: int;",
             ]
             .join(" "),
-            "",
-            "",
-            true,
             TypeContext::default(),
         )
         .expect("parsed lexicon")
@@ -186,10 +194,10 @@ mod tests {
 
     #[test]
     fn find_compositions_test() {
-        let lex = create_test_lexicon();
+        let mut lex = create_test_lexicon();
         let rule = parse_rule(
             "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 9) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL)))))))))",
-            &lex,
+            &mut lex,
         )
             .expect("parsed rule");
         let compositions = TRS::find_compositions(&rule, &lex);
@@ -203,11 +211,13 @@ mod tests {
     }
     #[test]
     fn compose_test() {
-        let lex = create_test_lexicon();
+        let mut lex = create_test_lexicon();
         let trs = parse_trs(
-                "C (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) NIL)))) = (CONS (DIGIT 0) (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) (CONS (DIGIT 5) NIL))))));",
-                &lex,
-            )
+            "C (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) NIL)))) = (CONS (DIGIT 0) (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) (CONS (DIGIT 5) NIL))))));",
+            &mut lex,
+            true,
+            &[],
+        )
             .expect("parsed rule");
 
         let result = trs.compose();
@@ -226,6 +236,8 @@ mod tests {
         let trs = parse_trs(
             "C (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) NIL)))) = (CONS (DIGIT 0) (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) (CONS (DIGIT 5) NIL))))));",
             &lex,
+            true,
+            &[],
         )
             .expect("parsed TRS");
         let result = trs.compose_and_variablize(&mut thread_rng());

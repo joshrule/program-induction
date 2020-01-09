@@ -4,7 +4,7 @@ use rand::Rng;
 use std::iter::once;
 use term_rewriting::{Rule, Term};
 
-impl<'a> TRS<'a> {
+impl<'a, 'b> TRS<'a, 'b> {
     /// Selects a rule from the TRS at random, finds all differences in the LHS and RHS,
     /// and makes rules from those differences and inserts them back into the TRS imediately after the background.
     ///
@@ -41,15 +41,9 @@ impl<'a> TRS<'a> {
     ///     ptp![int],
     /// ];
     ///
-    /// for op in sig.operators() {
-    ///     println!("{:?}/{}", op.name(&sig), op.arity())
-    /// }
-    /// for r in &rules {
-    ///     println!("{:?}", r.pretty(&sig));
-    /// }
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, vec![], vec![], false, TypeContext::default());
+    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
     ///
-    /// let mut trs = TRS::new(&lexicon, rules).unwrap();
+    /// let mut trs = TRS::new(&lexicon, true, &[], rules).unwrap();
     ///
     /// assert_eq!(trs.len(), 1);
     ///
@@ -59,7 +53,7 @@ impl<'a> TRS<'a> {
     ///
     /// assert_eq!(Some(2), num_new_trss)
     /// ```
-    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS<'a>>, SampleError> {
+    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
         let mut new_rules = TRS::local_difference_helper(&clause);
         self.filter_background(&mut new_rules);

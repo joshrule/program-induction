@@ -3,7 +3,7 @@ use term_rewriting::Rule;
 
 use super::{ModelParams, TRS};
 
-impl<'a> TRS<'a> {
+impl<'a, 'b> TRS<'a, 'b> {
     /// Combine [`log_prior`] and [`log_likelihood`], failing early if the
     /// prior is `0.0`.
     ///
