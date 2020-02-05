@@ -8,7 +8,7 @@
 mod combine;
 mod compose;
 mod delete_rule;
-// mod generalize;
+mod generalize;
 mod local_difference;
 mod log_likelihood;
 mod log_posterior;
