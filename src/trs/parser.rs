@@ -270,6 +270,7 @@ fn lexicon<'a, 'b>(
 ) -> nom::IResult<CompleteStr<'a>, Lexicon<'b>> {
     simple_lexicon(input, sig, vars, ops, ctx)
 }
+#[allow(clippy::cognitive_complexity)]
 fn trs<'a, 'b, 'c>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon<'c>,

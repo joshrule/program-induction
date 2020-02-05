@@ -75,6 +75,7 @@ pub enum TRSMove {
     // ComposeVariablize,
 }
 impl TRSMove {
+    #[allow(clippy::too_many_arguments)]
     pub fn take<'a, 'b, R: Rng>(
         &self,
         lex: &Lexicon<'b>,
