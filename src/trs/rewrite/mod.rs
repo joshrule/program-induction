@@ -342,26 +342,6 @@ impl<'a, 'b> TRS<'a, 'b> {
         Ok(clauses.swap_remove(idx))
     }
 
-    fn novel_rules(&self, rules: &[Rule]) -> Vec<Rule> {
-        rules
-            .iter()
-            .cloned()
-            .filter(|r| !self.contains(r))
-            .collect()
-    }
-
-    fn clauses_for_learning(&self, data: &[Rule]) -> Result<Vec<Rule>, SampleError> {
-        let mut all_rules = self.utrs.rules.iter().flat_map(Rule::clauses).collect_vec();
-        if !data.is_empty() {
-            all_rules.extend_from_slice(&self.novel_rules(data));
-        }
-        if all_rules.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            Ok(all_rules)
-        }
-    }
-
     fn contains(&self, rule: &Rule) -> bool {
         self.utrs.get_clause(rule).is_some()
     }

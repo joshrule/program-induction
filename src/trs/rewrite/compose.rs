@@ -24,7 +24,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         })
     }
     pub fn compose(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-        let clauses = self.clauses_for_learning(&[])?;
+        let clauses = self.clauses().into_iter().map(|(_, x)| x).collect_vec();
         let snapshot = self.lex.snapshot();
         let op = self.lex.has_op(Some("."), 2)?;
         let trss = clauses
