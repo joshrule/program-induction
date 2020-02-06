@@ -44,7 +44,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                     .clone()
                     .adopt_solution(&mut TRS::make_solution(&old_rules, &new_rules))
                 {
-                    if optimized.is_alpha_unique_wrt(trss) {
+                    if optimized.unique_shape(trss) {
                         trss.push(optimized);
                         // Apply each remaining variablization, v', if possible.
                         for (tp, places) in vars.iter().skip(i + 1) {
@@ -58,7 +58,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                         if let Some(optimized) =
                             trs.adopt_solution(&mut TRS::make_solution(&old_rules, &new_rules))
                         {
-                            if optimized.is_alpha_unique_wrt(trss) {
+                            if optimized.unique_shape(trss) {
                                 trss.push(optimized);
                             }
                         }
@@ -194,9 +194,6 @@ impl<'a, 'b> TRS<'a, 'b> {
                 })
                 .unwrap_or(false)
         // can_remove: places doesn't include rhs or variables in term occur elsewhere in LHS
-    }
-    fn is_alpha_unique_wrt(&self, trss: &[TRS<'a, 'b>]) -> bool {
-        trss.iter().all(|trs| !TRS::is_alpha(trs, self))
     }
     fn make_solution(old: &[Rule], new: &[Rule]) -> Vec<Transformation> {
         new.iter().cloned().zip(old.iter().cloned()).collect_vec()

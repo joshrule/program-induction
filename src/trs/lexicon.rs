@@ -1717,7 +1717,7 @@ impl<'a> GP for GPLexicon<'a> {
                         params.max_sample_size,
                         rng,
                     ) {
-                        if !pop.iter().any(|p: &TRS| TRS::is_alpha(&p, &new_trs[0])) {
+                        if new_trs[0].unique_shape(&pop) {
                             pop.append(&mut new_trs);
                         }
                     }
@@ -1773,9 +1773,8 @@ impl<'a> GP for GPLexicon<'a> {
         let mut validated = 0;
         while validated < max_validated && validated < offspring.len() {
             let x = &offspring[validated];
-            let pop_unique = !population.iter().any(|p| TRS::is_alpha(&p.0, &x));
-            let see_unique = !seen.iter().any(|c| TRS::is_alpha(&c, &x));
-            if pop_unique && see_unique {
+            let pop_unique = !population.iter().any(|p| TRS::same_shape(&p.0, &x));
+            if pop_unique && x.unique_shape(seen) {
                 validated += 1;
             } else {
                 offspring.swap_remove(validated);
