@@ -105,9 +105,10 @@ pub fn parse_trs<'a, 'b>(
     deterministic: bool,
     background: &'a [Rule],
 ) -> Result<TRS<'a, 'b>, ParseError> {
-    trs(CompleteStr(input), lex, deterministic, background)
-        .map(|(_, t)| t)
-        .map_err(|_| ParseError)
+    match trs(CompleteStr(input), lex, deterministic, background) {
+        Ok((CompleteStr(""), t)) => Ok(t),
+        _ => Err(ParseError),
+    }
 }
 
 /// Given a [`Lexicon`], parse and typecheck a [`Term`]. The format of the
