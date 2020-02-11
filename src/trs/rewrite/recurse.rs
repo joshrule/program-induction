@@ -1,7 +1,7 @@
 use super::{super::as_result, Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
-use rand::{prelude::SliceRandom, Rng};
+// use rand::{prelude::SliceRandom, Rng};
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term};
 use utils::weighted_permutation;
@@ -177,7 +177,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         }
         transforms
     }
-    fn transform_rules<'c>(
+    fn transform_rules(
         &mut self,
         t: &Transform,
         op: Operator,

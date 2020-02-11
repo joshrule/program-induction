@@ -75,7 +75,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         let mut trs = self.clone();
         let rule = trs
             .lex
-            .sample_rule_from_context(context, atom_weights, true, max_size)
+            .sample_rule_from_context(context, atom_weights, true, max_size, rng)
             .drop()?;
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);

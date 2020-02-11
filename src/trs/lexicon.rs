@@ -8,7 +8,7 @@ use rand::{
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     f64::NEG_INFINITY,
     fmt,
     sync::{Arc, RwLock},
@@ -17,10 +17,10 @@ use term_rewriting::{
     Atom, Context, MergeStrategy, Operator, PStringDist, Place, Rule, RuleContext, Signature,
     SignatureChange, Term, Variable, TRS as UntypedTRS,
 };
-use utils::{logsumexp, weighted_sample};
+use utils::logsumexp;
 use {Tournament, GP};
 
-type LOpt = (Option<Atom>, Vec<Type>);
+type OAtom = Option<Atom>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Parameters for [`Lexicon`] genetic programming ([`GP`]).
@@ -103,6 +103,7 @@ impl<'a> Lexicon<'a> {
             ops,
             vars: vec![],
             free_vars: vec![],
+            types: HashMap::new(),
             signature,
             ctx: Arc::new(RwLock::new(ctx)),
         }));
@@ -158,6 +159,7 @@ impl<'a> Lexicon<'a> {
             ops,
             vars,
             free_vars: vec![],
+            types: HashMap::new(),
             signature,
             ctx: Arc::new(RwLock::new(ctx)),
         }));
@@ -405,8 +407,10 @@ impl<'a> Lexicon<'a> {
     /// ```
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
+    /// # extern crate rand;
     /// # use programinduction::trs::Lexicon;
     /// # use polytype::Context as TypeContext;
+    /// # use rand::{thread_rng};
     /// let operators = vec![
     ///     (2, Some("PLUS".to_string()), ptp![@arrow[tp!(int), tp!(int), tp!(int)]]),
     ///     (1, Some("SUCC".to_string()), ptp![@arrow[tp!(int), tp!(int)]]),
@@ -421,12 +425,14 @@ impl<'a> Lexicon<'a> {
     /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
     /// let max_size = 50;
     /// let mut vars = vec![];
+    /// let mut rng = thread_rng();
     ///
-    /// let term = lexicon.sample_term(&schema, atom_weights, invent, variable, max_size, &mut vars).unwrap();
+    /// let term = lexicon.sample_term(&schema, atom_weights, invent, variable, max_size, &mut vars, &mut rng).unwrap();
     /// ```
     ///
     /// [`term_rewriting::Term`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Term.html
-    pub fn sample_term(
+    #[allow(clippy::too_many_arguments)]
+    pub fn sample_term<R: Rng>(
         &mut self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
@@ -434,23 +440,30 @@ impl<'a> Lexicon<'a> {
         variable: bool,
         max_size: usize,
         vars: &mut Vec<Variable>,
+        rng: &mut R,
     ) -> Result<Term, SampleError> {
         let snapshot = self.snapshot();
-        let result =
-            self.0
-                .to_mut()
-                .sample_term(schema, atom_weights, invent, variable, max_size, vars);
+        let result = self.0.to_mut().sample_term(
+            schema,
+            atom_weights,
+            invent,
+            variable,
+            max_size,
+            vars,
+            rng,
+        );
         self.rollback(snapshot);
         result
     }
     /// Sample a `Term` conditioned on a `Context` rather than a `TypeSchema`.
-    pub fn sample_term_from_context(
+    pub fn sample_term_from_context<R: Rng>(
         &mut self,
         context: &Context,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         max_size: usize,
+        rng: &mut R,
     ) -> Result<Term, SampleError> {
         let snapshot = self.snapshot();
         let result = self.0.to_mut().sample_term_from_context(
@@ -459,39 +472,42 @@ impl<'a> Lexicon<'a> {
             invent,
             variable,
             max_size,
+            rng,
         );
         self.rollback(snapshot);
         result
     }
     /// Sample a `Rule`.
-    pub fn sample_rule(
+    pub fn sample_rule<R: Rng>(
         &mut self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
+        rng: &mut R,
     ) -> Result<Rule, SampleError> {
         let snapshot = self.snapshot();
         let result = self
             .0
             .to_mut()
-            .sample_rule(schema, atom_weights, invent, max_size);
+            .sample_rule(schema, atom_weights, invent, max_size, rng);
         self.rollback(snapshot);
         result
     }
     /// Sample a `Rule` conditioned on a `Context` rather than a `TypeSchema`.
-    pub fn sample_rule_from_context(
+    pub fn sample_rule_from_context<R: Rng>(
         &mut self,
         context: RuleContext,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
+        rng: &mut R,
     ) -> ContextPoint<Rule, SampleError> {
         let snapshot = self.snapshot();
         let result =
             self.0
                 .to_mut()
-                .sample_rule_from_context(context, atom_weights, invent, max_size);
+                .sample_rule_from_context(context, atom_weights, invent, max_size, rng);
         ContextPoint {
             snapshot,
             result,
@@ -644,6 +660,7 @@ impl<'a> fmt::Display for Lexicon<'a> {
 pub(crate) struct Lex {
     pub(crate) ops: Vec<TypeSchema>,
     pub(crate) vars: Vec<TypeSchema>,
+    types: HashMap<TypeSchema, Vec<Atom>>,
     free_vars: Vec<TypeVar>,
     pub(crate) signature: Signature,
     pub(crate) ctx: Arc<RwLock<TypeContext>>,
@@ -660,6 +677,7 @@ impl std::clone::Clone for Lex {
             ops: self.ops.clone(),
             vars: self.vars.clone(),
             free_vars: self.free_vars.clone(),
+            types: self.types.clone(),
             // TODO: confirm that we don't need a deep copy here.
             signature: self.signature.deep_copy(),
             ctx: Arc::new(RwLock::new(
@@ -706,16 +724,24 @@ impl Lex {
     }
     fn invent_variable(&mut self, tp: &Type) -> Variable {
         let var = self.signature.new_var(None);
-        self.vars.push(TypeSchema::Monotype(tp.clone()));
-        self.free_vars.append(&mut tp.vars());
+        let mut vars = tp.vars();
+        let schema = TypeSchema::Monotype(tp.clone());
+        let type_entry = self.types.entry(schema.clone()).or_insert_with(|| vec![]);
+        type_entry.push(Atom::from(var));
+        self.vars.push(schema);
+        self.free_vars.append(&mut vars);
         self.free_vars.sort_unstable();
         self.free_vars.dedup();
         var
     }
     fn invent_operator(&mut self, name: Option<String>, arity: u8, tp: &Type) -> Operator {
         let op = self.signature.new_op(arity, name);
-        self.ops.push(TypeSchema::Monotype(tp.clone()));
-        self.free_vars.append(&mut tp.vars());
+        let mut vars = tp.vars();
+        let schema = TypeSchema::Monotype(tp.clone());
+        let type_entry = self.types.entry(schema.clone()).or_insert_with(|| vec![]);
+        type_entry.push(Atom::from(op));
+        self.ops.push(schema);
+        self.free_vars.append(&mut vars);
         self.free_vars.sort_unstable();
         self.free_vars.dedup();
         op
@@ -724,6 +750,7 @@ impl Lex {
         let n = self.signature.contract(ids);
         self.ops.truncate(n + 1);
         self.recompute_free_vars();
+        self.recompute_types();
         n
     }
     fn snapshot(&self) -> usize {
@@ -754,28 +781,76 @@ impl Lex {
         self.free_vars.dedup();
         &self.free_vars
     }
-    fn fit_atom(&self, atom: &Atom, tp: &Type, rollback: bool) -> Result<Vec<Type>, SampleError> {
-        let atom_tp = self.instantiate_atom(atom)?;
+    fn recompute_types(&mut self) -> &HashMap<TypeSchema, Vec<Atom>> {
+        self.types = HashMap::new();
+        for op in self.signature.operators() {
+            let entry = self
+                .types
+                .entry(self.ops[op.id()].clone())
+                .or_insert_with(|| vec![]);
+            entry.push(Atom::from(op));
+        }
+        for var in self.signature.variables() {
+            let entry = self
+                .types
+                .entry(self.vars[var.id()].clone())
+                .or_insert_with(|| vec![]);
+            entry.push(Atom::from(var));
+        }
+        &self.types
+    }
+    fn check_schema(&self, tp: &Type, schema: &TypeSchema, constant: bool, rollback: bool) -> bool {
+        let query_tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
         let rollback_n = self.snapshot();
-        let unify_tp = match atom {
-            Atom::Operator(o) if o.arity() > 0 => atom_tp.returns().ok_or(TypeError::Malformed)?,
-            _ => &atom_tp,
+        let unify_tp = if constant {
+            Some(&query_tp)
+        } else {
+            query_tp.returns()
         };
-        let result = self.unify(unify_tp, tp);
+        if let Some(unify_tp) = unify_tp {
+            let result = self.unify(unify_tp, tp);
+            if rollback {
+                self.rollback(rollback_n);
+            }
+            result.is_ok()
+        } else {
+            false
+        }
+    }
+    fn fit_schema(
+        &self,
+        tp: &Type,
+        schema: &TypeSchema,
+        constant: bool,
+        rollback: bool,
+    ) -> Result<Vec<Type>, SampleError> {
+        let query_tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
+        let rollback_n = self.snapshot();
+        let result = if constant {
+            self.unify(&query_tp, tp)
+        } else {
+            self.unify(query_tp.returns().ok_or(TypeError::Malformed)?, tp)
+        };
         if rollback {
             self.rollback(rollback_n);
         }
         result
-            .map(|_| match atom {
-                Atom::Operator(o) if o.arity() > 0 => {
-                    atom_tp.args_destruct().unwrap_or_else(Vec::new)
+            .map(|_| {
+                if constant {
+                    Vec::with_capacity(0)
+                } else {
+                    query_tp
+                        .args_destruct()
+                        .unwrap_or_else(|| Vec::with_capacity(0))
                 }
-                _ => Vec::with_capacity(0),
             })
             .map_err(SampleError::from)
     }
+    fn fit_atom(&self, atom: &Atom, tp: &Type, rollback: bool) -> Result<Vec<Type>, SampleError> {
+        self.fit_schema(tp, self.infer_atom(atom)?, atom.constant(), rollback)
+    }
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
-    fn place_atom(
+    fn place_atom<R: Rng>(
         &mut self,
         atom: &Atom,
         arg_types: Vec<Type>,
@@ -783,6 +858,7 @@ impl Lex {
         invent: bool,
         max_size: usize,
         vars: &mut Vec<Variable>,
+        rng: &mut R,
     ) -> Result<Term, SampleError> {
         match *atom {
             Atom::Variable(v) => Ok(Term::Variable(v)),
@@ -792,13 +868,13 @@ impl Lex {
                 let mut args = Vec::with_capacity(arg_types.len());
                 let can_be_variable = true; // subterms can always be variables
                 for arg_tp in arg_types {
+                    if size > max_size {
+                        return Err(SampleError::SizeExceeded(size, max_size));
+                    }
                     let subtype =
                         arg_tp.apply_compress(&mut self.ctx.write().expect("poisoned context"));
                     let lex_vars = self.free_vars_applied();
                     let arg_schema = subtype.generalize(&lex_vars);
-                    if size > max_size {
-                        return Err(SampleError::SizeExceeded(size, max_size));
-                    }
                     let result = self
                         .sample_term_internal(
                             &arg_schema,
@@ -807,6 +883,7 @@ impl Lex {
                             can_be_variable,
                             max_size - size,
                             vars,
+                            rng,
                         )
                         .map_err(|_| SampleError::Subterm)
                         .and_then(|subterm| {
@@ -838,8 +915,9 @@ impl Lex {
     }
     fn instantiate_atom(&self, atom: &Atom) -> Result<Type, TypeError> {
         let schema = self.infer_atom(atom)?.clone();
-        let mut tp = schema.instantiate_owned(&mut self.ctx.write().expect("poisoned context"));
-        tp.apply_mut_compress(&mut self.ctx.write().expect("poisoned context"));
+        let mut ctx = self.ctx.write().expect("poisoned context");
+        let mut tp = schema.instantiate_owned(&mut ctx);
+        tp.apply_mut_compress(&mut ctx);
         Ok(tp)
     }
     fn var_tp(&self, v: Variable) -> Result<&TypeSchema, TypeError> {
@@ -861,8 +939,8 @@ impl Lex {
 
     fn infer_atom(&self, atom: &Atom) -> Result<&TypeSchema, TypeError> {
         match *atom {
-            Atom::Operator(ref o) => self.op_tp(o.clone()),
-            Atom::Variable(ref v) => self.var_tp(v.clone()),
+            Atom::Operator(o) => self.op_tp(o),
+            Atom::Variable(v) => self.var_tp(v),
         }
     }
     fn infer_term(
@@ -870,45 +948,52 @@ impl Lex {
         term: &Term,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_term_internal(term, vec![], tps)?;
+        let mut place = vec![];
+        self.infer_term_internal(term, &mut place, tps)?;
         let lex_vars = self.free_vars_applied();
-        Ok(tp
+        Ok(tps[&place]
             .apply_compress(&mut self.ctx.write().expect("poisoned context"))
             .generalize(&lex_vars))
     }
     fn infer_term_internal(
         &self,
         term: &Term,
-        place: Place,
+        place: &mut Place,
         tps: &mut HashMap<Place, Type>,
-    ) -> Result<Type, TypeError> {
+    ) -> Result<(), TypeError> {
         let tp = match *term {
-            Term::Variable(v) => self.instantiate_atom(&Atom::from(v))?,
+            Term::Variable(v) => self
+                .var_tp(v)?
+                .instantiate(&mut self.ctx.write().expect("poisoned context")),
             Term::Application { op, ref args } => {
-                let head_type = self.instantiate_atom(&Atom::from(op))?;
-                let body_type = {
-                    let mut pre_types = Vec::with_capacity(args.len() + 1);
-                    for (i, a) in args.iter().enumerate() {
-                        let mut new_place = place.clone();
-                        new_place.push(i);
-                        pre_types.push(self.infer_term_internal(a, new_place, tps)?);
-                    }
-                    pre_types.push(self.ctx.write().expect("poisoned context").new_variable());
-                    Type::from(pre_types)
-                };
-                self.unify(&head_type, &body_type)?;
-                if op.arity() > 0 {
-                    head_type
-                        .returns()
-                        .unwrap_or(&head_type)
-                        .apply_compress(&mut self.ctx.write().expect("poisoned context"))
-                } else {
-                    head_type.apply_compress(&mut self.ctx.write().expect("poisoned context"))
+                let head_type = self
+                    .op_tp(op)?
+                    .instantiate(&mut self.ctx.write().expect("poisoned context"));
+                let head_args = head_type
+                    .args()
+                    .unwrap_or_else(|| VecDeque::with_capacity(0));
+                if head_args.len() < args.len() {
+                    return Err(TypeError::Malformed);
                 }
+                for (i, (a, h)) in args.iter().zip(head_args).enumerate() {
+                    place.push(i);
+                    self.infer_term_internal(a, place, tps)?;
+                    self.ctx
+                        .write()
+                        .expect("poisoned context")
+                        .unify(h, &tps[place])?;
+                    place.pop();
+                }
+                let return_tp = if op.arity() > 0 {
+                    head_type.returns().unwrap_or(&head_type)
+                } else {
+                    &head_type
+                };
+                return_tp.apply_compress(&mut self.ctx.write().expect("poisoned context"))
             }
         };
-        tps.insert(place, tp.clone());
-        Ok(tp)
+        tps.insert(place.clone(), tp);
+        Ok(())
     }
     fn infer_context(
         &self,
@@ -972,12 +1057,16 @@ impl Lex {
         rule: &Rule,
         tps: &mut HashMap<Place, Type>,
     ) -> Result<Type, TypeError> {
-        let lhs_type = self.infer_term_internal(&rule.lhs, vec![0], tps)?;
+        self.infer_term_internal(&rule.lhs, &mut vec![0], tps)?;
+        let lhs_type = tps[&vec![0]].clone();
         let rhs_types = rule
             .rhs
             .iter()
             .enumerate()
-            .map(|(i, rhs)| self.infer_term_internal(&rhs, vec![i + 1], tps))
+            .map(|(i, rhs)| {
+                self.infer_term_internal(&rhs, &mut vec![i + 1], tps)
+                    .map(|_| tps[&vec![i + 1]].clone())
+            })
             .collect::<Result<Vec<Type>, _>>()?;
         // unify to introduce rule-level constraints
         for rhs_type in rhs_types {
@@ -1034,7 +1123,8 @@ impl Lex {
         }
         Ok(())
     }
-    fn sample_term(
+    #[allow(clippy::too_many_arguments)]
+    fn sample_term<R: Rng>(
         &mut self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
@@ -1042,10 +1132,12 @@ impl Lex {
         variable: bool,
         max_size: usize,
         vars: &mut Vec<Variable>,
+        rng: &mut R,
     ) -> Result<Term, SampleError> {
-        self.sample_term_internal(schema, atom_weights, invent, variable, max_size, vars)
+        self.sample_term_internal(schema, atom_weights, invent, variable, max_size, vars, rng)
     }
-    fn sample_term_internal(
+    #[allow(clippy::too_many_arguments)]
+    fn sample_term_internal<R: Rng>(
         &mut self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
@@ -1053,65 +1145,56 @@ impl Lex {
         variable: bool,
         max_size: usize,
         vars: &mut Vec<Variable>,
+        rng: &mut R,
     ) -> Result<Term, SampleError> {
+        // TODO: review place_atom
         let tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
-        let (atom, arg_types) = self.prepare_option(vars, atom_weights, invent, variable, &tp)?;
-        self.place_atom(&atom, arg_types, atom_weights, invent, max_size, vars)
+        let (atom, arg_types) =
+            self.prepare_option(vars, atom_weights, invent, variable, &tp, rng)?;
+        self.place_atom(&atom, arg_types, atom_weights, invent, max_size, vars, rng)
     }
-    fn prepare_option(
+    fn prepare_option<R: Rng>(
         &mut self,
         vars: &mut Vec<Variable>,
         (vw, cw, ow, iw): (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         tp: &Type,
+        rng: &mut R,
     ) -> Result<(Atom, Vec<Type>), SampleError> {
-        // create options
-        let ops = self.signature.operators();
-        let mut atoms: Vec<_> = ops.into_iter().map(|o| Some(Atom::Operator(o))).collect();
-        if variable {
-            atoms.extend(vars.to_vec().into_iter().map(|v| Some(Atom::Variable(v))));
-            if invent {
-                atoms.push(None);
+        // List all the options.
+        let mut options = vec![];
+        for (schema, atoms) in self.types.iter() {
+            let mut results = [None, None];
+            for atom in atoms {
+                let (class, weight) = match atom {
+                    Atom::Operator(o) if o.arity() > 0 => (2, ow),
+                    Atom::Operator(_) => (1, cw),
+                    Atom::Variable(_) => (0, vw),
+                };
+                let constant = class < 2;
+                let idx = constant as usize;
+                if variable || class > 0 {
+                    if results[idx].is_none() {
+                        results[idx] = Some(self.check_schema(tp, schema, constant, true));
+                    }
+                    if let Some(true) = results[idx] {
+                        options.push((Some(*atom), weight))
+                    }
+                }
             }
         }
-        let options = atoms
-            .into_iter()
-            .filter_map(|a| match a {
-                None => Some(None),
-                Some(atom) => match self.fit_atom(&atom, &tp, true) {
-                    Err(_) => None,
-                    Ok(_) => Some(Some(atom)),
-                },
-            })
-            .collect_vec();
+        if invent && variable {
+            options.push((None, iw));
+        }
         if options.is_empty() {
             return Err(SampleError::OptionsExhausted);
         }
-        // normalize the weights
-        let z = vw + cw + ow;
-        let (vlp, clp, olp) = ((vw / z).ln(), (cw / z).ln(), (ow / z).ln());
-        let zs: (f64, f64, f64) = options
-            .iter()
-            .fold((0.0, 0.0, 0.0), |(vz, cz, oz), o| match o {
-                None => (vz + iw, cz, oz),
-                Some(Atom::Variable(_)) => (vz + 1.0, cz, oz),
-                Some(Atom::Operator(ref o)) if o.arity() == 0 => (vz, cz + 1.0, oz),
-                Some(Atom::Operator(_)) => (vz, cz, oz + 1.0),
-            });
-        // create weights
-        let weights: Vec<_> = options
-            .iter()
-            .map(|ref o| match o {
-                None => vlp + iw.ln() - zs.0.ln(),
-                Some(Atom::Variable(_)) => vlp - zs.0.ln(),
-                Some(Atom::Operator(ref o)) if o.arity() == 0 => clp - zs.1.ln(),
-                Some(Atom::Operator(_)) => olp - zs.2.ln(),
-            })
-            .map(|w| w.exp())
-            .collect();
-        // sample an option that typechecks
-        let option = weighted_sample(&options, &weights);
+        // Sample an option.
+        let weights = options.iter().map(|(_, w)| w).collect_vec();
+        let dist = WeightedIndex::new(weights).unwrap();
+        let idx = dist.sample(rng);
+        let (option, _) = options.swap_remove(idx);
         let atom = option.unwrap_or_else(|| {
             let new_var = self.invent_variable(tp);
             vars.push(new_var);
@@ -1120,13 +1203,14 @@ impl Lex {
         let arg_types = self.fit_atom(&atom, &tp, false)?;
         Ok((atom, arg_types))
     }
-    fn sample_term_from_context(
+    fn sample_term_from_context<R: Rng>(
         &mut self,
         context: &Context,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         variable: bool,
         max_size: usize,
+        rng: &mut R,
     ) -> Result<Term, SampleError> {
         let mut size = context.size();
         if size > max_size {
@@ -1150,17 +1234,19 @@ impl Lex {
                 variable,
                 max_size - size + 1, // + 1 to fill the hole
                 &mut context_vars,
+                rng,
             )?;
             context.replace(&p, Context::from(subterm));
         }
         context.to_term().or(Err(SampleError::Subterm))
     }
-    fn sample_rule(
+    fn sample_rule<R: Rng>(
         &mut self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
+        rng: &mut R,
     ) -> Result<Rule, SampleError> {
         loop {
             let snapshot = self.snapshot();
@@ -1172,6 +1258,7 @@ impl Lex {
                 false,
                 max_size - 1,
                 &mut vars,
+                rng,
             )?;
             let rhs = self.sample_term_internal(
                 schema,
@@ -1180,6 +1267,7 @@ impl Lex {
                 true,
                 max_size - lhs.size(),
                 &mut vars,
+                rng,
             )?;
             if let Some(rule) = Rule::new(lhs, vec![rhs]) {
                 return Ok(rule);
@@ -1188,12 +1276,13 @@ impl Lex {
             }
         }
     }
-    fn sample_rule_from_context(
+    fn sample_rule_from_context<R: Rng>(
         &mut self,
         mut context: RuleContext,
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
         max_size: usize,
+        rng: &mut R,
     ) -> Result<Rule, SampleError> {
         let mut size = context.size();
         if size > max_size {
@@ -1217,6 +1306,7 @@ impl Lex {
                 can_be_variable,
                 max_size + 1 - size, // + 1 to fill the hole
                 &mut context_vars,
+                rng,
             )?;
             context = context
                 .replace(&p, Context::from(subterm))
@@ -1334,40 +1424,40 @@ impl Lex {
         term: &Term,
         invent: bool,
         vars: &[Variable],
-    ) -> (Vec<LOpt>, Vec<LOpt>, Vec<LOpt>) {
-        let mut vs = vars
-            .iter()
-            .filter_map(|&v| {
-                let atom = Atom::from(v);
-                self.fit_atom(&atom, &tp, true)
-                    .map(|arg_types| (Some(atom), arg_types))
-                    .ok()
-            })
-            .collect_vec();
+    ) -> (Vec<OAtom>, Vec<OAtom>, Vec<OAtom>) {
+        let mut options = vec![vec![], vec![], vec![]];
+        for (schema, atoms) in self.types.iter() {
+            let mut results = [None, None];
+            for atom in atoms {
+                let class = match atom {
+                    Atom::Operator(o) if o.arity() > 0 => 2,
+                    Atom::Operator(_) => 1,
+                    Atom::Variable(_) => 0,
+                };
+                let constant = class < 2;
+                let idx = constant as usize;
+                if results[idx].is_none() {
+                    results[idx] = Some(self.check_schema(tp, schema, constant, true));
+                }
+                if let Some(true) = results[idx] {
+                    options[class].push(Some(*atom))
+                }
+            }
+        }
         if invent {
-            // empty arg_types below because variables have no arguments
             if let Term::Variable(v) = *term {
                 if !vars.contains(&v) {
-                    vs.push((Some(Atom::Variable(v)), vec![]));
+                    options[0].push(Some(Atom::from(v)));
                 } else {
-                    vs.push((None, vec![]));
+                    options[0].push(None);
                 }
             } else {
-                vs.push((None, vec![]));
+                options[0].push(None);
             }
         }
-        let (mut cs, mut os) = (vec![], vec![]);
-        for &op in &self.signature.operators() {
-            let atom = Atom::Operator(op);
-            if let Ok(arg_types) = self.fit_atom(&atom, &tp, true) {
-                if op.arity() == 0 {
-                    // arg_types is empty, but using it avoids allocation
-                    cs.push((Some(atom), arg_types));
-                } else {
-                    os.push((Some(atom), arg_types));
-                }
-            }
-        }
+        let os = options.pop().unwrap();
+        let cs = options.pop().unwrap();
+        let vs = options.pop().unwrap();
         (vs, cs, os)
     }
     fn atom_priors(
@@ -1422,15 +1512,10 @@ impl Lex {
         atom_weights: (f64, f64, f64, f64),
         invent: bool,
     ) -> Result<f64, SampleError> {
+        // NOTE: This used to check for type consistency before computing the
+        // prior, but that ended up taking >90% of the time.
         let proposed_type = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
-        let actual_type = self
-            .infer_term(term, &mut HashMap::new())?
-            .instantiate_owned(&mut self.ctx.write().expect("poisoned context"));
-        if self.unify(&proposed_type, &actual_type).is_err() {
-            Ok(NEG_INFINITY)
-        } else {
-            self.logprior_term_internal(term, &proposed_type, atom_weights, invent, &mut vec![])
-        }
+        self.logprior_term_internal(term, &proposed_type, atom_weights, invent, &mut vec![])
     }
     fn logprior_term_internal(
         &self,
@@ -1440,23 +1525,22 @@ impl Lex {
         invent: bool,
         variables: &mut Vec<Variable>,
     ) -> Result<f64, SampleError> {
+        // Update the type (useful initially and during recursive calls).
         let tp = tp.apply_compress(&mut self.ctx.write().expect("poisoned context"));
-        // setup the existing options
+        // Collect all options.
         let (vs, cs, os) = self.prepare_prior_options(&tp, term, invent, variables);
-        // compute the log probability of each kind of head
+        // Compute the log probability of each kind of head.
         let (vlp, clp, olp, ilp) =
             Lex::atom_priors(invent, atom_weights, (vs.len(), cs.len(), os.len()));
-        // find the selected option
+        // Find the selected option.
         let mut options = vs.into_iter().chain(cs).chain(os);
-        let option = options
-            .find(|&(ref o, _)| o == &Some(term.head()))
-            .and_then(|(o, _)| {
-                let atom = o.unwrap();
-                // use this propagate the type constraints forward
-                let arg_types = self.fit_atom(&atom, &tp, false).ok()?;
-                Some((atom, arg_types))
-            });
-        // compute the probability of the term
+        let option = options.find(|o| *o == Some(term.head())).and_then(|o| {
+            let atom = o.unwrap();
+            // Propagate the type constraints forward.
+            let arg_types = self.fit_atom(&atom, &tp, false).ok()?;
+            Some((atom, arg_types))
+        });
+        // Compute the probability of the term.
         match option {
             None => Ok(NEG_INFINITY),
             Some((Atom::Variable(ref v), _)) if !variables.contains(v) => {

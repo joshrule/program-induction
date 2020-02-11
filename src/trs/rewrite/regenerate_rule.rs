@@ -22,7 +22,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             let mut trs = self.clone();
             let new_clause = trs
                 .lex
-                .sample_rule_from_context(template, atom_weights, true, max_size)
+                .sample_rule_from_context(template, atom_weights, true, max_size, rng)
                 .drop()?;
             if new_clause.lhs != new_clause.rhs().unwrap() {
                 let mut new_rules = vec![new_clause];

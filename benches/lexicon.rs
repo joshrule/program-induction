@@ -1,11 +1,13 @@
 extern crate criterion;
 extern crate polytype;
 extern crate programinduction;
+extern crate rand;
 extern crate term_rewriting;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use polytype::{Context as TypeContext, TypeSchema};
 use programinduction::trs::{parse_lexicon, parse_term, Lexicon};
+use rand::{rngs::StdRng, SeedableRng};
 use std::collections::HashMap;
 use term_rewriting::Term;
 
@@ -83,6 +85,7 @@ pub fn lexicon_sample_term_benchmark(c: &mut Criterion) {
     let variable = true;
     let max_size = 20;
     let mut vars = vec![];
+    let mut rng = StdRng::seed_from_u64(1);
 
     c.bench_function("lexicon_sample_term", |b| {
         b.iter(|| {
@@ -94,6 +97,7 @@ pub fn lexicon_sample_term_benchmark(c: &mut Criterion) {
                 black_box(variable),
                 black_box(max_size),
                 black_box(&mut vars),
+                black_box(&mut rng),
             )
         })
     });
