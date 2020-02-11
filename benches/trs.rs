@@ -1,11 +1,9 @@
-#[macro_use]
 extern crate criterion;
-#[macro_use]
 extern crate polytype;
 extern crate programinduction;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use polytype::Context as TypeContext;
+use polytype::{tp, Context as TypeContext};
 use programinduction::trs::{parse_lexicon, parse_rule, parse_trs, Lexicon, TRS};
 
 fn create_test_lexicon<'b>() -> Lexicon<'b> {

@@ -10,6 +10,7 @@ documentation = "https://docs.rs/programinduction"
 description = "A library for program induction and learning representations."
 keywords = ["language", "inference", "bayesian", "genetic", "learning"]
 categories = ["algorithms", "science"]
+autobenches = false
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--html-in-header", ".cargo/registry/src/github.com-1ecc6299db9ec823/programinduction-0.3.0/rustdoc-include-katex-header.html"]
@@ -28,6 +29,17 @@ term_rewriting = "0.7"
 
 [dev-dependencies]
 serde_json = "1.0"
+criterion = "0.3"
+
+[[bench]]
+name = "trs"
+harness = false
+path = "benches/trs.rs"
+
+[[bench]]
+name = "lexicon"
+harness = false
+path = "benches/lexicon.rs"
 
 [features]
 verbose = []
