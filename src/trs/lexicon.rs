@@ -41,7 +41,7 @@ pub struct GeneticParams {
 pub struct ContextPoint<'a, O, E> {
     result: Result<O, E>,
     snapshot: usize,
-    lex: Lexicon<'a>,
+    lex: &'a Lexicon<'a>,
 }
 impl<'a, O, E> ContextPoint<'a, O, E> {
     pub fn drop(self) -> Result<O, E> {
@@ -326,7 +326,7 @@ impl<'a> Lexicon<'a> {
         ContextPoint {
             snapshot,
             result,
-            lex: self.clone(),
+            lex: self,
         }
     }
     /// Infer the `TypeSchema` associated with a `RuleContext`.
@@ -350,7 +350,7 @@ impl<'a> Lexicon<'a> {
         ContextPoint {
             snapshot,
             result,
-            lex: self.clone(),
+            lex: self,
         }
     }
     /// Infer the `TypeSchema` associated with a collection of `Rules`.
@@ -388,7 +388,7 @@ impl<'a> Lexicon<'a> {
         ContextPoint {
             snapshot,
             result,
-            lex: self.clone(),
+            lex: self,
         }
     }
     /// Infer the `TypeSchema` associated with a `TRS`.
@@ -495,7 +495,7 @@ impl<'a> Lexicon<'a> {
         ContextPoint {
             snapshot,
             result,
-            lex: self.clone(),
+            lex: self,
         }
     }
     pub fn enumerate_to_n_terms(

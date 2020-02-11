@@ -1,4 +1,4 @@
-use super::{super::as_result, Lexicon, SampleError, TRS};
+use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
@@ -8,6 +8,7 @@ type Variablization = (Type, Vec<Place>);
 type Transformation = (Rule, Rule);
 type Rules = Vec<Rule>;
 type Cluster<'a> = (Rules, Vec<&'a Variablization>);
+type Types = HashMap<Rule, HashMap<Place, Type>>;
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Replace subterms of [`term_rewriting::Rule`]s with [`term_rewriting::Variable`]s.
@@ -20,18 +21,37 @@ impl<'a, 'b> TRS<'a, 'b> {
         let mut trs = self.clone();
         let mut trss = vec![];
         // Record which rules are affected by which variablizations.
-        trs.analyze_variablizations(&trs.find_all_variablizations())
+        let mut types = trs.collect_types();
+        trs.analyze_variablizations(&trs.find_all_variablizations(&types), &types)
             // Group the results by the affected rules.
             .into_iter()
             .map(|(v, rs)| (rs, v))
             .into_group_map()
             // Augment as appropriate.
             .into_iter()
-            .for_each(|cluster| trs.augment_trss(&mut trss, cluster));
+            .for_each(|cluster| trs.augment_trss(&mut trss, cluster, &mut types));
         // Return the solution set.
         as_result(trss)
     }
-    fn augment_trss(&self, trss: &mut Vec<TRS<'a, 'b>>, (old_rules, mut vars): Cluster) {
+    fn collect_types(&mut self) -> Types {
+        self.clauses()
+            .into_iter()
+            .filter_map(|(_, r)| {
+                let mut types = HashMap::new();
+                self.lex
+                    .infer_rule(&r, &mut types)
+                    .drop()
+                    .ok()
+                    .map(|_| (r, types))
+            })
+            .collect()
+    }
+    fn augment_trss(
+        &self,
+        trss: &mut Vec<TRS<'a, 'b>>,
+        (old_rules, mut vars): Cluster,
+        types: &mut Types,
+    ) {
         // Sort variablizations by the lexicographically deepest place they affect.
         vars.sort_by_key(|(_, places)| places.iter().max().unwrap());
         vars.reverse();
@@ -39,7 +59,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         for (i, (tp, places)) in vars.iter().enumerate() {
             // Try the root variablization, v:
             let mut trs = self.clone();
-            if let Some(mut new_rules) = trs.apply_variablization(tp, places, &old_rules) {
+            if let Some(mut new_rules) = trs.apply_variablization(tp, places, &old_rules, types) {
                 if let Some(optimized) = trs
                     .clone()
                     .adopt_solution(&mut TRS::make_solution(&old_rules, &new_rules))
@@ -49,7 +69,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                         // Apply each remaining variablization, v', if possible.
                         for (tp, places) in vars.iter().skip(i + 1) {
                             if let Some(newer_rules) =
-                                trs.apply_variablization(tp, places, &new_rules)
+                                trs.apply_variablization(tp, places, &new_rules, types)
                             {
                                 new_rules = newer_rules;
                             }
@@ -67,24 +87,22 @@ impl<'a, 'b> TRS<'a, 'b> {
             }
         }
     }
-    fn find_all_variablizations(&self) -> Vec<(Type, Vec<Place>)> {
+    fn find_all_variablizations(&self, types: &Types) -> Vec<(Type, Vec<Place>)> {
         self.clauses()
             .iter()
-            .filter_map(|(_, rule)| TRS::find_variablizations(rule, &self.lex))
+            .filter_map(|(_, rule)| TRS::find_variablizations(rule, types))
             .flatten()
             .unique()
             .collect_vec()
     }
-    fn find_variablizations(rule: &Rule, lex: &Lexicon) -> Option<Vec<(Type, Vec<Place>)>> {
-        // Type the rule.
-        let mut types = HashMap::new();
-        lex.infer_rule(&rule, &mut types).drop().ok()?;
+    fn find_variablizations(rule: &Rule, types: &Types) -> Option<Vec<(Type, Vec<Place>)>> {
         // List the places where each term/type token occurs.
+        let types = types.get(rule)?;
         let map = rule
             .subterms()
             .into_iter()
             .filter(|(term, _)| term.as_application().is_some())
-            .map(|(term, place)| ((term, types.remove(&place).unwrap()), place))
+            .map(|(term, place)| ((term, types.get(&place).unwrap().clone()), place))
             .into_group_map()
             .into_iter()
             .filter(|(_, places)| places.iter().any(|place| place[0] == 0))
@@ -98,10 +116,11 @@ impl<'a, 'b> TRS<'a, 'b> {
         tp: &Type,
         places: &[Place],
         rules: &[Rule],
+        types: &mut Types,
     ) -> Option<Vec<Rule>> {
         let mut new_rules = Vec::with_capacity(rules.len());
         for rule in rules {
-            match self.apply_variablization_to_rule(tp, places, rule) {
+            match self.apply_variablization_to_rule(tp, places, rule, types) {
                 Some(new_rule) => new_rules.push(new_rule),
                 None => return None,
             }
@@ -113,18 +132,25 @@ impl<'a, 'b> TRS<'a, 'b> {
         tp: &Type,
         places: &[Place],
         rule: &Rule,
+        types: &mut Types,
     ) -> Option<Rule> {
-        let mut types = HashMap::new();
-        self.lex.infer_rule(&rule, &mut types).drop().ok()?;
         places
             .get(0)
             .and_then(|place| rule.at(place))
             .and_then(|term| {
-                if places
-                    .iter()
-                    .all(|place| types.get(place) == Some(tp) && rule.at(place) == Some(term))
-                {
-                    rule.replace_all(places, Term::Variable(self.lex.invent_variable(tp)))
+                let applies = {
+                    let tps = types.get(rule)?;
+                    places
+                        .iter()
+                        .all(|place| tps.get(place) == Some(tp) && rule.at(place) == Some(term))
+                };
+                if applies {
+                    let new_rule =
+                        rule.replace_all(places, Term::Variable(self.lex.invent_variable(tp)))?;
+                    if !types.contains_key(&new_rule) {
+                        types.insert(new_rule.clone(), types.get(rule)?.clone());
+                    }
+                    Some(new_rule)
                 } else {
                     None
                 }
@@ -133,17 +159,18 @@ impl<'a, 'b> TRS<'a, 'b> {
     fn analyze_variablizations<'c>(
         &mut self,
         vs: &'c [(Type, Vec<Place>)],
+        types: &Types,
     ) -> Vec<(&'c Variablization, Vec<Rule>)> {
         vs.iter()
-            .map(|v| (v, self.analyze_variablization(&v.0, &v.1)))
+            .map(|v| (v, self.analyze_variablization(&v.0, &v.1, types)))
             .filter(|(_, rs)| !rs.is_empty())
             .collect_vec()
     }
-    fn analyze_variablization(&mut self, tp: &Type, places: &[Place]) -> Vec<Rule> {
+    fn analyze_variablization(&mut self, tp: &Type, places: &[Place], types: &Types) -> Vec<Rule> {
         self.clauses()
             .into_iter()
             .map(|(_, rule)| rule)
-            .filter(|rule| self.analyze_variablization_for_rule(tp, places, &rule))
+            .filter(|rule| self.analyze_variablization_for_rule(tp, places, &rule, types))
             .collect_vec()
     }
     fn analyze_variablization_for_rule(
@@ -151,10 +178,10 @@ impl<'a, 'b> TRS<'a, 'b> {
         tp: &Type,
         places: &[Place],
         rule: &Rule,
+        types: &Types,
     ) -> bool {
-        let mut types = HashMap::new();
-        self.lex.infer_rule(&rule, &mut types).drop().is_ok()
-            && places
+        if let Some(types) = types.get(rule) {
+            places
                 .get(0)
                 .and_then(|place| rule.at(place))
                 .map(|term| {
@@ -193,7 +220,9 @@ impl<'a, 'b> TRS<'a, 'b> {
                         })
                 })
                 .unwrap_or(false)
-        // can_remove: places doesn't include rhs or variables in term occur elsewhere in LHS
+        } else {
+            false
+        }
     }
     fn make_solution(old: &[Rule], new: &[Rule]) -> Vec<Transformation> {
         new.iter().cloned().zip(old.iter().cloned()).collect_vec()
@@ -263,6 +292,7 @@ impl<'a, 'b> TRS<'a, 'b> {
 mod tests {
     use itertools::Itertools;
     use polytype::Context as TypeContext;
+    use std::collections::HashMap;
     use trs::parser::{parse_lexicon, parse_rule, parse_trs};
     use trs::{Lexicon, TRS};
 
@@ -294,7 +324,11 @@ mod tests {
             &mut lex,
         )
             .expect("parsed rule");
-        let opt = TRS::find_variablizations(&rule, &mut lex);
+        let mut types = HashMap::new();
+        let mut types2 = HashMap::new();
+        lex.infer_rule(&rule, &mut types2).drop().unwrap();
+        types.insert(rule.clone(), types2);
+        let opt = TRS::find_variablizations(&rule, &types);
         assert!(opt.is_some());
         let vs = opt.unwrap();
         for (tp, places) in &vs {
@@ -309,7 +343,10 @@ mod tests {
 
         let rule =
             parse_rule(".(C .(.(CONS .(DIGIT 9)) NIL)) = NIL", &mut lex).expect("parsed rule");
-        let opt = TRS::find_variablizations(&rule, &mut lex);
+        let mut types2 = HashMap::new();
+        lex.infer_rule(&rule, &mut types2).drop().unwrap();
+        types.insert(rule.clone(), types2);
+        let opt = TRS::find_variablizations(&rule, &types);
         assert!(opt.is_some());
         let vs = opt.unwrap();
         for (tp, places) in &vs {
@@ -330,7 +367,10 @@ mod tests {
             &mut lex,
         )
         .expect("parsed rule");
-        let opt = TRS::find_variablizations(&rule, &mut lex);
+        let mut types2 = HashMap::new();
+        lex.infer_rule(&rule, &mut types2).drop().unwrap();
+        types.insert(rule.clone(), types2);
+        let opt = TRS::find_variablizations(&rule, &types);
         assert!(opt.is_some());
         let vs = opt.unwrap();
         for (tp, places) in &vs {
@@ -349,9 +389,10 @@ mod tests {
     #[test]
     fn find_all_variablizations_test() {
         let mut lex = create_test_lexicon();
-        let trs = parse_trs(".(C .(.(CONS .(DIGIT 9)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) var13_)) = .(.(CONS .(DIGIT 2)) .(C var13_));", &mut lex, true, &[])
+        let mut trs = parse_trs(".(C .(.(CONS .(DIGIT 9)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) var13_)) = .(.(CONS .(DIGIT 2)) .(C var13_));", &mut lex, true, &[])
             .expect("parsed trs");
-        let vs = trs.find_all_variablizations();
+        let types = trs.collect_types();
+        let vs = trs.find_all_variablizations(&types);
 
         for (tp, places) in &vs {
             println!("{} {:?}\n\n", tp, places);
@@ -378,9 +419,10 @@ mod tests {
         let mut lex = create_test_lexicon();
         let mut trs = parse_trs(".(C .(.(CONS .(DIGIT 9)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) var13_)) = .(.(CONS .(DIGIT 2)) .(C var13_));", &mut lex, true, &[])
             .expect("parsed trs");
-        let vs = trs.find_all_variablizations();
+        let types = trs.collect_types();
+        let vs = trs.find_all_variablizations(&types);
         let xs = trs
-            .analyze_variablizations(&vs)
+            .analyze_variablizations(&vs, &types)
             .into_iter()
             .map(|(x, y)| (y, x))
             .into_group_map();
@@ -404,9 +446,10 @@ mod tests {
         let mut lex = create_test_lexicon();
         let mut trs = parse_trs(".(C .(.(CONS .(DIGIT 9)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) x_)) = .(.(CONS .(DIGIT 2)) .(C x_));", &mut lex, true, &[])
             .expect("parsed trs");
-        let vs = trs.find_all_variablizations();
+        let mut types = trs.collect_types();
+        let vs = trs.find_all_variablizations(&types);
         let xs = trs
-            .analyze_variablizations(&vs)
+            .analyze_variablizations(&vs, &types)
             .into_iter()
             .map(|(x, y)| (y, x))
             .into_group_map();
@@ -415,7 +458,7 @@ mod tests {
         for (rs, vs) in xs.iter() {
             for (tp, places) in vs {
                 println!("  {} {:?}", tp, places);
-                if let Some(new_rs) = trs.apply_variablization(tp, places, rs) {
+                if let Some(new_rs) = trs.apply_variablization(tp, places, rs, &mut types) {
                     println!(
                         "{}\n",
                         new_rs
@@ -434,9 +477,10 @@ mod tests {
     fn apply_variablization_test_1() {
         let mut lex = create_test_lexicon();
         let mut trs = parse_trs(".(C .(.(CONS .(DIGIT 9)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) x_)) = .(.(CONS .(DIGIT 2)) .(C x_));  .(C .(.(CONS .(DIGIT 4)) x_)) = .(.(CONS .(DIGIT 4)) .(C x_));", &mut lex, true, &[]).expect("parsed trs");
-        let vs = trs.find_all_variablizations();
+        let mut types = trs.collect_types();
+        let vs = trs.find_all_variablizations(&types);
         let xs = trs
-            .analyze_variablizations(&vs)
+            .analyze_variablizations(&vs, &types)
             .into_iter()
             .map(|(x, y)| (y, x))
             .into_group_map();
@@ -445,7 +489,7 @@ mod tests {
         for (rs, vs) in xs.iter() {
             for (tp, places) in vs {
                 println!("  {} {:?}", tp, places);
-                if let Some(new_rs) = trs.apply_variablization(tp, places, rs) {
+                if let Some(new_rs) = trs.apply_variablization(tp, places, rs, &mut types) {
                     println!(
                         "{}\n",
                         new_rs
@@ -465,16 +509,17 @@ mod tests {
         let mut lex = create_test_lexicon();
         let mut trs = parse_trs(".(C .(.(CONS .(DIGIT 9)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) x_)) = .(.(CONS .(DIGIT 2)) .(C x_));  .(C .(.(CONS .(DIGIT 4)) x_)) = .(.(CONS .(DIGIT 4)) .(C x_));", &mut lex, true, &[])
             .expect("parsed trs");
-        let vs = trs.find_all_variablizations();
+        let mut types = trs.collect_types();
+        let vs = trs.find_all_variablizations(&types);
         let xs = trs
-            .analyze_variablizations(&vs)
+            .analyze_variablizations(&vs, &types)
             .into_iter()
             .map(|(x, y)| (y, x))
             .into_group_map();
 
         let mut trss = vec![];
         for x in xs {
-            trs.augment_trss(&mut trss, x);
+            trs.augment_trss(&mut trss, x, &mut types);
         }
         for trs in &trss {
             println!("{}\n", trs);
@@ -495,6 +540,7 @@ mod tests {
 
         let trss = trs.variablize();
         assert!(trss.is_ok());
+
         let trss = trss.unwrap();
         for trs in &trss {
             println!("{}\n", trs);
@@ -524,6 +570,7 @@ mod tests {
 
         let trss = trs.variablize();
         assert!(trss.is_ok());
+
         let trss = trss.unwrap();
         for trs in &trss {
             println!("{}\n", trs);
@@ -536,21 +583,13 @@ mod tests {
         let mut lex = create_test_lexicon();
         let trs = parse_trs(".(C .(.(CONS .(.(DECC .(DIGIT 5)) 4)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 0)) NIL)) = NIL;", &mut lex, true, &[]).expect("parsed trs");
 
-        let vs = trs.find_all_variablizations();
-
-        for (tp, places) in &vs {
-            println!("{} {:?}\n\n", tp, places);
-        }
-
         let trss = trs.variablize();
-
         assert!(trss.is_ok());
 
         let trss = trss.unwrap();
         for trs in &trss {
             println!("{}\n", trs);
         }
-
         assert_eq!(trss.len(), 15);
     }
 
@@ -559,21 +598,13 @@ mod tests {
         let mut lex = create_test_lexicon();
         let trs = parse_trs(".(C .(.(CONS .(DIGIT 2)) var13_)) = .(.(CONS .(DIGIT 2)) .(C var13_)); .(C .(.(CONS .(DIGIT 0)) var20_)) = .(.(CONS .(DIGIT 0)) .(C var20_)); .(C .(.(CONS .(.(DECC .(DIGIT 7)) 7)) var19_)) = .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(C var19_)); .(C .(.(CONS .(.(DECC .(DIGIT 2)) 0)) var17_)) = .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(C var17_)); .(C .(.(CONS .(DIGIT 9)) var16_)) = .(.(CONS .(DIGIT 9)) .(C var16_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 0)) var15_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(C var15_)); .(C .(.(CONS .(DIGIT 3)) var14_)) = .(.(CONS .(DIGIT 3)) .(C var14_)); .(C .(.(CONS .(.(DECC .(DIGIT 3)) 2)) var23_)) = .(.(CONS .(.(DECC .(DIGIT 3)) 2)) .(C var23_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 6)) var22_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 6)) .(C var22_));", &mut lex, true, &[]).expect("parsed trs");
 
-        let vs = trs.find_all_variablizations();
-
-        for (tp, places) in &vs {
-            println!("{} {:?}\n\n", tp, places);
-        }
-
         let trss = trs.variablize();
-
         assert!(trss.is_ok());
 
         let trss = trss.unwrap();
         for trs in &trss {
             println!("{}\n", trs);
         }
-
         assert_eq!(trss.len(), 13);
     }
 
@@ -582,21 +613,13 @@ mod tests {
         let mut lex = create_test_lexicon();
         let trs = parse_trs(".(C .(.(CONS .(.(DECC .(DIGIT 5)) 4)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 0)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) var13_)) = .(.(CONS .(DIGIT 2)) .(C var13_)); .(C .(.(CONS .(DIGIT 0)) var20_)) = .(.(CONS .(DIGIT 0)) .(C var20_)); .(C .(.(CONS .(.(DECC .(DIGIT 7)) 7)) var19_)) = .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(C var19_)); .(C .(.(CONS .(.(DECC .(DIGIT 2)) 0)) var17_)) = .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(C var17_)); .(C .(.(CONS .(DIGIT 9)) var16_)) = .(.(CONS .(DIGIT 9)) .(C var16_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 0)) var15_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(C var15_)); .(C .(.(CONS .(DIGIT 3)) var14_)) = .(.(CONS .(DIGIT 3)) .(C var14_)); .(C .(.(CONS .(.(DECC .(DIGIT 3)) 2)) var23_)) = .(.(CONS .(.(DECC .(DIGIT 3)) 2)) .(C var23_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 6)) var22_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 6)) .(C var22_));", &mut lex, true, &[]).expect("parsed trs");
 
-        let vs = trs.find_all_variablizations();
-
-        for (tp, places) in &vs {
-            println!("{} {:?}\n\n", tp, places);
-        }
-
         let trss = trs.variablize();
-
         assert!(trss.is_ok());
 
         let trss = trss.unwrap();
         for trs in &trss {
             println!("{}\n", trs);
         }
-
         assert_eq!(trss.len(), 26);
     }
 }
