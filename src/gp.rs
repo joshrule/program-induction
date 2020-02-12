@@ -85,7 +85,7 @@ impl GPSelection {
             GPSelection::Drift(alpha) => {
                 for (p, old_fitness) in population.iter_mut() {
                     let new_fitness = oracle(p);
-                    *old_fitness = *alpha * *old_fitness + (1.0 - alpha) * new_fitness;
+                    *old_fitness = alpha * *old_fitness + (1.0 - alpha) * new_fitness;
                 }
                 population.extend(scored_children);
                 *population = sample_without_replacement(population, pop_size, rng);
@@ -112,7 +112,7 @@ impl GPSelection {
                 options.append(&mut scored_children);
                 let mut sample_size = pop_size;
                 if let GPSelection::Hybrid(det_proportion) = self {
-                    let n_best = (pop_size as f64 * det_proportion).ceil() as usize;
+                    let n_best = (pop_size as f64 * det_proportion).floor() as usize;
                     sample_size -= n_best;
                     options.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
                     let rest = options.split_off(n_best);
@@ -136,15 +136,18 @@ pub struct GPParams {
     /// The mechanism by which individuals are selected for inclusion in the
     /// population.
     pub selection: GPSelection,
+    /// The number of individuals in the population.
     pub population_size: usize,
     /// The number of individuals selected uniformly at random to participate in
     /// a tournament. If 1, a single individual is selected uniformly at random,
     /// as if the population were unweighted. This is useful for mimicking
     /// uniform weights after resampling, as in a particle filter.
     pub tournament_size: usize,
-    /// The number of new children added to the population with each step of evolution.
-    /// Traditionally, this would be set to 1. If it is larger than 1, mutations and crossover will
-    /// be repeated until the threshold of `n_delta` is met.
+    /// The number of new children considered during each step of evolution.
+    /// Traditionally, this would be set to 1. [`reproduce`] is called
+    /// repeatedly until producing `n_delta` children.
+    ///
+    /// [`reproduce`]: #tymethod.reproduce
     pub n_delta: usize,
 }
 
@@ -358,14 +361,8 @@ pub trait GP: Send + Sync + Sized {
         while children.len() < gpparams.n_delta {
             let tournament = Tournament::new(gpparams.tournament_size, population);
             let mut offspring = self.reproduce(rng, params, &task.observation, &tournament);
-            self.validate_offspring(
-                params,
-                population,
-                &children,
-                seen,
-                &mut offspring,
-                gpparams.n_delta - children.len(),
-            );
+            let keep_n = gpparams.n_delta - children.len();
+            self.validate_offspring(params, population, &children, seen, &mut offspring, keep_n);
             children.append(&mut offspring);
         }
         gpparams.selection.select(
