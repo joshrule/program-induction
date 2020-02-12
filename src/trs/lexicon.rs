@@ -108,6 +108,7 @@ impl<'a> Lexicon<'a> {
             ctx: Arc::new(RwLock::new(ctx)),
         }));
         lex.0.to_mut().recompute_free_vars();
+        lex.0.to_mut().recompute_types();
         lex
     }
     /// Convert a [`term_rewriting::Signature`] into a `Lexicon`:
@@ -164,6 +165,7 @@ impl<'a> Lexicon<'a> {
             ctx: Arc::new(RwLock::new(ctx)),
         }));
         lex.0.to_mut().recompute_free_vars();
+        lex.0.to_mut().recompute_types();
         lex
     }
     /// Merge two `Lexicons` into a single `Lexicon`
@@ -422,12 +424,14 @@ impl<'a> Lexicon<'a> {
     /// let mut ctx = lexicon.context();
     /// let invent = true;
     /// let variable = true;
-    /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
-    /// let max_size = 50;
-    /// let mut vars = vec![];
+    /// let atom_weights = (1.5, 1.5, 1.0, 1.5);
+    /// let max_size = 20;
     /// let mut rng = thread_rng();
     ///
-    /// let term = lexicon.sample_term(&schema, atom_weights, invent, variable, max_size, &mut vars, &mut rng).unwrap();
+    /// for i in 0..50 {
+    ///     let term = lexicon.sample_term(&schema, atom_weights, invent, variable, max_size, &mut vec![], &mut rng).unwrap();
+    ///     println!("{}. {}", i, term.pretty(&lexicon.signature()));
+    /// }
     /// ```
     ///
     /// [`term_rewriting::Term`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Term.html
@@ -1170,15 +1174,16 @@ impl Lex {
                 let (class, weight) = match atom {
                     Atom::Operator(o) if o.arity() > 0 => (2, ow),
                     Atom::Operator(_) => (1, cw),
-                    Atom::Variable(_) => (0, vw),
+                    Atom::Variable(v) => (0, if vars.contains(&v) { vw } else { 0.0 }),
                 };
                 let constant = class < 2;
                 let idx = constant as usize;
                 if variable || class > 0 {
                     if results[idx].is_none() {
-                        results[idx] = Some(self.check_schema(tp, schema, constant, true));
+                        let fits = self.check_schema(tp, schema, constant, true);
+                        results[idx] = Some(fits);
                     }
-                    if let Some(true) = results[idx] {
+                    if Some(true) == results[idx] && weight > 0.0 {
                         options.push((Some(*atom), weight))
                     }
                 }
@@ -1754,24 +1759,21 @@ impl<'a> GPLexicon<'a> {
         let entry = tried.entry(name).or_insert_with(|| vec![]);
         entry.push(parents);
     }
-    pub fn check(&self, name: TRSMoveName, parents: Parents<'a, 'a>) -> Option<Parents<'a, 'a>> {
+    pub fn check(&self, name: TRSMoveName, parents: &[&TRS]) -> bool {
         let mut tried = self.tried.write().expect("poisoned");
         let past_parents = tried.entry(name).or_insert_with(|| vec![]);
-        if self.novelty_possible(name, &parents, &past_parents) {
-            Some(parents)
-        } else {
-            None
-        }
+        self.novelty_possible(name, parents, past_parents)
     }
-    fn novelty_possible(&self, name: TRSMoveName, parents: &[TRS], past: &[Parents]) -> bool {
-        let check = || !past.iter().any(|p| &p[..] == parents);
+    fn novelty_possible(&self, name: TRSMoveName, parents: &[&TRS], past: &[Vec<TRS>]) -> bool {
+        let check = || {
+            !past
+                .iter()
+                .any(|p| parents.iter().zip(p).all(|(x, y)| *x != y))
+        };
         match name {
             TRSMoveName::Memorize => past.is_empty(),
-            TRSMoveName::SampleRule | TRSMoveName::RegenerateRule => true,
-            // | TRSMoveName::Recurse
-            // | TRSMoveName::RecurseVariablize
-            // | TRSMoveName::RecurseGeneralize => true,
-            TRSMoveName::LocalDifference => parents[0].num_learned_rules() > 1 || check(),
+            TRSMoveName::Recurse | TRSMoveName::SampleRule | TRSMoveName::RegenerateRule => true,
+            TRSMoveName::LocalDifference => parents[0].len() > 1 || check(),
             _ => check(),
         }
     }
@@ -1788,19 +1790,21 @@ impl<'a> GP for GPLexicon<'a> {
         pop_size: usize,
         _tp: &TypeSchema,
     ) -> Vec<Self::Expression> {
-        match TRS::new(&self.lexicon, params.deterministic, self.bg, vec![]) {
+        let trs = TRS::new(&self.lexicon, params.deterministic, self.bg, vec![]);
+        match trs {
             Ok(mut trs) => {
                 if params.deterministic {
                     trs.utrs.make_deterministic();
                 }
                 let mut pop = Vec::with_capacity(pop_size);
                 while pop.len() < pop_size {
-                    if let Ok(mut new_trs) = trs.sample_rule(
+                    let sample_result = trs.sample_rule(
                         &self.contexts,
                         params.atom_weights,
                         params.max_sample_size,
                         rng,
-                    ) {
+                    );
+                    if let Ok(mut new_trs) = sample_result {
                         if new_trs[0].unique_shape(&pop) {
                             pop.append(&mut new_trs);
                         }
@@ -1828,7 +1832,7 @@ impl<'a> GP for GPLexicon<'a> {
             // Sample the parents.
             let parents = mv.get_parents(&tournament, rng);
             // Check the parents.
-            if let Some(parents) = self.check(name, parents) {
+            if self.check(name, &parents) {
                 // Take the move.
                 if let Ok(trss) = mv.take(
                     &self.lexicon,
@@ -1839,7 +1843,7 @@ impl<'a> GP for GPLexicon<'a> {
                     rng,
                     &parents,
                 ) {
-                    self.add(name, parents);
+                    self.add(name, parents.iter().map(|&t| t.clone()).collect());
                     return trss;
                 }
             }

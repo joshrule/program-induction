@@ -67,7 +67,6 @@ impl<'a, 'b> TRS<'a, 'b> {
         max_size: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-        // TODO: fail if you sample an existing rule?
         let context = contexts
             .choose(rng)
             .ok_or(SampleError::OptionsExhausted)?
@@ -80,9 +79,9 @@ impl<'a, 'b> TRS<'a, 'b> {
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }
-        self.lex.infer_rule(&rule, &mut HashMap::new()).drop()?;
+        trs.lex.infer_rule(&rule, &mut HashMap::new()).drop()?;
         let mut new_rules = vec![rule];
-        self.filter_background(&mut new_rules);
+        trs.filter_background(&mut new_rules);
         // INVARIANT: there's at most one rule in new_rules
         let mut new_rules = as_result(new_rules)?;
         trs.utrs.push(new_rules.pop().unwrap())?;

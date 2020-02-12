@@ -159,17 +159,28 @@ pub fn parse_rule(input: &str, lex: &mut Lexicon) -> Result<Rule, ParseError> {
         .map_err(|_| ParseError)
 }
 
-/// Given a [`Lexicon`], parse and typecheck a list of [`RuleContext`s] (e.g.
-/// `templates` in [`parse_lexicon`]). The format of a [`RuleContext`] is as
-/// given in [`term_rewriting`].
+/// Given a [`Lexicon`], parse and typecheck a list of [`RuleContext`s]. The
+/// format of a [`RuleContext`] is as given in [`term_rewriting`].
 ///
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`RuleContext`s]: ../../../term_rewriting/struct.RuleContext.html
 /// [`RuleContext`]: ../../../term_rewriting/struct.RuleContext.html
-/// [`parse_lexicon`]: fn.parse_lexicon.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_templates(input: &str, lex: &mut Lexicon) -> Result<Vec<RuleContext>, ParseError> {
+pub fn parse_rulecontexts(input: &str, lex: &mut Lexicon) -> Result<Vec<RuleContext>, ParseError> {
     templates(CompleteStr(input), lex)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
+}
+
+/// Given a [`Lexicon`], parse and typecheck a list of [`Rule`s]. The
+/// format of a [`Rule`] is as given in [`term_rewriting`].
+///
+/// [`Lexicon`]: ../struct.Lexicon.html
+/// [`Rule`s]: ../../../term_rewriting/struct.Rule.html
+/// [`Rule`]: ../../../term_rewriting/struct.Rule.html
+/// [`term_rewriting`]: ../../../term_rewriting/index.html
+pub fn parse_rules(input: &str, lex: &mut Lexicon) -> Result<Vec<Rule>, ParseError> {
+    rules(CompleteStr(input), lex)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
 }
@@ -375,6 +386,15 @@ named_args!(templates<'a>(lex: &mut Lexicon) <CompleteStr<'a>, Vec<RuleContext>>
                                                       many0!(ws!(comment)) >>
                                                       (rc.1))) >>
                           (templates)))
+);
+
+named_args!(rules<'a>(lex: &mut Lexicon) <CompleteStr<'a>, Vec<Rule>>,
+            ws!(do_parse!(rules: many0!(do_parse!(many0!(ws!(comment)) >>
+                                                      r_text: take_until_and_consume!(";") >>
+                                                      r: expr_res!(typed_rule(&r_text, lex)) >>
+                                                      many0!(ws!(comment)) >>
+                                                      (r.1))) >>
+                          (rules)))
 );
 
 #[cfg(test)]

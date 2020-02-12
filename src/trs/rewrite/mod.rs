@@ -50,11 +50,11 @@ pub enum TRSMoveName {
     Variablize,
     Generalize,
     Recurse,
-    // RecurseVariablize,
-    // RecurseGeneralize,
     DeleteRules,
     Combine,
     Compose,
+    // RecurseVariablize,
+    // RecurseGeneralize,
     // ComposeVariablize,
 }
 
@@ -69,11 +69,11 @@ pub enum TRSMove {
     Variablize,
     Generalize,
     Recurse(usize),
-    // RecurseVariablize(usize),
-    // RecurseGeneralize(usize),
     DeleteRules(usize),
     Combine(usize),
     Compose,
+    // RecurseVariablize(usize),
+    // RecurseGeneralize(usize),
     // ComposeVariablize,
 }
 impl TRSMove {
@@ -86,7 +86,7 @@ impl TRSMove {
         contexts: &[RuleContext],
         obs: &[Rule],
         rng: &mut R,
-        parents: &[TRS<'a, 'b>],
+        parents: &[&TRS<'a, 'b>],
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         match *self {
             TRSMove::Memorize => Ok(TRS::memorize(lex, deterministic, bg, obs)),
@@ -98,23 +98,23 @@ impl TRSMove {
             TRSMove::Variablize => parents[0].variablize(),
             TRSMove::Generalize => parents[0].generalize(),
             TRSMove::Recurse(n) => parents[0].recurse(n),
-            // TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(n, rng),
-            // TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(n, rng),
             TRSMove::DeleteRules(t) => parents[0].delete_rules(rng, t),
             TRSMove::Compose => parents[0].compose(),
-            // TRSMove::ComposeVariablize => parents[0].compose_and_variablize(rng),
             TRSMove::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
+            // TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(n, rng),
+            // TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(n, rng),
+            // TRSMove::ComposeVariablize => parents[0].compose_and_variablize(rng),
         }
     }
-    pub fn get_parents<'a, 'b, R: Rng>(
+    pub fn get_parents<'a, 'b, 'c, R: Rng>(
         &self,
-        t: &Tournament<TRS<'a, 'b>>,
+        t: &'c Tournament<TRS<'a, 'b>>,
         rng: &mut R,
-    ) -> Vec<TRS<'a, 'b>> {
+    ) -> Vec<&'c TRS<'a, 'b>> {
         match *self {
             TRSMove::Memorize => vec![],
-            TRSMove::Combine(_) => vec![t.sample(rng).clone(), t.sample(rng).clone()],
-            _ => vec![t.sample(rng).clone()],
+            TRSMove::Combine(_) => vec![t.sample(rng), t.sample(rng)],
+            _ => vec![t.sample(rng)],
         }
     }
     pub(crate) fn name(&self) -> TRSMoveName {
