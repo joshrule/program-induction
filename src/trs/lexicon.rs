@@ -1854,7 +1854,7 @@ impl<'a> GP for GPLexicon<'a> {
         _params: &Self::Params,
         population: &[(Self::Expression, f64)],
         _children: &[Self::Expression],
-        seen: &mut Vec<Self::Expression>,
+        _seen: &mut Vec<Self::Expression>,
         offspring: &mut Vec<Self::Expression>,
         max_validated: usize,
     ) {
@@ -1862,13 +1862,17 @@ impl<'a> GP for GPLexicon<'a> {
         while validated < max_validated && validated < offspring.len() {
             let x = &offspring[validated];
             let pop_unique = !population.iter().any(|p| TRS::same_shape(&p.0, &x));
-            if pop_unique && x.unique_shape(seen) {
+            // TODO: we're removing the restriction of uniqueness to accommodate annealing.
+            // With the MCTS-like idea I had recently, we'd restore something like it.
+            // if pop_unique && x.unique_shape(seen) {
+            if pop_unique {
                 validated += 1;
             } else {
                 offspring.swap_remove(validated);
             }
         }
         offspring.truncate(validated);
-        seen.extend_from_slice(&offspring);
+        // TODO: we're basically ignoring seen, see comment above
+        // seen.extend_from_slice(&offspring);
     }
 }
