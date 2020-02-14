@@ -53,9 +53,6 @@ pub enum TRSMoveName {
     DeleteRules,
     Combine,
     Compose,
-    // RecurseVariablize,
-    // RecurseGeneralize,
-    // ComposeVariablize,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -72,9 +69,6 @@ pub enum TRSMove {
     DeleteRules(usize),
     Combine(usize),
     Compose,
-    // RecurseVariablize(usize),
-    // RecurseGeneralize(usize),
-    // ComposeVariablize,
 }
 impl TRSMove {
     #[allow(clippy::too_many_arguments)]
@@ -101,9 +95,6 @@ impl TRSMove {
             TRSMove::DeleteRules(t) => parents[0].delete_rules(rng, t),
             TRSMove::Compose => parents[0].compose(),
             TRSMove::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
-            // TRSMove::RecurseVariablize(n) => parents[0].recurse_and_variablize(n, rng),
-            // TRSMove::RecurseGeneralize(n) => parents[0].recurse_and_generalize(n, rng),
-            // TRSMove::ComposeVariablize => parents[0].compose_and_variablize(rng),
         }
     }
     pub fn get_parents<'a, 'b, 'c, R: Rng>(
@@ -128,12 +119,9 @@ impl TRSMove {
             TRSMove::Variablize => TRSMoveName::Variablize,
             TRSMove::Generalize => TRSMoveName::Generalize,
             TRSMove::Recurse(..) => TRSMoveName::Recurse,
-            // TRSMove::RecurseVariablize(..) => TRSMoveName::RecurseVariablize,
-            // TRSMove::RecurseGeneralize(..) => TRSMoveName::RecurseGeneralize,
             TRSMove::DeleteRules(..) => TRSMoveName::DeleteRules,
             TRSMove::Combine(..) => TRSMoveName::Combine,
             TRSMove::Compose => TRSMoveName::Compose,
-            // TRSMove::ComposeVariablize => TRSMoveName::ComposeVariablize,
         }
     }
 }

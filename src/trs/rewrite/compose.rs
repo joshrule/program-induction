@@ -1,7 +1,6 @@
 use super::{super::as_result, Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
-use rand::{prelude::SliceRandom, Rng};
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term, Variable};
 
@@ -9,20 +8,6 @@ type Transform = (Term, Vec<usize>, Vec<usize>, Type);
 type Case<'a> = (&'a Rule, Vec<Rule>);
 
 impl<'a, 'b> TRS<'a, 'b> {
-    pub fn compose_and_variablize<R: Rng>(
-        &self,
-        rng: &mut R,
-    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-        self.compose().and_then(|new_trss| {
-            let mut trss = new_trss
-                .into_iter()
-                .filter_map(|trs| trs.variablize().ok())
-                .flatten()
-                .collect_vec();
-            trss.shuffle(rng);
-            as_result(trss)
-        })
-    }
     pub fn compose(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let clauses = self.clauses().into_iter().map(|(_, x)| x).collect_vec();
         let snapshot = self.lex.snapshot();
@@ -167,9 +152,7 @@ impl<'a, 'b> TRS<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use super::{Lexicon, TRS};
-    use itertools::Itertools;
     use polytype::Context as TypeContext;
-    use rand::thread_rng;
     use trs::parser::{parse_lexicon, parse_rule, parse_trs};
 
     fn create_test_lexicon<'b>() -> Lexicon<'b> {
@@ -228,29 +211,5 @@ mod tests {
             println!("{}.\n{}\n", i, trs);
         }
         assert_eq!(6, trss.len());
-    }
-    // TODO: once is_alpha is fast enough, stop ignoring this test.
-    #[ignore]
-    #[test]
-    fn compose_and_variablize_test() {
-        // This test is for easier debugging.
-        let mut lex = create_test_lexicon();
-        let trs = parse_trs(
-            "C (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) NIL)))) = (CONS (DIGIT 0) (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) (CONS (DIGIT 5) NIL))))));",
-            &mut lex,
-            true,
-            &[],
-        )
-            .expect("parsed TRS");
-        let result = trs.compose_and_variablize(&mut thread_rng());
-        assert!(result.is_ok());
-        let trss = result.unwrap();
-
-        for (i, trs) in trss.iter().sorted_by_key(|x| x.size()).enumerate() {
-            println!("{}.\n{}\n", i, trs);
-        }
-        assert_eq!(234, trss.len());
-
-        assert!(false);
     }
 }

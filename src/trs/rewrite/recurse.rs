@@ -10,36 +10,6 @@ type Transform = (Term, Place, Place, Type);
 type Case = (Option<Rule>, Rule);
 
 impl<'a, 'b> TRS<'a, 'b> {
-    // pub fn recurse_and_generalize<R: Rng>(
-    //     &self,
-    //     n_sampled: usize,
-    //     rng: &mut R,
-    // ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-    //     self.recurse(n_sampled).and_then(|new_trss| {
-    //         let mut trss = new_trss
-    //             .into_iter()
-    //             .filter_map(|trs| trs.generalize(&[]).ok())
-    //             .flatten()
-    //             .collect_vec();
-    //         trss.shuffle(rng);
-    //         as_result(trss)
-    //     })
-    // }
-    //pub fn recurse_and_variablize<R: Rng>(
-    //    &self,
-    //    n_sampled: usize,
-    //    rng: &mut R,
-    //) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-    //    self.recurse(n_sampled).and_then(|new_trss| {
-    //        let mut trss = new_trss
-    //            .into_iter()
-    //            .filter_map(|trs| trs.variablize().ok())
-    //            .flatten()
-    //            .collect_vec();
-    //        trss.shuffle(rng);
-    //        as_result(trss)
-    //    })
-    //}
     pub fn recurse(&self, n_sampled: usize) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let snapshot = self.lex.snapshot();
         let op = self.lex.has_op(Some("."), 2)?;
@@ -342,9 +312,7 @@ impl<'a, 'b> TRS<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use super::{Lexicon, TRS};
-    use itertools::Itertools;
     use polytype::Context as TypeContext;
-    use rand::thread_rng;
     use std::collections::HashMap;
     use trs::parser::{parse_lexicon, parse_rule, parse_term, parse_trs};
 
@@ -553,44 +521,4 @@ mod tests {
 
         assert_eq!(20, trss.len());
     }
-    // #[test]
-    // #[ignore]
-    // fn recurse_and_variablize_test_1() {
-    //     // This test is for easier debugging.
-    //     let lex = create_test_lexicon();
-    //     let trs = parse_trs(
-    //         "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DECC (DIGIT 5) 4)  NIL);C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 0) NIL);",
-    //         &lex,
-    //     )
-    //         .expect("parsed TRS");
-    //     let result = trs.recurse_and_variablize(5, &mut thread_rng());
-    //     assert!(result.is_ok());
-    //     let trss = result.unwrap();
-
-    //     for trs in trss.iter().sorted_by_key(|x| x.size()) {
-    //         println!("##\n{}\n##", trs);
-    //     }
-
-    //     assert!(true);
-    // }
-    // #[test]
-    // #[ignore]
-    // fn recurse_and_variablize_test_2() {
-    //     // This test is for easier debugging.
-    //     let lex = create_test_lexicon();
-    //     let trs = parse_trs(
-    //         "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL))))))));C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)));",
-    //         &lex,
-    //     )
-    //         .expect("parsed TRS");
-    //     let result = trs.recurse_and_variablize(5, &mut thread_rng());
-    //     assert!(result.is_ok());
-    //     let trss = result.unwrap();
-
-    //     for trs in trss.iter().sorted_by_key(|x| x.size()) {
-    //         println!("##\n{}\n##", trs);
-    //     }
-
-    //     assert!(true);
-    // }
 }
