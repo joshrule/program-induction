@@ -21,7 +21,7 @@ mod sample_rule;
 mod swap_lhs_and_rhs;
 mod variablize;
 
-use super::{Lexicon, Likelihood, ModelParams, Prior, SampleError, TypeError};
+use super::{Lexicon, ModelParams, Prior, SampleError, TypeError};
 use gp::Tournament;
 use itertools::Itertools;
 use rand::{distributions::Distribution, seq::IteratorRandom, Rng};

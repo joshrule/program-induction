@@ -1,6 +1,6 @@
 use std::f64::NEG_INFINITY;
 
-use super::{ModelParams, Prior, TRS};
+use super::{Prior, TRS};
 use utils::{block_generative_logpdf, fail_geometric_logpdf};
 
 impl<'a, 'b> TRS<'a, 'b> {
@@ -8,8 +8,8 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// scaled by some cost per token.
     ///
     /// [`size`]: struct.TRS.html#method.size
-    pub fn log_prior(&self, params: ModelParams) -> f64 {
-        match params.prior {
+    pub fn log_prior(&self, prior: Prior) -> f64 {
+        match prior {
             Prior::Size(p_token) => -p_token * (self.size() as f64),
             Prior::SimpleGenerative {
                 p_rule,

@@ -133,19 +133,10 @@ impl ::std::error::Error for SampleError {
 /// Parameters for a TRS-based probabilistic model.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct ModelParams {
+    // The temperature constant.
+    pub c: f64,
     pub prior: Prior,
     pub likelihood: Likelihood,
-    pub strategy: RewriteStrategy,
-    /// The (non-log) probability of generating observations at arbitrary
-    /// evaluation steps (i.e. not just normal forms). Typically 0.0.
-    pub p_observe: f64,
-    /// The number of evaluation steps you would like to explore in the trace. `None` evaluates the entire trace, which may not terminate.
-    pub max_steps: usize,
-    /// The largest term considered for evaluation. `None` considers all terms.
-    pub max_size: Option<usize>,
-    /// The deepest level of the `Trace` considered for evaluation. `None`
-    /// considers all depths.
-    pub max_depth: Option<usize>,
     /// The weight of the log likelihood in the posterior.
     pub l_temp: f64,
     /// The weight of the prior in the posterior.
@@ -179,9 +170,30 @@ pub enum Prior {
     },
 }
 
-/// Possible likelihoods for a TRS-based probabilistic model.
+/// Likelihood for a TRS-based probabilistic model.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum Likelihood {
+pub struct Likelihood {
+    /// The weight of example i, i < n, in the likelihood for trial n = decay^(n - 1 - i).
+    decay: f64,
+    /// The rewriting strategy used in computing the likelihood.
+    pub strategy: RewriteStrategy,
+    /// The (non-log) probability of generating observations at arbitrary
+    /// evaluation steps (i.e. not just normal forms). Typically 0.0.
+    pub p_observe: f64,
+    /// The number of evaluation steps you would like to explore in the trace. `None` evaluates the entire trace, which may not terminate.
+    pub max_steps: usize,
+    /// The largest term considered for evaluation. `None` considers all terms.
+    pub max_size: Option<usize>,
+    /// The deepest level of the `Trace` considered for evaluation. `None`
+    /// considers all depths.
+    pub max_depth: Option<usize>,
+    /// Additional parameters for the function used to compute the likelihood of a single datum.
+    single: SingleLikelihood,
+}
+
+/// Possible single likelihoods for a TRS-based probabilistic model.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum SingleLikelihood {
     // Binary log-likelihood: 0 or -\infty
     Binary,
     // Rational Rules (Goodman, et al., 2008) log-likelihood: 0 or -p_outlier
@@ -218,10 +230,11 @@ pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
     data: &'a [Rule],
     params: ModelParams,
     lex: &Lexicon,
+    t: f64,
     observation: O,
 ) -> Result<Task<'a, Lexicon<'c>, TRS<'b, 'c>, O>, TypeError> {
     Ok(Task {
-        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.log_posterior(data, params)),
+        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.log_posterior(data, t, params)),
         // assuming the data have no variables, we can use the Lexicon's ctx.
         tp: lex.infer_rules(data)?,
         observation,
