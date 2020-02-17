@@ -143,6 +143,8 @@ pub struct GPParams {
     /// as if the population were unweighted. This is useful for mimicking
     /// uniform weights after resampling, as in a particle filter.
     pub tournament_size: usize,
+    /// If `true`, weight parent selection for single-individual tournaments.
+    pub weighted: bool,
     /// The number of new children considered during each step of evolution.
     /// Traditionally, this would be set to 1. [`reproduce`] is called
     /// repeatedly until producing `n_delta` children.
@@ -153,17 +155,33 @@ pub struct GPParams {
 
 pub struct Tournament<'a, T> {
     pub n: usize,
+    pub weighted: bool,
     pub population: &'a [(T, f64)],
 }
 impl<'a, T> Tournament<'a, T> {
-    pub fn new(n: usize, population: &'a [(T, f64)]) -> Tournament<'a, T> {
-        Tournament { n, population }
+    pub fn new(n: usize, weighted: bool, population: &'a [(T, f64)]) -> Tournament<'a, T> {
+        Tournament {
+            n,
+            weighted,
+            population,
+        }
     }
 }
 impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> &'a T {
         if self.n == 1 {
-            &self.population[rng.gen_range(0, self.population.len())].0
+            if self.weighted {
+                let weights = self
+                    .population
+                    .iter()
+                    .map(|(_, w)| (-w).exp())
+                    .collect_vec();
+                let dist = WeightedIndex::new(&weights[..]).unwrap();
+                let idx = dist.sample(rng);
+                &self.population[idx].0
+            } else {
+                &self.population[rng.gen_range(0, self.population.len())].0
+            }
         } else {
             (0..self.population.len())
                 .choose_multiple(rng, self.n)
@@ -240,6 +258,7 @@ impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
 ///     population_size: 10,
 ///     tournament_size: 5,
 ///     n_delta: 1,
+///     weighted: false,
 /// };
 /// let params = pcfg::GeneticParams::default();
 /// let generations = 1000;
@@ -359,7 +378,8 @@ pub trait GP: Send + Sync + Sized {
     {
         let mut children = Vec::with_capacity(gpparams.n_delta);
         while children.len() < gpparams.n_delta {
-            let tournament = Tournament::new(gpparams.tournament_size, population);
+            let tournament =
+                Tournament::new(gpparams.tournament_size, gpparams.weighted, population);
             let mut offspring = self.reproduce(rng, params, &task.observation, &tournament);
             let keep_n = gpparams.n_delta - children.len();
             self.validate_offspring(params, population, &children, seen, &mut offspring, keep_n);

@@ -42,6 +42,7 @@ fn gp_sum_arith() {
         population_size: 10,
         tournament_size: 5,
         n_delta: 1,
+        weighted: false,
     };
     let params = pcfg::GeneticParams::default();
     let generations = 1000;
