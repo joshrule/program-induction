@@ -174,7 +174,7 @@ pub enum Prior {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct Likelihood {
     /// The weight of example i, i < n, in the likelihood for trial n = decay^(n - 1 - i).
-    decay: f64,
+    pub decay: f64,
     /// The rewriting strategy used in computing the likelihood.
     pub strategy: RewriteStrategy,
     /// The (non-log) probability of generating observations at arbitrary

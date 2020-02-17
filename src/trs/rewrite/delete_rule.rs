@@ -34,7 +34,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let deletable = as_result(self.clauses())?;
         let mut trss = vec![];
-        if 2usize.pow((1 + deletable.len()) as u32) - 2 > threshold {
+        if 2usize.pow(deletable.len() as u32) > 2 * threshold {
             while trss.len() < threshold {
                 let mut trs = self.clone();
                 // Flip a coin for each clause and remove the successes.
