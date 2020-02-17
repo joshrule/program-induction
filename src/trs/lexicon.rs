@@ -17,10 +17,7 @@ use term_rewriting::{
     Atom, Context, MergeStrategy, Operator, PStringDist, Place, Rule, RuleContext, Signature,
     SignatureChange, Term, Variable, TRS as UntypedTRS,
 };
-use utils::logsumexp;
 use {Tournament, GP};
-
-type OAtom = Option<Atom>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Parameters for [`Lexicon`] genetic programming ([`GP`]).
@@ -1427,88 +1424,38 @@ impl Lex {
         &self,
         tp: &Type,
         term: &Term,
+        (vw, cw, ow, iw): (f64, f64, f64, f64),
         invent: bool,
         vars: &[Variable],
-    ) -> (Vec<OAtom>, Vec<OAtom>, Vec<OAtom>) {
-        let mut options = vec![vec![], vec![], vec![]];
+    ) -> Vec<(Option<Atom>, f64)> {
+        let mut options = vec![];
         for (schema, atoms) in self.types.iter() {
             let mut results = [None, None];
             for atom in atoms {
-                let class = match atom {
-                    Atom::Operator(o) if o.arity() > 0 => 2,
-                    Atom::Operator(_) => 1,
-                    Atom::Variable(_) => 0,
+                let (class, weight) = match atom {
+                    Atom::Operator(o) if o.arity() > 0 => (2, ow),
+                    Atom::Operator(_) => (1, cw),
+                    Atom::Variable(v) => (0, if vars.contains(&v) { vw } else { 0.0 }),
                 };
                 let constant = class < 2;
                 let idx = constant as usize;
                 if results[idx].is_none() {
-                    results[idx] = Some(self.check_schema(tp, schema, constant, true));
+                    let fits = self.check_schema(tp, schema, constant, true);
+                    results[idx] = Some(fits);
                 }
-                if let Some(true) = results[idx] {
-                    options[class].push(Some(*atom))
+                if Some(true) == results[idx] && weight > 0.0 {
+                    options.push((Some(*atom), weight))
                 }
             }
         }
         if invent {
-            if let Term::Variable(v) = *term {
-                if !vars.contains(&v) {
-                    options[0].push(Some(Atom::from(v)));
-                } else {
-                    options[0].push(None);
-                }
-            } else {
-                options[0].push(None);
-            }
+            let invented_option = match *term {
+                Term::Variable(v) if !vars.contains(&v) => Some(Atom::from(v)),
+                _ => None,
+            };
+            options.push((invented_option, iw));
         }
-        let os = options.pop().unwrap();
-        let cs = options.pop().unwrap();
-        let vs = options.pop().unwrap();
-        (vs, cs, os)
-    }
-    fn atom_priors(
-        invent: bool,
-        (vw, cw, ow, iw): (f64, f64, f64, f64),
-        (nv, nc, no): (usize, usize, usize),
-    ) -> (f64, f64, f64, f64) {
-        let z = vw + cw + ow;
-        let (vp, cp, op) = (vw / z, cw / z, ow / z);
-        let vlp = if invent && nv == 1 {
-            // in this case, the only variable is invented, so no mass goes here
-            NEG_INFINITY
-        } else {
-            vp.ln() - ((nv as f64) + (invent as usize as f64) * (-1.0 + iw)).ln()
-        };
-        let ilp = if invent {
-            vp.ln() + iw.ln() - ((nv as f64) - 1.0 + iw).ln()
-        } else {
-            NEG_INFINITY
-        };
-        let clp = if nc == 0 {
-            NEG_INFINITY
-        } else {
-            cp.ln() - (nc as f64).ln()
-        };
-        let olp = if no == 0 {
-            NEG_INFINITY
-        } else {
-            op.ln() - (no as f64).ln()
-        };
-        let mut lps = vec![];
-        for i in 0..nv {
-            if invent && i == 0 {
-                lps.push(ilp);
-            } else {
-                lps.push(vlp);
-            }
-        }
-        for _ in 0..nc {
-            lps.push(clp);
-        }
-        for _ in 0..no {
-            lps.push(olp);
-        }
-        let log_z = logsumexp(&lps[..]);
-        (vlp - log_z, clp - log_z, olp - log_z, ilp - log_z)
+        options
     }
     fn logprior_term(
         &self,
@@ -1533,29 +1480,32 @@ impl Lex {
         // Update the type (useful initially and during recursive calls).
         let tp = tp.apply_compress(&mut self.ctx.write().expect("poisoned context"));
         // Collect all options.
-        let (vs, cs, os) = self.prepare_prior_options(&tp, term, invent, variables);
-        // Compute the log probability of each kind of head.
-        let (vlp, clp, olp, ilp) =
-            Lex::atom_priors(invent, atom_weights, (vs.len(), cs.len(), os.len()));
+        let options = self.prepare_prior_options(&tp, term, atom_weights, invent, variables);
         // Find the selected option.
-        let mut options = vs.into_iter().chain(cs).chain(os);
-        let option = options.find(|o| *o == Some(term.head())).and_then(|o| {
-            let atom = o.unwrap();
-            // Propagate the type constraints forward.
-            let arg_types = self.fit_atom(&atom, &tp, false).ok()?;
-            Some((atom, arg_types))
-        });
+        let option = options
+            .iter()
+            .find(|(o, _)| *o == Some(term.head()))
+            .and_then(|(o, w)| {
+                let atom = o.unwrap();
+                // Propagate the type constraints forward.
+                let arg_types = self.fit_atom(&atom, &tp, false).ok()?;
+                Some((atom, w, arg_types))
+            });
+        // Compute the normalizing constant.
+        let z = options.iter().map(|(_, w)| w).sum::<f64>();
         // Compute the probability of the term.
         match option {
             None => Ok(NEG_INFINITY),
-            Some((Atom::Variable(ref v), _)) if !variables.contains(v) => {
+            Some((Atom::Variable(ref v), w, _)) if !variables.contains(v) => {
                 variables.push(v.clone());
-                Ok(ilp)
+                Ok(w.ln() - z.ln())
             }
-            Some((Atom::Variable(_), _)) => Ok(vlp),
-            Some((Atom::Operator(_), ref arg_types)) if arg_types.is_empty() => Ok(clp),
-            Some((Atom::Operator(_), arg_types)) => {
-                let mut lp = olp;
+            Some((Atom::Variable(_), w, _)) => Ok(w.ln() - z.ln()),
+            Some((Atom::Operator(_), w, ref arg_types)) if arg_types.is_empty() => {
+                Ok(w.ln() - z.ln())
+            }
+            Some((Atom::Operator(_), w, arg_types)) => {
+                let mut lp = w.ln() - z.ln();
                 for (subterm, mut arg_tp) in term.args().iter().zip(arg_types) {
                     arg_tp.apply_mut_compress(&mut self.ctx.write().expect("poisoned context"));
                     lp += self.logprior_term_internal(
