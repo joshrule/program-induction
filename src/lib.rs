@@ -118,11 +118,13 @@ pub mod domains;
 mod ec;
 mod gp;
 pub mod lambda;
+mod mcts;
 pub mod pcfg;
 pub mod trs;
 mod utils;
 pub use ec::*;
 pub use gp::*;
+pub use mcts::*;
 
 use polytype::TypeSchema;
 use std::f64;
