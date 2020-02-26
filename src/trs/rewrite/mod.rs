@@ -27,7 +27,7 @@ use itertools::Itertools;
 use rand::{distributions::Distribution, seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};
 use term_rewriting::{MergeStrategy, Operator, Rule, Term, Variable, TRS as UntypedTRS};
-use trs::{lexicon::GeneticParamsFull, GPLexicon, Lexicon, Prior, SampleError, TypeError};
+use trs::{GPLexicon, GeneticParamsFull, Lexicon, Prior, SampleError, TypeError};
 use Task;
 
 pub type TRSMoves = Vec<WeightedTRSMove>;

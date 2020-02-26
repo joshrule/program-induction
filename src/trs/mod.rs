@@ -46,12 +46,14 @@
 mod lexicon;
 pub mod parser;
 mod rewrite;
-pub use self::lexicon::{GPLexicon, GeneticParams, GeneticParamsFull, Lexicon};
+mod trsgp;
+pub use self::lexicon::Lexicon;
 pub use self::parser::{
     parse_context, parse_lexicon, parse_rule, parse_rulecontext, parse_rulecontexts, parse_rules,
     parse_term, parse_trs,
 };
 pub use self::rewrite::{TRSMove, TRSMoveName, TRSMoves, TRS};
+pub use self::trsgp::{GPLexicon, GeneticParams, GeneticParamsFull};
 use Task;
 
 use polytype;
