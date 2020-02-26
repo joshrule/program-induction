@@ -134,13 +134,26 @@ impl ::std::error::Error for SampleError {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct ModelParams {
     // The temperature constant.
-    pub c: f64,
+    pub schedule: Schedule,
     pub prior: Prior,
     pub likelihood: Likelihood,
     /// The weight of the log likelihood in the posterior.
     pub l_temp: f64,
     /// The weight of the prior in the posterior.
     pub p_temp: f64,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum Schedule {
+    // Don't anneal at all.
+    #[serde(alias = "none")]
+    None,
+    // Don't anneal - just use this temperature.
+    #[serde(alias = "constant")]
+    Constant(f64),
+    // Use a logarithmic cooling schedule.
+    #[serde(alias = "logarithmic")]
+    Logarithmic(f64),
 }
 
 /// Possible priors for a TRS-based probabilistic model.
