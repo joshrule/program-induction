@@ -62,7 +62,7 @@ pub enum TRSMoveName {
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum TRSMove {
-    Memorize,
+    Memorize(bool),
     SampleRule((f64, f64, f64, f64), usize),
     RegenerateRule((f64, f64, f64, f64), usize),
     LocalDifference,
@@ -91,12 +91,9 @@ impl TRSMove {
         gpparams: &GPParams,
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         match *self {
-            TRSMove::Memorize => Ok(TRS::memorize(
-                &gp.lexicon,
-                params.deterministic,
-                &gp.bg,
-                obs,
-            )),
+            TRSMove::Memorize(deterministic) => {
+                Ok(TRS::memorize(&gp.lexicon, deterministic, &gp.bg, obs))
+            }
             TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
             TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
@@ -125,14 +122,14 @@ impl TRSMove {
         rng: &mut R,
     ) -> Vec<&'c TRS<'a, 'b>> {
         match *self {
-            TRSMove::Memorize => vec![],
+            TRSMove::Memorize(_) => vec![],
             TRSMove::Combine(_) => vec![t.sample(rng), t.sample(rng)],
             _ => vec![t.sample(rng)],
         }
     }
     pub(crate) fn name(&self) -> TRSMoveName {
         match *self {
-            TRSMove::Memorize => TRSMoveName::Memorize,
+            TRSMove::Memorize(_) => TRSMoveName::Memorize,
             TRSMove::SampleRule(..) => TRSMoveName::SampleRule,
             TRSMove::RegenerateRule(..) => TRSMoveName::RegenerateRule,
             TRSMove::LocalDifference => TRSMoveName::LocalDifference,
