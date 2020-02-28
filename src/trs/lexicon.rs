@@ -1847,7 +1847,7 @@ impl<'a, 'b> GP for GPLexicon<'a, 'b> {
         _params: &Self::Params,
         population: &[(Self::Expression, f64)],
         _children: &[Self::Expression],
-        seen: &mut Vec<Self::Expression>,
+        _seen: &mut Vec<Self::Expression>,
         offspring: &mut Vec<Self::Expression>,
         max_validated: usize,
     ) {
@@ -1866,6 +1866,6 @@ impl<'a, 'b> GP for GPLexicon<'a, 'b> {
         }
         offspring.truncate(validated);
         // Even though we ignore uniqueness, seen lets us track how many programs we see.
-        seen.extend_from_slice(&offspring);
+        // seen.extend_from_slice(&offspring);
     }
 }
