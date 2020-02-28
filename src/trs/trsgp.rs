@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
-use term_rewriting::{Rule, RuleContext};
+use term_rewriting::Rule;
 use trs::{Lexicon, ModelParams, TRSMove};
 use Task;
 
@@ -66,23 +66,13 @@ impl GeneticParamsFull {
 pub struct TRSGP<'a, 'b> {
     pub lexicon: Lexicon<'b>,
     pub bg: &'a [Rule],
-    pub contexts: Vec<RuleContext>,
     pub(crate) tried: Arc<RwLock<Tried<'a, 'b>>>,
 }
-    pub fn new<'c, 'd>(
-        lex: &Lexicon<'d>,
-        bg: &'c [Rule],
-        contexts: Vec<RuleContext>,
-    ) -> GPLexicon<'c, 'd> {
 impl<'a, 'b> TRSGP<'a, 'b> {
+    pub fn new<'c, 'd>(lex: &Lexicon<'d>, bg: &'c [Rule]) -> TRSGP<'c, 'd> {
         let lexicon = lex.clone();
         let tried = Arc::new(RwLock::new(HashMap::new()));
-        TRSGP {
-            lexicon,
-            bg,
-            tried,
-            contexts,
-        }
+        TRSGP { lexicon, bg, tried }
     }
     pub fn clear(&self) {
         let mut tried = self.tried.write().expect("poisoned");
@@ -138,12 +128,8 @@ impl<'a, 'b> GP for TRSGP<'a, 'b> {
                 }
                 let mut pop = Vec::with_capacity(pop_size);
                 while pop.len() < pop_size {
-                    let sample_result = trs.sample_rule(
-                        &self.contexts,
-                        params.atom_weights,
-                        params.max_sample_size,
-                        rng,
-                    );
+                    let sample_result =
+                        trs.sample_rule(params.atom_weights, params.max_sample_size, rng);
                     if let Ok(mut new_trs) = sample_result {
                         if new_trs[0].unique_shape(&pop) {
                             pop.append(&mut new_trs);

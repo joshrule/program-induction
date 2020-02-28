@@ -15,7 +15,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # use programinduction::trs::{TRS, Lexicon};
     /// # use rand::{thread_rng};
     /// # use polytype::Context as TypeContext;
-    /// # use term_rewriting::{Context, RuleContext, Signature, parse_rule};
+    /// # use term_rewriting::{Signature, parse_rule};
     /// let mut sig = Signature::default();
     ///
     /// let mut ops = vec![];

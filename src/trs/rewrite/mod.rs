@@ -97,7 +97,7 @@ impl TRSMove {
                 &gp.bg,
                 obs,
             )),
-            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(&gp.contexts, aw, mss, rng),
+            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
             TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
             TRSMove::MemorizeOne => parents[0].memorize_one(obs),

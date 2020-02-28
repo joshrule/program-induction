@@ -1,7 +1,7 @@
 use super::{super::as_result, SampleError, TRS};
-use rand::{seq::SliceRandom, Rng};
+use polytype::TypeSchema;
+use rand::Rng;
 use std::collections::HashMap;
-use term_rewriting::RuleContext;
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Sample a rule and add it to the rewrite system.
@@ -16,7 +16,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # use programinduction::trs::{TRS, Lexicon};
     /// # use polytype::Context as TypeContext;
     /// # use rand::{thread_rng};
-    /// # use term_rewriting::{Context, RuleContext, Signature, parse_rule};
+    /// # use term_rewriting::{Signature, parse_rule};
     /// let mut sig = Signature::default();
     ///
     /// let mut ops = vec![];
@@ -39,12 +39,6 @@ impl<'a, 'b> TRS<'a, 'b> {
     ///     ptp![int],
     ///     ptp![int],
     /// ];
-    /// let contexts = vec![
-    ///     RuleContext {
-    ///         lhs: Context::Hole,
-    ///         rhs: vec![Context::Hole],
-    ///     }
-    /// ];
     ///
     /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
     ///
@@ -56,25 +50,21 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
     /// let max_size = 50;
     ///
-    /// if let Ok(new_trss) = trs.sample_rule(&contexts, atom_weights, max_size, &mut rng) {
+    /// if let Ok(new_trss) = trs.sample_rule(atom_weights, max_size, &mut rng) {
     ///     assert_eq!(new_trss[0].len(), 3);
     /// }
     /// ```
     pub fn sample_rule<R: Rng>(
         &self,
-        contexts: &[RuleContext],
         atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-        let context = contexts
-            .choose(rng)
-            .ok_or(SampleError::OptionsExhausted)?
-            .clone();
         let mut trs = self.clone();
+        let schema = TypeSchema::Monotype(trs.lex.fresh_type_variable());
         let rule = trs
             .lex
-            .sample_rule_from_context(context, atom_weights, true, max_size, rng)
+            .sample_rule(&schema, atom_weights, true, max_size, rng)
             .drop()?;
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);

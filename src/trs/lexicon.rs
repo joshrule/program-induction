@@ -96,7 +96,6 @@ impl<'a> Lexicon<'a> {
     /// - `ops` are types for the [`term_rewriting::Operator`]s
     /// - `vars` are types for the [`term_rewriting::Variable`]s,
     /// - `background` are [`term_rewriting::Rule`]s that never change
-    /// - `templates` are [`term_rewriting::RuleContext`]s that can serve as templates during learning
     ///
     /// # Example
     ///
@@ -107,7 +106,7 @@ impl<'a> Lexicon<'a> {
     /// # extern crate programinduction;
     /// # extern crate term_rewriting;
     /// # use programinduction::trs::Lexicon;
-    /// # use term_rewriting::{Signature, parse_rule, parse_rulecontext};
+    /// # use term_rewriting::Signature;
     /// # use polytype::Context as TypeContext;
     /// let mut sig = Signature::default();
     ///
@@ -130,7 +129,6 @@ impl<'a> Lexicon<'a> {
     /// [`term_rewriting::Operator`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Operator.html
     /// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
     /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
-    /// [`term_rewriting::RuleContext`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.RuleContext.html
     pub fn from_signature<'b>(
         signature: Signature,
         ops: Vec<TypeSchema>,
@@ -470,14 +468,17 @@ impl<'a> Lexicon<'a> {
         invent: bool,
         max_size: usize,
         rng: &mut R,
-    ) -> Result<Rule, SampleError> {
+    ) -> ContextPoint<Rule, SampleError> {
         let snapshot = self.snapshot();
         let result = self
             .0
             .to_mut()
             .sample_rule(schema, atom_weights, invent, max_size, rng);
-        self.rollback(snapshot);
-        result
+        ContextPoint {
+            snapshot,
+            result,
+            lex: self,
+        }
     }
     /// Sample a `Rule` conditioned on a `Context` rather than a `TypeSchema`.
     pub fn sample_rule_from_context<R: Rng>(
