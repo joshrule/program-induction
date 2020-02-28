@@ -2,14 +2,14 @@ use gp::{GPParams, GP};
 use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::Rule;
-use trs::{as_result, GPLexicon, GeneticParamsFull, Lexicon, SampleError, TRS};
+use trs::{as_result, GeneticParamsFull, Lexicon, SampleError, TRS, TRSGP};
 use Task;
 
 impl<'a, 'b> TRS<'a, 'b> {
     pub fn nest<R: Rng>(
         trss: &[TRS<'a, 'b>],
         task: &Task<Lexicon<'b>, TRS<'a, 'b>, Vec<Rule>>,
-        gp_lex: &GPLexicon<'a, 'b>,
+        gp_lex: &TRSGP<'a, 'b>,
         rng: &mut R,
         params: &GeneticParamsFull,
         gpparams: &GPParams,
@@ -23,7 +23,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     fn recurse_search<R: Rng>(
         &self,
         task: &Task<Lexicon<'b>, TRS<'a, 'b>, Vec<Rule>>,
-        gp_lex: &GPLexicon<'a, 'b>,
+        gp_lex: &TRSGP<'a, 'b>,
         genetic: &GeneticParamsFull,
         gp: &GPParams,
         rng: &mut R,

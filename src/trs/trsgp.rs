@@ -63,21 +63,21 @@ impl GeneticParamsFull {
     }
 }
 
-pub struct GPLexicon<'a, 'b> {
+pub struct TRSGP<'a, 'b> {
     pub lexicon: Lexicon<'b>,
     pub bg: &'a [Rule],
     pub contexts: Vec<RuleContext>,
     pub(crate) tried: Arc<RwLock<Tried<'a, 'b>>>,
 }
-impl<'a, 'b> GPLexicon<'a, 'b> {
     pub fn new<'c, 'd>(
         lex: &Lexicon<'d>,
         bg: &'c [Rule],
         contexts: Vec<RuleContext>,
     ) -> GPLexicon<'c, 'd> {
+impl<'a, 'b> TRSGP<'a, 'b> {
         let lexicon = lex.clone();
         let tried = Arc::new(RwLock::new(HashMap::new()));
-        GPLexicon {
+        TRSGP {
             lexicon,
             bg,
             tried,
@@ -118,7 +118,7 @@ impl<'a, 'b> GPLexicon<'a, 'b> {
         }
     }
 }
-impl<'a, 'b> GP for GPLexicon<'a, 'b> {
+impl<'a, 'b> GP for TRSGP<'a, 'b> {
     type Representation = Lexicon<'b>;
     type Expression = TRS<'a, 'b>;
     type Params = GeneticParamsFull;

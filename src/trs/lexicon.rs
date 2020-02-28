@@ -17,7 +17,7 @@ use term_rewriting::{
     Atom, Context, MergeStrategy, Operator, PStringDist, Place, Rule, RuleContext, Signature,
     SignatureChange, Term, Variable, TRS as UntypedTRS,
 };
-use trs::GPLexicon;
+use trs::TRSGP;
 
 pub struct ContextPoint<'a, O, E> {
     result: Result<O, E>,
@@ -1659,8 +1659,8 @@ impl Lex {
         }
     }
 }
-impl<'a, 'b, 'c> From<&'c GPLexicon<'a, 'b>> for &'c Lexicon<'b> {
-    fn from(gp_lex: &'c GPLexicon<'a, 'b>) -> &'c Lexicon<'b> {
+impl<'a, 'b, 'c> From<&'c TRSGP<'a, 'b>> for &'c Lexicon<'b> {
+    fn from(gp_lex: &'c TRSGP<'a, 'b>) -> &'c Lexicon<'b> {
         &gp_lex.lexicon
     }
 }

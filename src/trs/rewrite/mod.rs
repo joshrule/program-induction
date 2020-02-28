@@ -27,7 +27,7 @@ use itertools::Itertools;
 use rand::{distributions::Distribution, seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};
 use term_rewriting::{MergeStrategy, Operator, Rule, Term, Variable, TRS as UntypedTRS};
-use trs::{GPLexicon, GeneticParamsFull, Lexicon, Prior, SampleError, TypeError};
+use trs::{GeneticParamsFull, Lexicon, Prior, SampleError, TypeError, TRSGP};
 use Task;
 
 pub type TRSMoves = Vec<WeightedTRSMove>;
@@ -82,7 +82,7 @@ impl TRSMove {
     #[allow(clippy::too_many_arguments)]
     pub fn take<'a, 'b, R: Rng>(
         &self,
-        gp_lex: &GPLexicon<'a, 'b>,
+        gp: &TRSGP<'a, 'b>,
         task: &Task<Lexicon<'b>, TRS<'a, 'b>, Vec<Rule>>,
         obs: &[Rule],
         rng: &mut R,
@@ -92,12 +92,12 @@ impl TRSMove {
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         match *self {
             TRSMove::Memorize => Ok(TRS::memorize(
-                &gp_lex.lexicon,
+                &gp.lexicon,
                 params.deterministic,
-                &gp_lex.bg,
+                &gp.bg,
                 obs,
             )),
-            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(&gp_lex.contexts, aw, mss, rng),
+            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(&gp.contexts, aw, mss, rng),
             TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             TRSMove::LocalDifference => parents[0].local_difference(rng),
             TRSMove::MemorizeOne => parents[0].memorize_one(obs),
@@ -110,13 +110,13 @@ impl TRSMove {
             TRSMove::Compose => parents[0].compose(),
             TRSMove::ComposeDeep => parents[0]
                 .compose()
-                .and_then(|trss| TRS::nest(&trss, task, gp_lex, rng, params, gpparams)),
+                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
             TRSMove::RecurseDeep(n) => parents[0]
                 .recurse(n)
-                .and_then(|trss| TRS::nest(&trss, task, gp_lex, rng, params, gpparams)),
+                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
             TRSMove::GeneralizeDeep => parents[0]
                 .generalize()
-                .and_then(|trss| TRS::nest(&trss, task, gp_lex, rng, params, gpparams)),
+                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
         }
     }
     pub fn get_parents<'a, 'b, 'c, R: Rng>(

@@ -53,7 +53,7 @@ pub use self::parser::{
     parse_term, parse_trs,
 };
 pub use self::rewrite::{TRSMove, TRSMoveName, TRSMoves, TRS};
-pub use self::trsgp::{GPLexicon, GeneticParams, GeneticParamsFull};
+pub use self::trsgp::{GeneticParams, GeneticParamsFull, TRSGP};
 use Task;
 
 use polytype;
