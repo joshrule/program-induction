@@ -22,7 +22,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
 
     /// Compute the log likelihood for a single datum.
-    fn single_log_likelihood(&self, datum: &Rule, likelihood: Likelihood) -> f64 {
+    pub(crate) fn single_log_likelihood(&self, datum: &Rule, likelihood: Likelihood) -> f64 {
         let utrs = self.full_utrs();
         let sig = &self.lex.0.signature;
         if let Some(ref rhs) = datum.rhs() {

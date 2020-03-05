@@ -1,7 +1,7 @@
 use std::f64::NEG_INFINITY;
 use term_rewriting::Rule;
 
-use trs::{rewrite::TRS, ModelParams, Schedule};
+use trs::{rewrite::TRS, ModelParams};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Combine [`log_prior`] and [`log_likelihood`], failing early if the
@@ -15,16 +15,8 @@ impl<'a, 'b> TRS<'a, 'b> {
             NEG_INFINITY
         } else {
             let ll = self.log_likelihood(data, params.likelihood);
-            let temperature = TRS::temperature(t, params.schedule);
+            let temperature = params.schedule.temperature(t);
             (params.p_temp * prior + params.l_temp * ll) / temperature
-        }
-    }
-
-    fn temperature(t: f64, schedule: Schedule) -> f64 {
-        match schedule {
-            Schedule::None => 1.0,
-            Schedule::Constant(c) => c,
-            Schedule::Logarithmic(c) => c / (1.0 + t).ln(),
         }
     }
 }

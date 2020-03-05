@@ -56,6 +56,7 @@ pub use self::rewrite::{TRSMove, TRSMoveName, TRSMoves, TRS};
 pub use self::trsgp::{GeneticParams, GeneticParamsFull, TRSGP};
 use Task;
 
+use itertools::Itertools;
 use polytype;
 use std::fmt;
 use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError};
@@ -156,6 +157,59 @@ pub enum Schedule {
     // Use a logarithmic cooling schedule.
     #[serde(alias = "logarithmic")]
     Logarithmic(f64),
+}
+
+impl Schedule {
+    pub fn temperature(&self, t: f64) -> f64 {
+        match *self {
+            Schedule::None => 1.0,
+            Schedule::Constant(c) => c,
+            Schedule::Logarithmic(c) => c / (1.0 + t).ln(),
+        }
+    }
+}
+
+pub struct Hypothesis<'a, 'b> {
+    pub trs: TRS<'a, 'b>,
+    pub lprior: f64,
+    pub llikelihood: f64,
+    pub lposterior: f64,
+    temperature: f64,
+    params: ModelParams,
+}
+
+impl<'a, 'b> Hypothesis<'a, 'b> {
+    pub fn new(trs: TRS<'a, 'b>, data: &[Rule], t: f64, params: ModelParams) -> Hypothesis<'a, 'b> {
+        let lprior = trs.log_prior(params.prior);
+        let llikelihood = trs.log_likelihood(data, params.likelihood);
+        let temperature = params.schedule.temperature(t);
+        let lposterior = (params.p_temp * lprior + params.l_temp * llikelihood) / temperature;
+        Hypothesis {
+            trs,
+            llikelihood,
+            lprior,
+            lposterior,
+            temperature,
+            params,
+        }
+    }
+    pub fn change_data(&mut self, data: &[Rule]) {
+        self.llikelihood = self.trs.log_likelihood(data, self.params.likelihood);
+        self.lposterior = (self.params.p_temp * self.lprior
+            + self.params.l_temp * self.llikelihood)
+            / self.temperature;
+        println!(
+            "    new posterior: {:.4} - {}",
+            self.lposterior,
+            self.trs.to_string().lines().join(" ")
+        );
+    }
+    pub fn change_time(&mut self, t: f64) {
+        self.temperature = self.params.schedule.temperature(t);
+        self.lposterior = (self.params.p_temp * self.lprior
+            + self.params.l_temp * self.llikelihood)
+            / self.temperature;
+    }
 }
 
 /// Possible priors for a TRS-based probabilistic model.
