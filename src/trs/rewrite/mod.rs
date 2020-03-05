@@ -22,131 +22,14 @@ mod sample_rule;
 mod swap_lhs_and_rhs;
 mod variablize;
 
-use gp::{GPParams, Tournament};
 use itertools::Itertools;
-use rand::{distributions::Distribution, seq::IteratorRandom, Rng};
+use rand::{seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};
 use term_rewriting::{MergeStrategy, Operator, Rule, Term, Variable, TRS as UntypedTRS};
-use trs::{GeneticParamsFull, Lexicon, Prior, SampleError, TypeError, TRSGP};
-use Task;
+use trs::{Lexicon, Prior, SampleError, TypeError};
 
-pub type TRSMoves = Vec<WeightedTRSMove>;
 pub(crate) type Rules = Vec<Rule>;
 pub(crate) type FactoredSolution<'a> = (Lexicon<'a>, Rules, Rules, Rules, Rules);
-// type Solution<'a> = (Vec<&'a Rule>, Rules);
-
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub struct WeightedTRSMove {
-    pub weight: usize,
-    pub mv: TRSMove,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TRSMoveName {
-    Memorize,
-    SampleRule,
-    RegenerateRule,
-    LocalDifference,
-    MemorizeOne,
-    DeleteRule,
-    Variablize,
-    Generalize,
-    Recurse,
-    DeleteRules,
-    Combine,
-    Compose,
-    ComposeDeep,
-    RecurseDeep,
-    GeneralizeDeep,
-}
-
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub enum TRSMove {
-    Memorize(bool),
-    SampleRule((f64, f64, f64, f64), usize),
-    RegenerateRule((f64, f64, f64, f64), usize),
-    LocalDifference,
-    MemorizeOne,
-    DeleteRule,
-    Variablize,
-    Generalize,
-    Recurse(usize),
-    DeleteRules(usize),
-    Combine(usize),
-    Compose,
-    ComposeDeep,
-    RecurseDeep(usize),
-    GeneralizeDeep,
-}
-impl TRSMove {
-    #[allow(clippy::too_many_arguments)]
-    pub fn take<'a, 'b, R: Rng>(
-        &self,
-        gp: &TRSGP<'a, 'b>,
-        task: &Task<Lexicon<'b>, TRS<'a, 'b>, Vec<Rule>>,
-        obs: &[Rule],
-        rng: &mut R,
-        parents: &[&TRS<'a, 'b>],
-        params: &GeneticParamsFull,
-        gpparams: &GPParams,
-    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-        match *self {
-            TRSMove::Memorize(deterministic) => {
-                Ok(TRS::memorize(&gp.lexicon, deterministic, &gp.bg, obs))
-            }
-            TRSMove::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
-            TRSMove::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
-            TRSMove::LocalDifference => parents[0].local_difference(rng),
-            TRSMove::MemorizeOne => parents[0].memorize_one(obs),
-            TRSMove::DeleteRule => parents[0].delete_rule(),
-            TRSMove::Variablize => parents[0].variablize(),
-            TRSMove::Generalize => parents[0].generalize(),
-            TRSMove::Recurse(n) => parents[0].recurse(n),
-            TRSMove::DeleteRules(t) => parents[0].delete_rules(rng, t),
-            TRSMove::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
-            TRSMove::Compose => parents[0].compose(),
-            TRSMove::ComposeDeep => parents[0]
-                .compose()
-                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
-            TRSMove::RecurseDeep(n) => parents[0]
-                .recurse(n)
-                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
-            TRSMove::GeneralizeDeep => parents[0]
-                .generalize()
-                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
-        }
-    }
-    pub fn get_parents<'a, 'b, 'c, R: Rng>(
-        &self,
-        t: &'c Tournament<TRS<'a, 'b>>,
-        rng: &mut R,
-    ) -> Vec<&'c TRS<'a, 'b>> {
-        match *self {
-            TRSMove::Memorize(_) => vec![],
-            TRSMove::Combine(_) => vec![t.sample(rng), t.sample(rng)],
-            _ => vec![t.sample(rng)],
-        }
-    }
-    pub(crate) fn name(&self) -> TRSMoveName {
-        match *self {
-            TRSMove::Memorize(_) => TRSMoveName::Memorize,
-            TRSMove::SampleRule(..) => TRSMoveName::SampleRule,
-            TRSMove::RegenerateRule(..) => TRSMoveName::RegenerateRule,
-            TRSMove::LocalDifference => TRSMoveName::LocalDifference,
-            TRSMove::MemorizeOne => TRSMoveName::MemorizeOne,
-            TRSMove::DeleteRule => TRSMoveName::DeleteRule,
-            TRSMove::Variablize => TRSMoveName::Variablize,
-            TRSMove::Generalize => TRSMoveName::Generalize,
-            TRSMove::Recurse(..) => TRSMoveName::Recurse,
-            TRSMove::DeleteRules(..) => TRSMoveName::DeleteRules,
-            TRSMove::Combine(..) => TRSMoveName::Combine,
-            TRSMove::Compose => TRSMoveName::Compose,
-            TRSMove::ComposeDeep => TRSMoveName::ComposeDeep,
-            TRSMove::RecurseDeep(..) => TRSMoveName::RecurseDeep,
-            TRSMove::GeneralizeDeep => TRSMoveName::GeneralizeDeep,
-        }
-    }
-}
 
 /// A typed term rewriting system.
 #[derive(Debug, PartialEq, Clone)]

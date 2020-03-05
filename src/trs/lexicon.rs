@@ -17,7 +17,7 @@ use term_rewriting::{
     Atom, Context, MergeStrategy, Operator, PStringDist, Place, Rule, RuleContext, Signature,
     SignatureChange, Term, Variable, TRS as UntypedTRS,
 };
-use trs::TRSGP;
+use trs::gp::TRSGP;
 
 pub struct ContextPoint<'a, O, E> {
     result: Result<O, E>,

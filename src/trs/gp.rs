@@ -1,4 +1,3 @@
-use super::{TRSMoveName, TRSMoves, TRS};
 use gp::{GPParams, Tournament, GP};
 use itertools::Itertools;
 use polytype::TypeSchema;
@@ -11,11 +10,12 @@ use std::{
     sync::{Arc, RwLock},
 };
 use term_rewriting::Rule;
-use trs::{Lexicon, ModelParams, TRSMove};
+use trs::{Lexicon, ModelParams, SampleError, TRS};
 use Task;
 
+pub type Moves = Vec<WeightedMove>;
 type Parents<'a, 'b> = Vec<TRS<'a, 'b>>;
-type Tried<'a, 'b> = HashMap<TRSMoveName, Vec<Parents<'a, 'b>>>;
+type Tried<'a, 'b> = HashMap<MoveName, Vec<Parents<'a, 'b>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Parameters for [`Lexicon`] genetic programming ([`GP`]).
@@ -24,7 +24,7 @@ type Tried<'a, 'b> = HashMap<TRSMoveName, Vec<Parents<'a, 'b>>>;
 /// [`GP`]: ../trait.GP.html
 pub struct GeneticParams {
     // A list of the moves available during search.
-    pub moves: TRSMoves,
+    pub moves: Moves,
     /// The maximum number of nodes a sampled `Term` can have without failing.
     pub max_sample_size: usize,
     /// The weight to assign variables, constants, and non-constant operators, respectively.
@@ -38,7 +38,7 @@ pub struct GeneticParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneticParamsFull {
     // A list of the moves available during search.
-    pub moves: TRSMoves,
+    pub moves: Moves,
     /// The maximum number of nodes a sampled `Term` can have without failing.
     pub max_sample_size: usize,
     /// The weight to assign variables, constants, and non-constant operators, respectively.
@@ -50,6 +50,57 @@ pub struct GeneticParamsFull {
     /// A set of `ModelParams` to support search recursion.
     pub model: ModelParams,
 }
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct WeightedMove {
+    pub weight: usize,
+    pub mv: Move,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MoveName {
+    Memorize,
+    SampleRule,
+    RegenerateRule,
+    LocalDifference,
+    MemorizeOne,
+    DeleteRule,
+    Variablize,
+    Generalize,
+    Recurse,
+    DeleteRules,
+    Combine,
+    Compose,
+    ComposeDeep,
+    RecurseDeep,
+    GeneralizeDeep,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Move {
+    Memorize(bool),
+    SampleRule((f64, f64, f64, f64), usize),
+    RegenerateRule((f64, f64, f64, f64), usize),
+    LocalDifference,
+    MemorizeOne,
+    DeleteRule,
+    Variablize,
+    Generalize,
+    Recurse(usize),
+    DeleteRules(usize),
+    Combine(usize),
+    Compose,
+    ComposeDeep,
+    RecurseDeep(usize),
+    GeneralizeDeep,
+}
+
+pub struct TRSGP<'a, 'b> {
+    pub lexicon: Lexicon<'b>,
+    pub bg: &'a [Rule],
+    pub(crate) tried: Arc<RwLock<Tried<'a, 'b>>>,
+}
+
 impl GeneticParamsFull {
     pub fn new(g: &GeneticParams, m: ModelParams) -> Self {
         GeneticParamsFull {
@@ -63,11 +114,76 @@ impl GeneticParamsFull {
     }
 }
 
-pub struct TRSGP<'a, 'b> {
-    pub lexicon: Lexicon<'b>,
-    pub bg: &'a [Rule],
-    pub(crate) tried: Arc<RwLock<Tried<'a, 'b>>>,
+impl Move {
+    #[allow(clippy::too_many_arguments)]
+    pub fn take<'a, 'b, R: Rng>(
+        &self,
+        gp: &TRSGP<'a, 'b>,
+        task: &Task<Lexicon<'b>, TRS<'a, 'b>, Vec<Rule>>,
+        obs: &[Rule],
+        rng: &mut R,
+        parents: &[&TRS<'a, 'b>],
+        params: &GeneticParamsFull,
+        gpparams: &GPParams,
+    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+        match *self {
+            Move::Memorize(deterministic) => {
+                Ok(TRS::memorize(&gp.lexicon, deterministic, &gp.bg, obs))
+            }
+            Move::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
+            Move::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
+            Move::LocalDifference => parents[0].local_difference(rng),
+            Move::MemorizeOne => parents[0].memorize_one(obs),
+            Move::DeleteRule => parents[0].delete_rule(),
+            Move::Variablize => parents[0].variablize(),
+            Move::Generalize => parents[0].generalize(),
+            Move::Recurse(n) => parents[0].recurse(n),
+            Move::DeleteRules(t) => parents[0].delete_rules(rng, t),
+            Move::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
+            Move::Compose => parents[0].compose(),
+            Move::ComposeDeep => parents[0]
+                .compose()
+                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
+            Move::RecurseDeep(n) => parents[0]
+                .recurse(n)
+                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
+            Move::GeneralizeDeep => parents[0]
+                .generalize()
+                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
+        }
+    }
+    pub fn get_parents<'a, 'b, 'c, R: Rng>(
+        &self,
+        t: &'c Tournament<TRS<'a, 'b>>,
+        rng: &mut R,
+    ) -> Vec<&'c TRS<'a, 'b>> {
+        match *self {
+            Move::Memorize(_) => vec![],
+            Move::Combine(_) => vec![t.sample(rng), t.sample(rng)],
+            _ => vec![t.sample(rng)],
+        }
+    }
+    pub(crate) fn name(&self) -> MoveName {
+        match *self {
+            Move::Memorize(_) => MoveName::Memorize,
+            Move::SampleRule(..) => MoveName::SampleRule,
+            Move::RegenerateRule(..) => MoveName::RegenerateRule,
+            Move::LocalDifference => MoveName::LocalDifference,
+            Move::MemorizeOne => MoveName::MemorizeOne,
+            Move::DeleteRule => MoveName::DeleteRule,
+            Move::Variablize => MoveName::Variablize,
+            Move::Generalize => MoveName::Generalize,
+            Move::Recurse(..) => MoveName::Recurse,
+            Move::DeleteRules(..) => MoveName::DeleteRules,
+            Move::Combine(..) => MoveName::Combine,
+            Move::Compose => MoveName::Compose,
+            Move::ComposeDeep => MoveName::ComposeDeep,
+            Move::RecurseDeep(..) => MoveName::RecurseDeep,
+            Move::GeneralizeDeep => MoveName::GeneralizeDeep,
+        }
+    }
 }
+
 impl<'a, 'b> TRSGP<'a, 'b> {
     pub fn new<'c, 'd>(lex: &Lexicon<'d>, bg: &'c [Rule]) -> TRSGP<'c, 'd> {
         let lexicon = lex.clone();
@@ -78,36 +194,37 @@ impl<'a, 'b> TRSGP<'a, 'b> {
         let mut tried = self.tried.write().expect("poisoned");
         *tried = HashMap::new();
     }
-    pub fn add(&self, name: TRSMoveName, parents: Parents<'a, 'b>) {
+    pub fn add(&self, name: MoveName, parents: Parents<'a, 'b>) {
         let mut tried = self.tried.write().expect("poisoned");
         let entry = tried.entry(name).or_insert_with(|| vec![]);
         entry.push(parents);
     }
-    pub fn check(&self, name: TRSMoveName, parents: &[&TRS]) -> bool {
+    pub fn check(&self, name: MoveName, parents: &[&TRS]) -> bool {
         let mut tried = self.tried.write().expect("poisoned");
         let past_parents = tried.entry(name).or_insert_with(|| vec![]);
         self.novelty_possible(name, parents, past_parents)
     }
-    fn novelty_possible(&self, name: TRSMoveName, parents: &[&TRS], past: &[Vec<TRS>]) -> bool {
+    fn novelty_possible(&self, name: MoveName, parents: &[&TRS], past: &[Vec<TRS>]) -> bool {
         let check = || {
             !past
                 .iter()
                 .any(|p| parents.iter().zip(p).all(|(x, y)| *x != y))
         };
         match name {
-            TRSMoveName::Memorize => past.is_empty(),
-            TRSMoveName::Compose
-            | TRSMoveName::ComposeDeep
-            | TRSMoveName::RecurseDeep
-            | TRSMoveName::GeneralizeDeep
-            | TRSMoveName::Recurse
-            | TRSMoveName::SampleRule
-            | TRSMoveName::RegenerateRule => true,
-            TRSMoveName::LocalDifference => parents[0].len() > 1 || check(),
+            MoveName::Memorize => past.is_empty(),
+            MoveName::Compose
+            | MoveName::ComposeDeep
+            | MoveName::RecurseDeep
+            | MoveName::GeneralizeDeep
+            | MoveName::Recurse
+            | MoveName::SampleRule
+            | MoveName::RegenerateRule => true,
+            MoveName::LocalDifference => parents[0].len() > 1 || check(),
             _ => check(),
         }
     }
 }
+
 impl<'a, 'b> GP for TRSGP<'a, 'b> {
     type Representation = Lexicon<'b>;
     type Expression = TRS<'a, 'b>;
@@ -154,7 +271,7 @@ impl<'a, 'b> GP for TRSGP<'a, 'b> {
             .moves
             .iter()
             .map(|mv| match mv.mv {
-                TRSMove::ComposeDeep => mv.weight * ((params.depth == 2) as usize),
+                Move::ComposeDeep => mv.weight * ((params.depth == 2) as usize),
                 _ => mv.weight,
             })
             .collect_vec();

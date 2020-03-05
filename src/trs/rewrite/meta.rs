@@ -2,7 +2,11 @@ use gp::{GPParams, GP};
 use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::Rule;
-use trs::{as_result, GeneticParamsFull, Lexicon, SampleError, TRS, TRSGP};
+use trs::{
+    as_result,
+    gp::{GeneticParamsFull, TRSGP},
+    Lexicon, SampleError, TRS,
+};
 use Task;
 
 impl<'a, 'b> TRS<'a, 'b> {

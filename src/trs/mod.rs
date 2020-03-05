@@ -43,17 +43,16 @@
 //! let trs = TRS::new(&lexicon, true, &[], rules);
 //! ```
 
+pub mod gp;
 mod lexicon;
 pub mod parser;
 mod rewrite;
-mod trsgp;
 pub use self::lexicon::Lexicon;
 pub use self::parser::{
     parse_context, parse_lexicon, parse_rule, parse_rulecontext, parse_rulecontexts, parse_rules,
     parse_term, parse_trs,
 };
-pub use self::rewrite::{TRSMove, TRSMoveName, TRSMoves, TRS};
-pub use self::trsgp::{GeneticParams, GeneticParamsFull, TRSGP};
+pub use self::rewrite::TRS;
 use Task;
 
 use itertools::Itertools;
