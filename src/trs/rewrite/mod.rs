@@ -32,7 +32,7 @@ pub(crate) type Rules = Vec<Rule>;
 pub(crate) type FactoredSolution<'a> = (Lexicon<'a>, Rules, Rules, Rules, Rules);
 
 /// A typed term rewriting system.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq)]
 pub struct TRS<'a, 'b> {
     pub(crate) lex: Lexicon<'b>,
     // INVARIANT: utrs never contains background information

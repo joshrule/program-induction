@@ -45,6 +45,7 @@
 
 pub mod gp;
 mod lexicon;
+pub mod mcts;
 pub mod parser;
 mod rewrite;
 pub use self::lexicon::Lexicon;
