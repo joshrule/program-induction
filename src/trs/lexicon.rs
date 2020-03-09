@@ -254,10 +254,10 @@ impl<'a> Lexicon<'a> {
         self.0.unify(t1, t2).map_err(|_| ())
     }
     pub(crate) fn rulecontext_fillers(
-        &mut self,
+        &self,
         context: &RuleContext,
         place: &[usize],
-    ) -> Vec<Atom> {
+    ) -> Vec<Option<Atom>> {
         if let Some(&Context::Hole) = context.at(place) {
             let mut types = HashMap::new();
             let snapshot = self.snapshot();
@@ -265,17 +265,16 @@ impl<'a> Lexicon<'a> {
             let lex_vars: Vec<TypeVar> = self.0.free_vars_applied();
             let schema = types[place].generalize(&lex_vars);
             let invent = place[0] == 0;
-            let complex = true;
             let mut vars = context.lhs.variables();
             let options = self
                 .0
-                .to_mut()
-                .prepare_options(&schema, invent, complex, &mut vars)
+                .prepare_options_non_mut(&schema, invent, &mut vars)
                 .into_iter()
                 .filter(|atom| {
                     if place[0] == 0 {
-                        if let Atom::Variable(_) = atom {
-                            return false;
+                        match atom {
+                            None | Some(Atom::Variable(_)) => return false,
+                            _ => (),
                         }
                     }
                     true
@@ -1423,6 +1422,30 @@ impl Lex {
                     .collect_vec()
             })
             .collect_vec()
+    }
+    fn prepare_options_non_mut(
+        &self,
+        schema: &TypeSchema,
+        invent: bool,
+        vars: &mut Vec<Variable>,
+    ) -> Vec<Option<Atom>> {
+        let tp = schema.instantiate(&mut self.ctx.write().expect("poisoned context"));
+        let ops = self.signature.operators();
+        let mut options: Vec<_> = ops
+            .into_iter()
+            .filter_map(|o| {
+                let atom = Atom::Operator(o);
+                self.fit_atom(&atom, &tp, true).ok().map(|_| Some(atom))
+            })
+            .collect();
+        options.extend(vars.to_vec().into_iter().filter_map(|v| {
+            let atom = Atom::Variable(v);
+            self.fit_atom(&atom, &tp, true).ok().map(|_| Some(atom))
+        }));
+        if invent {
+            options.push(None);
+        }
+        options
     }
     fn prepare_options(
         &mut self,

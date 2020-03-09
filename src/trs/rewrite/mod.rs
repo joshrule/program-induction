@@ -287,7 +287,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             .map(|_| ())
             .map_err(SampleError::from)
     }
-    fn append_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
+    pub(crate) fn append_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
         self.utrs
             .inserts_idx(self.num_learned_rules(), rules)
             .map(|_| ())

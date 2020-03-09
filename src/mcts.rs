@@ -31,6 +31,9 @@ pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
 pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized + Sync {
     type StateEvaluation: Clone + Sync + Send + Into<f64>;
     fn evaluate<R: Rng>(&self, &M::State, &mut M, &mut R) -> Self::StateEvaluation;
+    fn zero(&self) -> f64 {
+        0.0
+    }
 }
 
 pub trait MCTS: Sized + Sync {
@@ -66,6 +69,7 @@ pub struct Node<M: MCTS> {
     incoming: Vec<MoveHandle>,
     outgoing: Vec<MoveHandle>,
     evaluation: StateEvaluation<M>,
+    maximum_valid_depth: usize,
     pub q: f64,
     pub n: f64,
 }
@@ -75,7 +79,6 @@ pub struct MoveInfo<M: MCTS> {
     parent: NodeHandle,
     pub child: Option<NodeHandle>,
     pub mov: Move<M>,
-    maximum_valid_depth: usize,
 }
 
 impl<M: MCTS> Node<M> {
@@ -83,6 +86,7 @@ impl<M: MCTS> Node<M> {
         println!("incoming: {:?}", self.incoming);
         println!("outgoing: {:?}", self.outgoing);
         println!("q/n: {:.4}/{:.4}", self.q, self.n);
+        println!("maximum_valid_depth: {}", self.maximum_valid_depth);
     }
 }
 
@@ -91,7 +95,6 @@ impl<M: MCTS> MoveInfo<M> {
         println!("handle: {}", self.handle);
         println!("parent: {}", self.parent);
         println!("child: {:?}", self.child);
-        println!("maximum_valid_depth: {}", self.maximum_valid_depth);
     }
 }
 
@@ -146,7 +149,6 @@ impl<M: MCTS> SearchTree<M> {
                 parent: 0,
                 mov,
                 child: None,
-                maximum_valid_depth: mcts.max_depth(),
             })
             .collect();
         let root_node = Node {
@@ -156,6 +158,7 @@ impl<M: MCTS> SearchTree<M> {
             q: evaluation.clone().into(),
             n: 1.0,
             evaluation,
+            maximum_valid_depth: mcts.max_depth(),
         };
         SearchTree {
             mcts,
@@ -258,7 +261,6 @@ impl<M: MCTS> SearchTree<M> {
                     mov,
                     parent: nh,
                     child: None,
-                    maximum_valid_depth: self.mcts.max_depth(),
                 };
                 self.moves.push(new_move);
                 self.nodes[nh].outgoing.push(handle);
@@ -267,15 +269,14 @@ impl<M: MCTS> SearchTree<M> {
     }
     /// Take a single search step.
     pub fn step<R: Rng>(&mut self, rng: &mut R) -> Option<usize> {
-        self.expand(rng).map(|mh| {
-            // INVARIANT: Moves returned by expand always have children.
-            self.backpropagate(self.moves[mh].child.unwrap());
-            self.update_maximum_valid_depths(mh);
+        self.expand(rng).map(|nh| {
+            self.backpropagate(nh);
+            self.update_maximum_valid_depths(nh);
             1
         })
     }
     // Expand the search tree by taking a single move.
-    fn expand<R: Rng>(&mut self, rng: &mut R) -> Option<MoveHandle> {
+    fn expand<R: Rng>(&mut self, rng: &mut R) -> Option<NodeHandle> {
         if self.nodes.len() >= self.mcts.max_states() {
             println!("STOP: {} >= {}", self.nodes.len(), self.mcts.max_states());
             return None;
@@ -287,23 +288,29 @@ impl<M: MCTS> SearchTree<M> {
             let moves = self.nodes[nh].outgoing.iter().map(|n| &self.moves[*n]);
             println!("#   got some moves");
             // Looks weird, but helps prevent a borrowing issue;
-            let mh = self.move_eval.choose(moves, nh, &self)?.handle;
-            let mov = &self.moves[mh];
-            match mov.child {
-                // Descend known moves.
-                Some(child_nh) => {
-                    nh = child_nh;
-                    depth += 1;
-                    println!("#   Child is {}. Descending to depth {}.", child_nh, depth);
-                }
-                // Take new moves.
-                None => {
-                    println!("#   No child. Taking the move at depth {}.", depth);
-                    let child_state = self.nodes[nh]
-                        .state
-                        .make_move(&mov.mov, &mut self.mcts, rng);
-                    println!("#   Updating tree.");
-                    return self.update_tree(child_state, mh, rng);
+            match self.move_eval.choose(moves, nh, &self) {
+                None => return Some(nh),
+                Some(mov) => {
+                    let mh = mov.handle;
+                    let mov = &self.moves[mh];
+                    match mov.child {
+                        // Descend known moves.
+                        Some(child_nh) => {
+                            nh = child_nh;
+                            depth += 1;
+                            println!("#   Child is {}. Descending to depth {}.", child_nh, depth);
+                        }
+                        // Take new moves.
+                        None => {
+                            println!("#   No child. Taking the move at depth {}.", depth);
+                            let child_state =
+                                self.nodes[nh]
+                                    .state
+                                    .make_move(&mov.mov, &mut self.mcts, rng);
+                            println!("#   Updating tree.");
+                            return self.update_tree(child_state, mh, rng);
+                        }
+                    }
                 }
             }
         }
@@ -314,7 +321,7 @@ impl<M: MCTS> SearchTree<M> {
         child_state: <M>::State,
         mov: MoveHandle,
         rng: &mut R,
-    ) -> Option<MoveHandle> {
+    ) -> Option<NodeHandle> {
         // Identify the parent handle and child handle.
         let ph = self.moves[mov].parent;
         let ch = self.find_or_make_node(child_state, rng);
@@ -340,7 +347,7 @@ impl<M: MCTS> SearchTree<M> {
             if !self.nodes[ch].incoming.contains(&mov) {
                 self.nodes[ch].incoming.push(mov);
             }
-            Some(mov)
+            Some(ch)
         }
     }
     fn find_or_make_node<R: Rng>(&mut self, s: <M>::State, rng: &mut R) -> NodeHandle {
@@ -352,7 +359,6 @@ impl<M: MCTS> SearchTree<M> {
             None => {
                 let node_handle = self.nodes.len();
                 let evaluation = self.state_eval.evaluate(&s, &mut self.mcts, rng);
-                let q: f64 = evaluation.clone().into();
                 let incoming = vec![];
                 let mut outgoing = vec![];
                 for mov in s.available_moves(&mut self.mcts) {
@@ -362,15 +368,15 @@ impl<M: MCTS> SearchTree<M> {
                         mov,
                         parent: node_handle,
                         child: None,
-                        maximum_valid_depth: self.mcts.max_depth(),
                     };
                     self.moves.push(new_move);
                     outgoing.push(handle);
                 }
                 let node = Node {
                     state: s,
-                    n: 1.0,
-                    q,
+                    n: 0.0, // fixed during backprop
+                    maximum_valid_depth: self.mcts.max_depth(),
+                    q: self.state_eval.zero(),
                     evaluation,
                     incoming,
                     outgoing,
@@ -387,9 +393,11 @@ impl<M: MCTS> SearchTree<M> {
     }
     // Bubble search statistics back to the root.
     fn backpropagate(&mut self, new_node: NodeHandle) {
+        println!("#   backpropagating from {}.", new_node);
         let evaluation = self.nodes[new_node].evaluation.clone().into();
         let mut stack = vec![new_node];
         while let Some(nh) = stack.pop() {
+            println!("#     dealing with node {}.", nh);
             self.nodes[nh].q = self.mcts.combine_qs(self.nodes[nh].q, evaluation);
             self.nodes[nh].n += 1.0;
             for &mh in &self.nodes[nh].incoming {
@@ -398,31 +406,29 @@ impl<M: MCTS> SearchTree<M> {
         }
     }
     // Invalidate fully explored nodes, i.e. moves whose child has no valid moves.
-    fn update_maximum_valid_depths(&mut self, final_move: MoveHandle) {
-        let mut stack = vec![final_move];
-        while let Some(mov) = stack.pop() {
-            let current_depth = self.moves[mov].maximum_valid_depth;
-            let new_depth = match self.moves[mov].child {
-                Some(node) => {
-                    // If m has children, it's maximum valid depth is max(max_valid_depth(child) for child in children) - 1.
-                    let max_max = self.nodes[node]
-                        .outgoing
-                        .iter()
-                        .map(|m| self.moves[*m].maximum_valid_depth)
-                        .max();
-                    match max_max {
-                        Some(max) => max.saturating_sub(1),
-                        None => 0,
-                    }
-                }
-                None => self.mcts.max_depth(),
-            };
+    fn update_maximum_valid_depths(&mut self, new_node: NodeHandle) {
+        let mut stack = vec![new_node];
+        while let Some(nh) = stack.pop() {
+            let current_depth = self.nodes[nh].maximum_valid_depth;
+            // If m has children, it's maximum valid depth is max(max_valid_depth(child) for child in children) - 1.
+            let new_depth = self.nodes[nh]
+                .outgoing
+                .iter()
+                .map(|m| {
+                    self.moves[*m]
+                        .child
+                        .map(|ch| self.nodes[ch].maximum_valid_depth)
+                        .unwrap_or_else(|| self.mcts.max_depth())
+                })
+                .max()
+                .map(|max_max| max_max.saturating_sub(1))
+                .unwrap_or_else(|| self.mcts.max_depth());
             if new_depth != current_depth {
                 // Update the maximum valid depth.
-                self.moves[mov].maximum_valid_depth = new_depth;
+                self.nodes[nh].maximum_valid_depth = new_depth;
                 // Add moves leading to the parent to the stack.
-                for affected_move in &self.nodes[self.moves[mov].parent].incoming {
-                    stack.push(*affected_move);
+                for &mh in &self.nodes[nh].incoming {
+                    stack.push(self.moves[mh].parent);
                 }
             }
         }
