@@ -4,40 +4,64 @@
 //   - Prevent moves from being added if infinitely bad.
 // - Update posterior computation to be more efficient. Let hypothesis store
 //   likelihoods so just incrementally update.
-// - New moves become available when data is added:
+// - add revision moves
+// - add_moves_for_data
 //   - root can memorize again
 //   - single-parent nodes can memorizeOne.
 use itertools::Itertools;
 use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluator, MCTS};
-use rand::Rng;
-use term_rewriting::Rule;
+use polytype::TypeSchema;
+use rand::{
+    distributions::{Distribution, WeightedIndex},
+    Rng,
+};
+use term_rewriting::{Atom, Context, Rule, RuleContext};
 use trs::{Hypothesis, Lexicon, ModelParams, SampleError, TRS};
 use utils::logsumexp;
 
-type ObjectHandle = usize;
+type NonterminalHandle = usize;
+type TerminalHandle = usize;
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct MoveWrapper {
-    pub count: usize,
-    pub mov: Move,
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub enum StateHandle {
+    Nonterminal(NonterminalHandle),
+    Terminal(TerminalHandle),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MoveName {
-    Memorize,
-    SampleRule,
-    RegenerateRule,
-    LocalDifference,
-    MemorizeOne,
-    DeleteRule,
-    Variablize,
-    Generalize,
-    Recurse,
-    DeleteRules,
-    // NOTE: removed Combine as its not that useful and our only 2-parent move.
-    // Combine,
-    Compose,
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct MCTSInternalState<'b> {
+    lex: Lexicon<'b>,
+    rules: Vec<Rule>,
+    context: Option<RuleContext>,
+    data: bool,
+    revisions: usize,
+    playout: Option<TerminalHandle>,
 }
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct MCTSState {
+    handle: StateHandle,
+}
+
+pub struct TRSMCTS<'a, 'b> {
+    pub lexicon: Lexicon<'b>,
+    pub bg: &'a [Rule],
+    pub deterministic: bool,
+    pub data: &'a [Rule],
+    pub nonterminals: Vec<MCTSInternalState<'b>>,
+    pub terminals: Vec<Hypothesis<'a, 'b>>,
+    pub max_revisions: usize,
+    pub params: ModelParams,
+    pub max_depth: usize,
+    pub max_states: usize,
+    pub atom_weights: (f64, f64, f64, f64),
+    pub invent: bool,
+    pub max_size: usize,
+}
+
+pub struct MCTSMoveEvaluator;
+
+pub struct MCTSStateEvaluator;
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum Move {
@@ -51,143 +75,221 @@ pub enum Move {
     Generalize,
     Recurse(usize),
     DeleteRules(usize),
-    // NOTE: removed Combine as its not that useful and our only 2-parent move.
-    // Combine(usize),
     Compose,
 }
 
-pub struct TRSMCTS<'a, 'b> {
-    pub lexicon: Lexicon<'b>,
-    pub bg: &'a [Rule],
-    pub obs: &'a [Rule],
-    pub trss: Vec<Hypothesis<'a, 'b>>,
-    pub max_depth: usize,
-    pub max_states: usize,
-    pub params: ModelParams,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MCTSMove {
+    Data { n: usize },
+    Empty,
+    SampleAtom { atom: Atom },
+    // TODO: all the revision moves
 }
 
-impl<'a, 'b> TRSMCTS<'a, 'b> {
-    pub fn new(
-        lexicon: Lexicon<'b>,
-        bg: &'a [Rule],
-        obs: &'a [Rule],
-        params: ModelParams,
-        max_depth: usize,
-        max_states: usize,
-    ) -> TRSMCTS<'a, 'b> {
-        TRSMCTS {
-            lexicon,
-            bg,
-            obs,
-            max_depth,
-            max_states,
-            params,
-            trss: vec![],
-        }
-    }
-}
-
-pub struct MCTSMoveEvaluator;
-
-pub struct MCTSStateEvaluator;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MCTSState {
-    parents: Vec<ObjectHandle>,
-    moves: Vec<MoveWrapper>,
-}
-
-impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
-    type MoveEvaluation = f64;
-    /// This implementation of `choose` is a modified UCT.
-    fn choose<'c, MoveIter>(
-        &self,
-        moves: MoveIter,
-        nh: NodeHandle,
-        tree: &SearchTree<TRSMCTS<'a, 'b>>,
-    ) -> Option<&'c MoveInfo<TRSMCTS<'a, 'b>>>
-    where
-        MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'a, 'b>>>,
-    {
-        let moves = moves.collect::<Vec<_>>();
-        let node = tree.node(nh);
-        println!("      we have {} options", moves.len());
-        moves
-            .iter()
-            .map(|m| {
-                println!("      {:?}", m.mov);
-                let score = match m.child {
-                    Some(ch) => {
-                        // Child's Q/N
-                        let child = tree.node(ch);
-                        println!(
-                            "        there's a child, so it's {}'s q/n: {:.3} / {:.3} + sqrt(ln({:.3}) / {:.3})",
-                            ch, child.q.exp(), child.n, node.n, child.n
-                        );
-                        child.q.exp() / child.n + (node.n.ln() / child.n).sqrt()
-                    }
-                    None if m.mov.count == 0 => {
-                        // subtree's Q/N.
-                        println!(
-                            "        no child & count = 0, so it's {}'s q/n: {:.3} / {:.3} + sqrt(ln({:.3}) / 1.0)",
-                            nh, node.q.exp(), node.n, node.n
-                        );
-                        // m.mov.count + 1 == 1
-                        node.q.exp() / node.n + (node.n.ln() / 1.0).sqrt()
-                    }
-                    None => {
-                        // subtree's Q/N
-                        let mean = node.q.exp() / node.n;
-                        // mean Q/N produced by previous uses of move.
-                        let mut deviation = 0.0;
-                        for c in 0..m.mov.count {
-                            let mut qs = vec![];
-                            let mut n = 0.0;
-                            for candidate in &moves {
-                                if candidate.mov.mov == m.mov.mov && candidate.mov.count == c {
-                                    let c_node = tree.node(candidate.child.unwrap());
-                                    qs.push(c_node.q);
-                                    n += c_node.n;
-                                }
-                            }
-                            // Don't update if the move failed.
-                            if n > 0.0 {
-                                deviation += logsumexp(&qs).exp() / n;
+impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
+    type Move = MCTSMove;
+    type MoveList = Vec<Self::Move>;
+    fn available_moves(&self, mcts: &mut TRSMCTS) -> Self::MoveList {
+        match self.handle {
+            StateHandle::Terminal(..) => vec![],
+            StateHandle::Nonterminal(sh) => {
+                let state = &mut mcts.nonterminals[sh];
+                let mut moves = vec![];
+                if let Some(rc) = &state.context {
+                    if rc.is_empty() {
+                        if !state.data {
+                            for n in 1..mcts.data.len() {
+                                moves.push(MCTSMove::Data { n });
                             }
                         }
-                        // normalizing constant
-                        let count = (m.mov.count + 1) as f64;
-                        println!(
-                            "        no child & count > 0, so it's ({:.3} + {:.3}) / {:.3} + sqrt(ln({:.3}) / {:.3})",
-                            mean, deviation, count, node.n, count,
-                        );
-                        (mean + deviation) / count + (node.n.ln() / count).sqrt()
+                        moves.push(MCTSMove::Empty);
                     }
-                };
-                println!("        score: {:.3}", score);
-                (m, score)
-            })
-            .max_by(|x, y| x.1.partial_cmp(&y.1).expect("found NaN"))
-            .map(|(m, _)| {
-                println!("      we're going with {:?}", m.mov);
-                *m
-            })
+                    if let Some(place) = rc.leftmost_hole() {
+                        state
+                            .lex
+                            .rulecontext_fillers(&rc, &place)
+                            .into_iter()
+                            .map(|atom| MCTSMove::SampleAtom { atom })
+                            .for_each(|mv| moves.push(mv))
+                    }
+                }
+                //else {
+                //    // - revisions: options if we've finished the TRS and aren't in the middle of a multi-step move (e.g. regeneration).
+                //    // TODO: all the revisions!
+                //}
+                moves
+            }
+        }
+    }
+    fn make_move<R: Rng>(&self, mv: &Self::Move, mcts: &mut TRSMCTS, _rng: &mut R) -> Self {
+        match self.handle {
+            StateHandle::Terminal(..) => panic!("inconsistent state: no move from terminal"),
+            StateHandle::Nonterminal(sh) => {
+                let state = &mcts.nonterminals[sh];
+                match *mv {
+                    MCTSMove::Data { n } => {
+                        let mut rules = state.rules.clone();
+                        rules.extend_from_slice(&mcts.data[..n]);
+                        let state = MCTSInternalState {
+                            rules,
+                            lex: state.lex.clone(),
+                            data: true,
+                            context: state.context.clone(),
+                            revisions: state.revisions,
+                            playout: None,
+                        };
+                        mcts.nonterminals.push(state);
+                        MCTSState {
+                            handle: StateHandle::Nonterminal(mcts.nonterminals.len() - 1),
+                        }
+                    }
+                    MCTSMove::Empty => {
+                        let trs = TRS::new_unchecked(
+                            &state.lex,
+                            mcts.deterministic,
+                            mcts.bg,
+                            state.rules.clone(),
+                        );
+                        let hypothesis = Hypothesis::new(trs, &mcts.data, 1.0, mcts.params);
+                        mcts.terminals.push(hypothesis);
+                        MCTSState {
+                            handle: StateHandle::Terminal(mcts.terminals.len() - 1),
+                        }
+                    }
+                    MCTSMove::SampleAtom { atom } => {
+                        let rc = state.context.as_ref().expect("how did this move happen?");
+                        let place = rc.leftmost_hole().expect("How did this move happen?");
+                        if let Some(new_context) = rc.replace(&place, Context::from(atom)) {
+                            if let Ok(rule) = new_context.to_rule() {
+                                let mut state = state.clone();
+                                state.rules.push(rule);
+                                state.context =
+                                    RuleContext::new(Context::Hole, vec![Context::Hole]);
+                                state.playout = None;
+                                println!(
+                                    "#   {}",
+                                    state
+                                        .rules
+                                        .iter()
+                                        .map(|r| r.pretty(&state.lex.signature()))
+                                        .join("; ")
+                                );
+                                mcts.nonterminals.push(state);
+                                MCTSState {
+                                    handle: StateHandle::Nonterminal(mcts.nonterminals.len() - 1),
+                                }
+                            } else {
+                                let mut state = state.clone();
+                                println!(
+                                    "#   {}{}{};",
+                                    state
+                                        .rules
+                                        .iter()
+                                        .map(|r| r.pretty(&state.lex.signature()))
+                                        .join("; "),
+                                    if state.rules.is_empty() { "" } else { "; " },
+                                    new_context.pretty(&state.lex.signature())
+                                );
+                                state.context = Some(new_context);
+                                state.playout = None;
+                                mcts.nonterminals.push(state);
+                                MCTSState {
+                                    handle: StateHandle::Nonterminal(mcts.nonterminals.len() - 1),
+                                }
+                            }
+                        } else {
+                            panic!("inconsistent state: type inference failed us somewhere");
+                        }
+                    } // TODO: all the revision moves
+                }
+            }
+        }
+    }
+    fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut TRSMCTS) -> Vec<Self::Move> {
+        self.available_moves(mcts)
+            .into_iter()
+            .filter(|m| !moves.contains(&m))
+            .collect()
     }
 }
 
-impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
-    type StateEvaluation = f64;
-    fn evaluate(
-        &self,
-        state: &<TRSMCTS<'a, 'b> as MCTS>::State,
-        mcts: &TRSMCTS<'a, 'b>,
-    ) -> Self::StateEvaluation {
-        let lps = state
-            .parents
-            .iter()
-            .map(|p| mcts.trss[*p].lposterior)
-            .collect::<Vec<_>>();
-        logsumexp(&lps) / (state.parents.len().max(1) as f64)
+impl<'b> MCTSInternalState<'b> {
+    pub fn playout<'a, R: Rng>(&self, mcts: &TRSMCTS<'a, 'b>, rng: &mut R) -> TRS<'a, 'b> {
+        if let Some(rc) = &self.context {
+            let mut lex = self.lex.clone();
+            let mut rules = self.rules.clone();
+            // Finish sampling rule as needed.
+            if !rc.is_empty() {
+                println!(
+                    "#         finalizing rule context: {}",
+                    rc.pretty(&lex.signature())
+                );
+                loop {
+                    println!("#           looping");
+                    if let Ok(rule) = lex
+                        .sample_rule_from_context(
+                            rc.clone(),
+                            mcts.atom_weights,
+                            mcts.invent,
+                            mcts.max_size,
+                            rng,
+                        )
+                        .drop()
+                    {
+                        println!("#         sampled: {}", rule.pretty(&lex.signature()));
+                        rules.push(rule);
+                        break;
+                    }
+                }
+            }
+            // Now, sample stuff as needed.
+            let mut data = self.data;
+            loop {
+                // data, new_rule, empty
+                let moves = WeightedIndex::new(&[
+                    (!(data || mcts.data.is_empty()) as usize as f64),
+                    1.0,
+                    1.0,
+                ])
+                .unwrap();
+                match moves.sample(rng) {
+                    0 => {
+                        println!("#         adding data");
+                        rules.extend_from_slice(&mcts.data);
+                        data = true;
+                    }
+                    1 => {
+                        let schema = TypeSchema::Monotype(lex.fresh_type_variable());
+                        println!("#         sampling a rule");
+                        loop {
+                            println!("#           looping");
+                            if let Ok(rule) = lex
+                                .sample_rule(
+                                    &schema,
+                                    mcts.atom_weights,
+                                    mcts.invent,
+                                    mcts.max_size,
+                                    rng,
+                                )
+                                .drop()
+                            {
+                                println!("#           sampled: {}", rule.pretty(&lex.signature()));
+                                rules.push(rule);
+                                break;
+                            }
+                        }
+                    }
+                    2 => {
+                        println!("#         stopping");
+                        break;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            TRS::new_unchecked(&lex, mcts.deterministic, mcts.bg, rules)
+        } else {
+            panic!("Inconsistent state: playing out a terminal node");
+        }
     }
 }
 
@@ -206,126 +308,144 @@ impl<'a, 'b> MCTS for TRSMCTS<'a, 'b> {
     }
 }
 
-impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
-    type Move = MoveWrapper;
-    type MoveList = Vec<Self::Move>;
-    fn available_moves(&self, mcts: &TRSMCTS) -> Self::MoveList {
-        let parents = self
-            .parents
-            .iter()
-            .map(|&p| &mcts.trss[p].trs)
-            .collect::<Vec<_>>();
-        self.moves
-            .iter()
-            .filter(|m| m.mov.applies(&parents, &mcts.obs))
-            .copied()
-            .collect()
+impl<'a, 'b> TRSMCTS<'a, 'b> {
+    pub fn new(
+        lexicon: Lexicon<'b>,
+        bg: &'a [Rule],
+        deterministic: bool,
+        data: &'a [Rule],
+        params: ModelParams,
+        max_depth: usize,
+        max_states: usize,
+        max_revisions: usize,
+        invent: bool,
+        atom_weights: (f64, f64, f64, f64),
+        max_size: usize,
+    ) -> TRSMCTS<'a, 'b> {
+        TRSMCTS {
+            lexicon,
+            bg,
+            deterministic,
+            data,
+            max_revisions,
+            max_depth,
+            max_states,
+            params,
+            invent,
+            atom_weights,
+            max_size,
+            terminals: vec![],
+            nonterminals: vec![],
+        }
     }
-    fn make_move<R: Rng>(&self, mov: &Self::Move, gp: &mut TRSMCTS, rng: &mut R) -> Vec<Self> {
-        let parents = self
-            .parents
-            .iter()
-            .map(|&p| &gp.trss[p].trs)
-            .collect::<Vec<_>>();
-        mov.mov
-            .take(gp, rng, &parents)
-            .map(|mut trss| {
-                let mut unique_trss = Vec::with_capacity(trss.len());
-                while let Some(trs) = trss.pop() {
-                    if trs.unique_shape(&unique_trss) {
-                        unique_trss.push(trs)
-                    }
-                }
-                unique_trss
-                    .into_iter()
-                    .map(|trs| {
-                        println!("{}", trs.to_string().lines().join(" "));
-                        let handle: ObjectHandle = gp
-                            .trss
-                            .iter()
-                            .position(|obj| TRS::same_shape(&obj.trs, &trs))
-                            .unwrap_or_else(|| gp.trss.len());
-                        if handle == gp.trss.len() {
-                            println!("  it's a new hypothesis with handle {}", handle);
-                            gp.trss.push(Hypothesis::new(trs, &gp.obs, 1.0, gp.params));
-                        } else {
-                            println!(
-                                "  we already have this hypothesis with handle {} {}",
-                                handle,
-                                TRS::same_shape(&gp.trss[handle].trs, &trs)
-                            );
-                            println!(
-                                "    {}\n    {}",
-                                gp.trss[handle].trs.to_string().lines().join(" "),
-                                trs.to_string().lines().join(" ")
-                            );
-                        }
-                        MCTSState {
-                            // HACK: we need to figure out what sets of parents to create from the moves.
-                            parents: vec![handle],
-                            moves: self.moves.clone(),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_else(|_| vec![])
-    }
-    fn uniquify(taken: &Self::Move, generated: usize) -> (Vec<Self::Move>, Vec<Self::Move>) {
-        println!("    uniquifying {:?}", taken);
-        let new_moves = if taken.mov.deterministic() {
-            println!("      deterministic, so no new moves");
-            vec![]
-        } else {
-            println!("      nondeterministic, so 1 new move");
-            let mut new_move = *taken;
-            new_move.count += 1;
-            vec![new_move]
+    pub fn root(&mut self) -> MCTSState {
+        let state = MCTSInternalState {
+            lex: self.lexicon.clone(),
+            rules: vec![],
+            context: RuleContext::new(Context::Hole, vec![Context::Hole]),
+            data: false,
+            revisions: 0,
+            playout: None,
         };
-        let child_moves = (0..generated).map(|_| *taken).collect();
-        (new_moves, child_moves)
-    }
-    fn add_moves_for_new_data(
-        &self,
-        moves: &[(&Self::Move, bool)],
-        mcts: &TRSMCTS,
-    ) -> Vec<Self::Move> {
-        self.available_moves(mcts)
-            .into_iter()
-            .filter(|m| m.mov.data_sensitive())
-            .filter_map(|mut m| {
-                let recent = moves
-                    .iter()
-                    .filter(|(mov, _)| mov.mov == m.mov)
-                    .max_by_key(|(mov, _)| mov.count);
-                if let Some(recent) = recent {
-                    if recent.1 {
-                        m.count = recent.0.count + 1;
-                        Some(m)
-                    } else {
-                        None
-                    }
-                } else {
-                    Some(m)
-                }
-            })
-            .collect()
+        self.nonterminals.push(state);
+        let handle = StateHandle::Nonterminal(0);
+        MCTSState { handle }
     }
 }
 
-impl MCTSState {
-    pub fn new(parents: Vec<ObjectHandle>, moves: Vec<Move>) -> Self {
-        let moves = moves
-            .into_iter()
-            .map(|m| MoveWrapper { count: 0, mov: m })
-            .collect();
-        MCTSState { parents, moves }
+impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
+    type MoveEvaluation = f64;
+    fn choose<'c, MoveIter>(
+        &self,
+        moves: MoveIter,
+        nh: NodeHandle,
+        tree: &SearchTree<TRSMCTS<'a, 'b>>,
+    ) -> Option<&'c MoveInfo<TRSMCTS<'a, 'b>>>
+    where
+        MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'a, 'b>>>,
+    {
+        // Split the moves into those with and without children.
+        let (childful, mut childless): (Vec<_>, Vec<_>) = moves.partition(|mv| mv.child.is_some());
+        // Take the first childless move, or perform UCT on childed moves.
+        if let Some(mv) = childless.pop() {
+            println!("#   There are childless. We chose: {:?}.", mv.mov);
+            Some(mv)
+        } else {
+            childful
+                .into_iter()
+                .map(|mv| {
+                    let ch = mv.child.expect("INVARIANT: partition failed us");
+                    let node = tree.node(nh);
+                    let child = tree.node(ch);
+                    println!(
+                        "#     UCT: {}'s q/n: {:.3} / {:.3} + sqrt(ln({:.3}) / {:.3})",
+                        ch,
+                        child.q.exp(),
+                        child.n,
+                        node.n,
+                        child.n
+                    );
+                    let score = child.q.exp() / child.n + (node.n.ln() / child.n).sqrt();
+                    (mv, score)
+                })
+                .max_by(|x, y| x.1.partial_cmp(&y.1).expect("There a NaN on the loose!"))
+                .map(|(mv, _)| {
+                    println!("#     we're going with {:?}", mv.mov);
+                    mv
+                })
+                .or_else(|| {
+                    println!("#     no available moves");
+                    None
+                })
+        }
+    }
+}
+
+impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
+    type StateEvaluation = f64;
+    fn evaluate<R: Rng>(
+        &self,
+        state: &<TRSMCTS<'a, 'b> as MCTS>::State,
+        mcts: &mut TRSMCTS<'a, 'b>,
+        rng: &mut R,
+    ) -> Self::StateEvaluation {
+        println!("#     evaluating");
+        match state.handle {
+            StateHandle::Terminal(sh) => {
+                println!("#       node is terminal");
+                mcts.terminals[sh].lposterior
+            }
+            StateHandle::Nonterminal(sh) => {
+                let state = &mcts.nonterminals[sh];
+                match state.playout {
+                    Some(th) => {
+                        println!("#       found a playout");
+                        mcts.terminals[th].lposterior
+                    }
+                    None => {
+                        println!("#       playing out");
+                        let trs = state.playout(mcts, rng);
+                        println!(
+                            "#         simulated: \"{}\"",
+                            trs.to_string().lines().join(" ")
+                        );
+                        let h = Hypothesis::new(trs, &mcts.data, 1.0, mcts.params);
+                        let score = h.lposterior;
+                        let th = mcts.terminals.len();
+                        mcts.terminals.push(h);
+                        mcts.nonterminals[sh].playout = Some(th);
+                        score
+                    }
+                }
+            }
+        }
     }
 }
 
 impl Move {
     pub fn take<'a, 'b, R: Rng>(
         &self,
-        gp: &TRSMCTS<'a, 'b>,
+        mcts: &TRSMCTS<'a, 'b>,
         rng: &mut R,
         parents: &[&TRS<'a, 'b>],
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
@@ -335,10 +455,13 @@ impl Move {
             Move::DeleteRules(t) => parents[0].delete_rules(rng, t),
             Move::Generalize => parents[0].generalize(),
             Move::LocalDifference => parents[0].local_difference(rng),
-            Move::Memorize(deterministic) => {
-                Ok(TRS::memorize(&gp.lexicon, deterministic, &gp.bg, &gp.obs))
-            }
-            Move::MemorizeOne => parents[0].memorize_one(&gp.obs),
+            Move::Memorize(deterministic) => Ok(TRS::memorize(
+                &mcts.lexicon,
+                deterministic,
+                &mcts.bg,
+                &mcts.data,
+            )),
+            Move::MemorizeOne => parents[0].memorize_one(&mcts.data),
             Move::Recurse(n) => parents[0].recurse(n),
             Move::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
             Move::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),

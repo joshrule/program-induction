@@ -56,7 +56,6 @@ pub use self::parser::{
 pub use self::rewrite::TRS;
 use Task;
 
-use itertools::Itertools;
 use polytype;
 use std::fmt;
 use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError};
@@ -198,11 +197,6 @@ impl<'a, 'b> Hypothesis<'a, 'b> {
         self.lposterior = (self.params.p_temp * self.lprior
             + self.params.l_temp * self.llikelihood)
             / self.temperature;
-        println!(
-            "    new posterior: {:.4} - {}",
-            self.lposterior,
-            self.trs.to_string().lines().join(" ")
-        );
     }
     pub fn change_time(&mut self, t: f64) {
         self.temperature = self.params.schedule.temperature(t);

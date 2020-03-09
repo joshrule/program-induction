@@ -373,7 +373,11 @@ fn typed_rulecontext<'a>(
     let result = parse_untyped_rulecontext(&mut lex.0.to_mut().signature, *input);
     if let Ok(rule) = result {
         add_parsed_variables_to_lexicon(lex);
-        if lex.infer_rulecontext(&rule).is_ok() {
+        if lex
+            .infer_rulecontext(&rule, &mut HashMap::new())
+            .drop()
+            .is_ok()
+        {
             return Ok((CompleteStr(""), rule));
         }
     }

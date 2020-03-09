@@ -216,6 +216,9 @@ impl<'a> Lexicon<'a> {
     pub fn free_vars(&self) -> Vec<TypeVar> {
         self.0.free_vars().to_vec()
     }
+    pub fn free_vars_applied(&self) -> Vec<TypeVar> {
+        self.0.free_vars_applied()
+    }
     /// Add a new variable to the `Lexicon`.
     pub fn invent_variable(&mut self, tp: &Type) -> Variable {
         self.0.to_mut().invent_variable(tp)
@@ -249,6 +252,40 @@ impl<'a> Lexicon<'a> {
     }
     pub fn unify(&self, t1: &Type, t2: &Type) -> Result<(), ()> {
         self.0.unify(t1, t2).map_err(|_| ())
+    }
+    pub(crate) fn rulecontext_fillers(
+        &mut self,
+        context: &RuleContext,
+        place: &[usize],
+    ) -> Vec<Atom> {
+        if let Some(&Context::Hole) = context.at(place) {
+            let mut types = HashMap::new();
+            let snapshot = self.snapshot();
+            self.0.infer_rulecontext(context, &mut types).ok();
+            let lex_vars: Vec<TypeVar> = self.0.free_vars_applied();
+            let schema = types[place].generalize(&lex_vars);
+            let invent = place[0] == 0;
+            let complex = true;
+            let mut vars = context.lhs.variables();
+            let options = self
+                .0
+                .to_mut()
+                .prepare_options(&schema, invent, complex, &mut vars)
+                .into_iter()
+                .filter(|atom| {
+                    if place[0] == 0 {
+                        if let Atom::Variable(_) = atom {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .collect();
+            self.rollback(snapshot);
+            options
+        } else {
+            vec![]
+        }
     }
     /// Return a new [`Type::Variable`] from the `Lexicon`'s [`TypeContext`].
     ///
@@ -313,11 +350,21 @@ impl<'a> Lexicon<'a> {
         }
     }
     /// Infer the `TypeSchema` associated with a `RuleContext`.
-    pub fn infer_rulecontext(&self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
+    pub fn infer_rulecontext(
+        &self,
+        context: &RuleContext,
+        types: &mut HashMap<Place, Type>,
+    ) -> ContextPoint<TypeSchema, TypeError> {
         let snapshot = self.snapshot();
-        let result = self.0.infer_rulecontext(context);
-        self.rollback(snapshot);
-        result
+        let result = self.0.infer_rulecontext(context, types);
+        for (_, v) in types.iter_mut() {
+            v.apply_mut_compress(&mut self.0.ctx.write().expect("poisoned context"));
+        }
+        ContextPoint {
+            snapshot,
+            result,
+            lex: self,
+        }
     }
     /// Infer the `TypeSchema` associated with a `Rule`.
     pub fn infer_rule(
@@ -1078,8 +1125,12 @@ impl Lex {
             .apply_compress(&mut self.ctx.write().expect("poisoned context"))
             .generalize(&lex_vars))
     }
-    fn infer_rulecontext(&self, context: &RuleContext) -> Result<TypeSchema, TypeError> {
-        let tp = self.infer_rulecontext_internal(context, &mut HashMap::new())?;
+    fn infer_rulecontext(
+        &self,
+        context: &RuleContext,
+        types: &mut HashMap<Place, Type>,
+    ) -> Result<TypeSchema, TypeError> {
+        let tp = self.infer_rulecontext_internal(context, types)?;
         let lex_vars = self.free_vars_applied();
         Ok(tp
             .apply_compress(&mut self.ctx.write().expect("poisoned context"))

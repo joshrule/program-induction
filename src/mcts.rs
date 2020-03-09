@@ -5,14 +5,7 @@
 // TODO:
 // - Replace Eq constraint on State with some sort of hash for speed.
 // - ask for moves & states to be Debug for better debugging.
-// - add transposition tables as a configurable feature
-//   - Define the trait.
-//     pub trait TranspositionTable<M: MCTS> {
-//         fn insert(&self, key: &M::State, value: Node<M>);
-//         fn get(&self, key: &M::State) -> Option<&Node<M>>;
-//     }
-//   - Add to MCTS as an associated type.
-//   - Replace SearchTree nodes with a table.
+// - Create a recycling pool for moves.
 use rand::Rng;
 
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
@@ -23,10 +16,9 @@ pub type MoveHandle = usize;
 pub trait State<M: MCTS<State = Self>>: PartialEq + Sized + Sync {
     type Move: Clone + Sync + Send;
     type MoveList: IntoIterator<Item = Self::Move>;
-    fn available_moves(&self, mcts: &M) -> Self::MoveList;
-    fn make_move<R: Rng>(&self, mov: &Self::Move, mcts: &mut M, rng: &mut R) -> Vec<Self>;
-    fn uniquify(taken: &Self::Move, generated: usize) -> (Vec<Self::Move>, Vec<Self::Move>);
-    fn add_moves_for_new_data(&self, moves: &[(&Self::Move, bool)], mcts: &M) -> Self::MoveList;
+    fn available_moves(&self, mcts: &mut M) -> Self::MoveList;
+    fn make_move<R: Rng>(&self, mov: &Self::Move, mcts: &mut M, rng: &mut R) -> Self;
+    fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut M) -> Self::MoveList;
 }
 
 pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
@@ -38,7 +30,7 @@ pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
 
 pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized + Sync {
     type StateEvaluation: Clone + Sync + Send + Into<f64>;
-    fn evaluate(&self, &M::State, &M) -> Self::StateEvaluation;
+    fn evaluate<R: Rng>(&self, &M::State, &mut M, &mut R) -> Self::StateEvaluation;
 }
 
 pub trait MCTS: Sized + Sync {
@@ -65,7 +57,6 @@ pub struct SearchTree<M: MCTS> {
     root: NodeHandle,
     nodes: Vec<Node<M>>,
     moves: Vec<MoveInfo<M>>,
-    size: usize,
     state_eval: M::StateEval,
     move_eval: M::MoveEval,
 }
@@ -105,8 +96,14 @@ impl<M: MCTS> MoveInfo<M> {
 }
 
 impl<M: MCTS> MCTSManager<M> {
-    pub fn new(mcts: M, root: M::State, state_eval: M::StateEval, move_eval: M::MoveEval) -> Self {
-        let tree = SearchTree::new(mcts, root, state_eval, move_eval);
+    pub fn new<R: Rng>(
+        mcts: M,
+        root: M::State,
+        state_eval: M::StateEval,
+        move_eval: M::MoveEval,
+        rng: &mut R,
+    ) -> Self {
+        let tree = SearchTree::new(mcts, root, state_eval, move_eval, rng);
         MCTSManager { tree }
     }
     // Search until the predicate evaluates to `true`.
@@ -120,8 +117,8 @@ impl<M: MCTS> MCTSManager<M> {
         println!("steps: {}", steps);
     }
     // Take a single search step.
-    pub fn step<R: Rng>(&mut self, rng: &mut R) {
-        self.tree.step(rng);
+    pub fn step<R: Rng>(&mut self, rng: &mut R) -> bool {
+        self.tree.step(rng).is_some()
     }
     pub fn tree(&self) -> &SearchTree<M> {
         &self.tree
@@ -132,10 +129,16 @@ impl<M: MCTS> MCTSManager<M> {
 }
 
 impl<M: MCTS> SearchTree<M> {
-    pub fn new(mcts: M, root: M::State, state_eval: M::StateEval, move_eval: M::MoveEval) -> Self {
-        let evaluation = state_eval.evaluate(&root, &mcts);
+    pub fn new<R: Rng>(
+        mut mcts: M,
+        root: M::State,
+        state_eval: M::StateEval,
+        move_eval: M::MoveEval,
+        rng: &mut R,
+    ) -> Self {
+        let evaluation = state_eval.evaluate(&root, &mut mcts, rng);
         let moves: Vec<_> = root
-            .available_moves(&mcts)
+            .available_moves(&mut mcts)
             .into_iter()
             .enumerate()
             .map(|(i, mov)| MoveInfo {
@@ -160,13 +163,14 @@ impl<M: MCTS> SearchTree<M> {
             move_eval,
             moves,
             root: 0,
-            size: 1,
             nodes: vec![root_node],
         }
     }
+    pub fn summary(&self) -> (usize, usize) {
+        (self.nodes.len(), self.moves.len())
+    }
     pub fn show(&self) {
         println!("SearchTree");
-        println!("size: {}", self.size);
         println!("root: {}", self.root);
         println!("nodes: {}", self.nodes.len());
         for (i, node) in self.nodes.iter().enumerate() {
@@ -191,25 +195,26 @@ impl<M: MCTS> SearchTree<M> {
     pub fn mcts_mut(&mut self) -> &mut M {
         &mut self.mcts
     }
-    pub fn reevaluate_states(&mut self) {
+    pub fn reevaluate_states<R: Rng>(&mut self, rng: &mut R) {
+        println!("#     reevaluating states");
         // iterate over the nodes and copy the evaluation information from the objects.
+        println!("#       reevaluating nodes");
         for node in self.nodes.iter_mut() {
-            node.evaluation = self.state_eval.evaluate(&node.state, &self.mcts);
+            node.evaluation = self.state_eval.evaluate(&node.state, &mut self.mcts, rng);
             println!(
-                "#     new evaluation: {:.4}",
+                "#         new evaluation: {:.4}",
                 node.evaluation.clone().into()
             );
         }
-        println!("#   reevaluated nodes");
+        println!("#       updating qs");
         self.recompute_qs();
-        println!("#   updated qs");
     }
     pub fn recompute_qs(&mut self) {
         let mut stack = vec![self.root];
         let mut finished = vec![];
         while let Some(&node) = stack.last() {
-            println!("#      stack: {:?}", stack);
-            println!("#      finished: {:?}", finished);
+            // println!("#      stack: {:?}", stack);
+            // println!("#      finished: {:?}", finished);
             let ready = self.nodes[node]
                 .outgoing
                 .iter()
@@ -240,11 +245,12 @@ impl<M: MCTS> SearchTree<M> {
             let old_moves = self.nodes[nh]
                 .outgoing
                 .iter()
-                .map(|&m| (&self.moves[m].mov, self.moves[m].child.is_some()))
+                .map(|&m| &self.moves[m].mov)
+                .cloned()
                 .collect::<Vec<_>>();
             for mov in self.nodes[nh]
                 .state
-                .add_moves_for_new_data(&old_moves, &self.mcts)
+                .add_moves_for_new_data(&old_moves, &mut self.mcts)
             {
                 let handle = self.moves.len();
                 let new_move = MoveInfo {
@@ -261,251 +267,83 @@ impl<M: MCTS> SearchTree<M> {
     }
     /// Take a single search step.
     pub fn step<R: Rng>(&mut self, rng: &mut R) -> Option<usize> {
-        println!(
-            "  Searching with {} nodes and {} moves",
-            self.nodes.len(),
-            self.moves.len()
-        );
-        match self.expand(rng) {
-            Some((path, moves)) => {
-                println!(
-                    "  Search succeeded: {} new moves with a path length of {}.",
-                    moves.len(),
-                    path.len(),
-                );
-                self.size += moves.len();
-                for &m in &moves {
-                    // INVARIANT: Moves returned by expand always have children.
-                    self.backpropagate(self.moves[m].child.unwrap(), &path);
-                    self.update_maximum_valid_depths(m);
-                }
-                Some(moves.len())
-            }
-            _ => {
-                println!("  Search failed");
-                None
-            }
-        }
+        self.expand(rng).map(|mh| {
+            // INVARIANT: Moves returned by expand always have children.
+            self.backpropagate(self.moves[mh].child.unwrap());
+            self.update_maximum_valid_depths(mh);
+            1
+        })
     }
     // Expand the search tree by taking a single move.
-    fn expand<R: Rng>(&mut self, rng: &mut R) -> Option<(Vec<NodeHandle>, Vec<MoveHandle>)> {
+    fn expand<R: Rng>(&mut self, rng: &mut R) -> Option<MoveHandle> {
         if self.nodes.len() >= self.mcts.max_states() {
-            println!(
-                "too many nodes: {} >= {}",
-                self.nodes.len(),
-                self.mcts.max_states()
-            );
+            println!("STOP: {} >= {}", self.nodes.len(), self.mcts.max_states());
             return None;
         }
-        let mut path = vec![self.root];
+        let mut depth = 0;
+        let mut nh = self.root;
         loop {
-            // Choose a move. INVARIANT: path always has at least 1 element.
-            let handle = *path.last().unwrap();
-            let moves = self.nodes[handle].outgoing.iter().map(|n| &self.moves[*n]);
-            println!("    got some moves");
-            let mov: MoveHandle = self.move_eval.choose(moves, handle, &self)?.handle;
-            println!("    chose a move");
-            let child = self.moves[mov].child;
-            println!("    found the child: {:?}", child);
-            match child {
+            // Choose a move.
+            let moves = self.nodes[nh].outgoing.iter().map(|n| &self.moves[*n]);
+            println!("#   got some moves");
+            // Looks weird, but helps prevent a borrowing issue;
+            let mh = self.move_eval.choose(moves, nh, &self)?.handle;
+            let mov = &self.moves[mh];
+            match mov.child {
                 // Descend known moves.
-                Some(handle) => {
-                    println!("    descending");
-                    path.push(handle);
+                Some(child_nh) => {
+                    nh = child_nh;
+                    depth += 1;
+                    println!("#   Child is {}. Descending to depth {}.", child_nh, depth);
                 }
                 // Take new moves.
                 None => {
-                    println!("    taking the move");
-                    let child_states = self.nodes[handle].state.make_move(
-                        &self.moves[mov].mov,
-                        &mut self.mcts,
-                        rng,
-                    );
-                    println!("    created {} child states", child_states.len());
-                    let (new_moves, child_moves) =
-                        <M>::State::uniquify(&self.moves[mov].mov, child_states.len());
-                    println!("    uniquified: {} {}", child_moves.len(), new_moves.len());
-                    let moves_to_backprop =
-                        self.update_tree(child_states, child_moves, new_moves, mov);
-                    println!("    updated tree and returning");
-                    return Some((path, moves_to_backprop));
+                    println!("#   No child. Taking the move at depth {}.", depth);
+                    let child_state = self.nodes[nh]
+                        .state
+                        .make_move(&mov.mov, &mut self.mcts, rng);
+                    println!("#   Updating tree.");
+                    return self.update_tree(child_state, mh, rng);
                 }
             }
         }
     }
     // Add `MoveInfo`s representing each of the newly created `child_states`.
-    fn update_tree(
+    fn update_tree<R: Rng>(
         &mut self,
-        mut child_states: Vec<<M>::State>,
-        mut child_moves: Vec<Move<M>>,
-        mut new_moves: Vec<Move<M>>,
+        child_state: <M>::State,
         mov: MoveHandle,
-    ) -> Vec<MoveHandle> {
+        rng: &mut R,
+    ) -> Option<MoveHandle> {
+        // Identify the parent handle and child handle.
         let ph = self.moves[mov].parent;
-        match (!child_moves.is_empty(), !new_moves.is_empty()) {
-            // We have no new states.
-            (false, false) => {
-                println!("      no new states to handle");
-                // Unlink the move. TODO: put the move in a recycling pool.
-                let parent = &mut self.nodes[ph];
-                let idx = parent.outgoing.iter().position(|&mh| mh == mov);
-                if let Some(idx) = idx {
-                    parent.outgoing.swap_remove(idx);
-                }
-                vec![]
-            }
-            // We only have new moves.
-            (false, true) => {
-                // Recycle the old move with a new move.
-                println!(
-                    "      parent has {} outgoing moves",
-                    self.nodes[ph].outgoing.len()
-                );
-                println!("        recycled a move");
-                let first_move = new_moves.swap_remove(0);
-                self.moves[mov].mov = first_move;
-                for mov in new_moves {
-                    println!("        added a new move");
-                    let handle = self.moves.len();
-                    let new_move = MoveInfo {
-                        handle,
-                        mov,
-                        parent: ph,
-                        child: None,
-                        maximum_valid_depth: self.mcts.max_depth(),
-                    };
-                    self.moves.push(new_move);
-                    self.nodes[ph].outgoing.push(handle);
-                }
-                println!(
-                    "      parent now has {} outgoing moves",
-                    self.nodes[ph].outgoing.len()
-                );
-                vec![]
-            }
-            // We only have children.
-            (true, false) => {
-                // Reuse the old move by giving it the first child.
-                println!(
-                    "      parent has {} outgoing moves",
-                    self.nodes[ph].outgoing.len()
-                );
-                let mut handles = vec![];
-                while !child_states.is_empty() {
-                    println!("        recycling one");
-                    let first_state = child_states.swap_remove(0);
-                    let first_move = child_moves.swap_remove(0);
-                    if let Some(handle) = self.make_first_child(first_state, first_move, mov) {
-                        handles.push(handle);
-                        break;
-                    }
-                }
-                if handles.is_empty() {
-                    println!("        no moves. Something's wrong. :-(");
-                    vec![]
-                } else {
-                    // Process the remaining children.
-                    println!("        processing the remaining {}", child_states.len());
-                    let mut rest = child_states
-                        .into_iter()
-                        .zip(child_moves)
-                        .filter_map(|(s, m)| self.make_child(s, m, self.moves[mov].parent))
-                        .collect();
-                    handles.append(&mut rest);
-                    // Don't push the first, since it's recycled.
-                    self.nodes[ph].outgoing.extend_from_slice(&handles[1..]);
-                    handles
-                }
-            }
-            // We have children and new moves.
-            (true, true) => {
-                // Recycle the old move with a new move.
-                println!(
-                    "      parent has {} outgoing moves",
-                    self.nodes[ph].outgoing.len()
-                );
-                println!("        recycling 1 new move");
-                let first_move = new_moves.swap_remove(0);
-                self.moves[mov].mov = first_move;
-                // Process the remaining new moves.
-                println!("        processing the remaining {}", new_moves.len());
-                for mov in new_moves {
-                    let handle = self.moves.len();
-                    let new_move = MoveInfo {
-                        handle,
-                        mov,
-                        parent: ph,
-                        child: None,
-                        maximum_valid_depth: self.mcts.max_depth(),
-                    };
-                    self.moves.push(new_move);
-                    self.nodes[ph].outgoing.push(handle);
-                }
-                // Process the children.
-                println!("        processing {} children", child_states.len());
-                let handles = child_states
-                    .into_iter()
-                    .zip(child_moves)
-                    .filter_map(|(s, m)| self.make_child(s, m, self.moves[mov].parent))
-                    .collect::<Vec<_>>();
-                self.nodes[ph].outgoing.extend_from_slice(&handles);
-                println!(
-                    "      parent now has {} outgoing moves",
-                    self.nodes[ph].outgoing.len()
-                );
-                handles
-            }
-        }
-    }
-    fn make_first_child(&mut self, s: <M>::State, m: Move<M>, h: MoveHandle) -> Option<MoveHandle> {
-        // Update the move.
-        let node = self.find_or_make_node(s);
-        // Eliminate cycles. Don't add a move if the child is the ancestor of the parent.
-        if self.ancestors(self.moves[h].parent).contains(&node) || self.moves[h].parent == node {
-            println!("          Cycle detected! Ignoring this child.");
-            None
-        } else {
-            if !self.nodes[node].incoming.contains(&h) {
-                self.nodes[node].incoming.push(h);
-            }
-            self.moves[h].child = Some(node);
-            self.moves[h].mov = m;
-            // NOTE: The maximum_valid_depth is examined during the update.
-            Some(h)
-        }
-    }
-    // For each state `s`, add the appropriate moves to the graph.
-    fn make_child(&mut self, s: <M>::State, m: Move<M>, parent: NodeHandle) -> Option<MoveHandle> {
-        let node = self.find_or_make_node(s);
-        // Eliminate cycles. Don't add a move if the child is the ancestor of the parent.
-        if self.ancestors(parent).contains(&node) || parent == node {
+        let ch = self.find_or_make_node(child_state, rng);
+        // Prevent cycles: don't add moves that make a child its own ancestor.
+        if self.ancestors(ph).contains(&ch) || ph == ch {
             println!(
-                "          Cycle detected! Ignoring this child ({} {}).",
-                self.ancestors(parent).contains(&node),
-                parent == node
+                "#     Cycle detected! Ignoring the child ({} {}).",
+                self.ancestors(ph).contains(&ch),
+                ph == ch
             );
+            // Remove the move from the tree.
+            self.nodes[ph].outgoing = self.nodes[ph]
+                .outgoing
+                .iter()
+                .filter(|&mh| *mh == mov)
+                .copied()
+                .collect();
             None
         } else {
-            let handle = self.moves.len();
-            if !self.nodes[node].incoming.contains(&handle) {
-                self.nodes[node].incoming.push(handle);
+            // Give the move a child.
+            self.moves[mov].child = Some(ch);
+            // Add the move as a parent of the child, if new.
+            if !self.nodes[ch].incoming.contains(&mov) {
+                self.nodes[ch].incoming.push(mov);
             }
-            let new_move = MoveInfo {
-                handle,
-                parent,
-                child: Some(node),
-                mov: m,
-                // The maximum_valid_depth is incorrect but gets fixed during the update.
-                maximum_valid_depth: self.mcts.max_depth(),
-            };
-            // Add it to the tree's list of moves.
-            self.moves.push(new_move);
-            // Return the handle.
-            println!("          created a new child!");
-            Some(handle)
+            Some(mov)
         }
     }
-    fn find_or_make_node(&mut self, s: <M>::State) -> NodeHandle {
+    fn find_or_make_node<R: Rng>(&mut self, s: <M>::State, rng: &mut R) -> NodeHandle {
         match self.nodes.iter().position(|n| n.state == s) {
             Some(h) => {
                 println!("          found node {}", h);
@@ -513,18 +351,17 @@ impl<M: MCTS> SearchTree<M> {
             }
             None => {
                 let node_handle = self.nodes.len();
-                println!("          made node {}", node_handle);
-                let evaluation = self.state_eval.evaluate(&s, &self.mcts);
+                let evaluation = self.state_eval.evaluate(&s, &mut self.mcts, rng);
                 let q: f64 = evaluation.clone().into();
                 let incoming = vec![];
                 let mut outgoing = vec![];
-                for m in s.available_moves(&self.mcts) {
+                for mov in s.available_moves(&mut self.mcts) {
                     let handle = self.moves.len();
                     let new_move = MoveInfo {
                         handle,
+                        mov,
                         parent: node_handle,
                         child: None,
-                        mov: m.clone(),
                         maximum_valid_depth: self.mcts.max_depth(),
                     };
                     self.moves.push(new_move);
@@ -538,18 +375,26 @@ impl<M: MCTS> SearchTree<M> {
                     incoming,
                     outgoing,
                 };
+                println!(
+                    "#     made node {} with {} outgoing moves",
+                    node_handle,
+                    node.outgoing.len()
+                );
                 self.nodes.push(node);
                 node_handle
             }
         }
     }
     // Bubble search statistics back to the root.
-    fn backpropagate(&mut self, new_node: NodeHandle, path: &[NodeHandle]) {
+    fn backpropagate(&mut self, new_node: NodeHandle) {
         let evaluation = self.nodes[new_node].evaluation.clone().into();
-        for &handle in path {
-            self.nodes[handle].q = self.mcts.combine_qs(self.nodes[handle].q, evaluation);
-            self.nodes[handle].n += 1.0;
-            // TODO: this isn't quite right. What about other parents of these nodes?
+        let mut stack = vec![new_node];
+        while let Some(nh) = stack.pop() {
+            self.nodes[nh].q = self.mcts.combine_qs(self.nodes[nh].q, evaluation);
+            self.nodes[nh].n += 1.0;
+            for &mh in &self.nodes[nh].incoming {
+                stack.push(self.moves[mh].parent)
+            }
         }
     }
     // Invalidate fully explored nodes, i.e. moves whose child has no valid moves.
