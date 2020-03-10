@@ -76,6 +76,7 @@ pub enum MCTSMove {
     SampleRule,
     RegenerateRule,
     DeleteRules,
+    Generalize,
     RegenerateThisRule(usize, RuleContext),
     MemorizeDatum(Option<usize>),
     SampleAtom(Option<Atom>),
@@ -87,56 +88,16 @@ pub enum MCTSMove {
     // - Variablize
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Move {
-    Memorize,
-    SampleRule,
-    RegenerateRule,
-    LocalDifference,
-    MemorizeOne,
-    DeleteRule,
-    Variablize,
-    Generalize,
-    Recurse,
-    DeleteRules,
-    Compose,
-}
-
-impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
-    type Move = MCTSMove;
-    type MoveList = Vec<Self::Move>;
-    fn available_moves(&self, mcts: &mut TRSMCTS) -> Self::MoveList {
-        let mut moves = vec![];
-        match self.handle {
-            StateHandle::Terminal(..) => (),
-            StateHandle::Revision(rh) => mcts.revisions[rh].available_moves(mcts, &mut moves),
-        }
-        moves
-    }
-    fn make_move<R: Rng>(&self, mv: &Self::Move, mcts: &mut TRSMCTS<'a, 'b>, rng: &mut R) -> Self {
-        let state = match self.handle {
-            StateHandle::Terminal(..) => panic!("inconsistent state: no move from terminal"),
-            StateHandle::Revision(rh) => mcts.revisions[rh].make_move(mv, mcts, rng),
-        };
-        mcts.add_state(state)
-    }
-    fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut TRSMCTS) -> Vec<Self::Move> {
-        self.available_moves(mcts)
-            .into_iter()
-            .filter(|m| !moves.contains(&m))
-            .collect()
-    }
-}
-
 impl<'a, 'b> Revise<'a, 'b> {
     pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>) {
         match self.spec {
             None => {
                 // A TRS can always sample a new rule.
                 moves.push(MCTSMove::SampleRule);
-                // You must have a rule in order to regenerate a rule.
+                // You must have a rule in order to regenerate or generalize.
                 if !self.trs.is_empty() {
                     moves.push(MCTSMove::RegenerateRule);
+                    moves.push(MCTSMove::Generalize);
                 }
                 // A TRS must always have at least one rule.
                 if self.trs.len() > 1 {
@@ -194,6 +155,18 @@ impl<'a, 'b> Revise<'a, 'b> {
         _rng: &mut R,
     ) -> StateKind<'a, 'b> {
         match *mv {
+            MCTSMove::Generalize => {
+                // TODO: fix me via pruning
+                let mut trss = self.trs.generalize().unwrap();
+                let trs = trss.swap_remove(0);
+                let state = Revise {
+                    spec: None,
+                    n: self.n + 1,
+                    trs: trs,
+                    playout: None,
+                };
+                StateKind::Revision(state)
+            }
             MCTSMove::DeleteRules => {
                 // We're stating an intention: just the internal state changes.
                 let mut state = self.clone();
@@ -534,6 +507,32 @@ impl<'a, 'b> Revise<'a, 'b> {
             n_revisions += 1;
         }
         trs
+    }
+}
+
+impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
+    type Move = MCTSMove;
+    type MoveList = Vec<Self::Move>;
+    fn available_moves(&self, mcts: &mut TRSMCTS) -> Self::MoveList {
+        let mut moves = vec![];
+        match self.handle {
+            StateHandle::Terminal(..) => (),
+            StateHandle::Revision(rh) => mcts.revisions[rh].available_moves(mcts, &mut moves),
+        }
+        moves
+    }
+    fn make_move<R: Rng>(&self, mv: &Self::Move, mcts: &mut TRSMCTS<'a, 'b>, rng: &mut R) -> Self {
+        let state = match self.handle {
+            StateHandle::Terminal(..) => panic!("inconsistent state: no move from terminal"),
+            StateHandle::Revision(rh) => mcts.revisions[rh].make_move(mv, mcts, rng),
+        };
+        mcts.add_state(state)
+    }
+    fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut TRSMCTS) -> Vec<Self::Move> {
+        self.available_moves(mcts)
+            .into_iter()
+            .filter(|m| !moves.contains(&m))
+            .collect()
     }
 }
 
