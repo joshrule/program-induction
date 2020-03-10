@@ -7,6 +7,7 @@ use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluato
 use polytype::TypeSchema;
 use rand::{
     distributions::{Distribution, WeightedIndex},
+    prelude::IteratorRandom,
     Rng,
 };
 use std::collections::HashMap;
@@ -14,14 +15,12 @@ use term_rewriting::{Atom, Context, Rule, RuleContext};
 use trs::{Hypothesis, Lexicon, ModelParams, TRS};
 use utils::logsumexp;
 
-type SamplingHandle = usize;
-type RevisingHandle = usize;
+type RevisionHandle = usize;
 type TerminalHandle = usize;
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum StateHandle {
-    Sampling(SamplingHandle),
-    Revising(RevisingHandle),
+    Revision(RevisionHandle),
     Terminal(TerminalHandle),
 }
 
@@ -31,25 +30,16 @@ pub struct MCTSState {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Sample<'b> {
-    lex: Lexicon<'b>,
-    rules: Vec<Rule>,
-    spec: Option<MCTSMoveState>,
-    data: bool,
-    playout: Option<TerminalHandle>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Revise<'a, 'b> {
     n: usize,
     trs: TRS<'a, 'b>,
     spec: Option<MCTSMoveState>,
+    playout: Option<TerminalHandle>,
 }
 
 pub enum StateKind<'a, 'b> {
-    Sampling(Sample<'b>),
     Terminal(Hypothesis<'a, 'b>),
-    Revising(Revise<'a, 'b>),
+    Revision(Revise<'a, 'b>),
 }
 
 pub struct TRSMCTS<'a, 'b> {
@@ -57,8 +47,7 @@ pub struct TRSMCTS<'a, 'b> {
     pub bg: &'a [Rule],
     pub deterministic: bool,
     pub data: &'a [Rule],
-    pub samplings: Vec<Sample<'b>>,
-    pub revisings: Vec<Revise<'a, 'b>>,
+    pub revisions: Vec<Revise<'a, 'b>>,
     pub terminals: Vec<Hypothesis<'a, 'b>>,
     pub max_revisions: usize,
     pub params: ModelParams,
@@ -86,9 +75,8 @@ pub enum MCTSMove {
     MemorizeData,
     SampleRule,
     RegenerateRule,
-    RegenerateThisRule(usize, RuleContext),
     DeleteRules,
-    Empty,
+    RegenerateThisRule(usize, RuleContext),
     MemorizeDatum(Option<usize>),
     SampleAtom(Option<Atom>),
     DeleteRule(Option<usize>),
@@ -121,16 +109,14 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
         let mut moves = vec![];
         match self.handle {
             StateHandle::Terminal(..) => (),
-            StateHandle::Revising(rh) => mcts.revisings[rh].available_moves(mcts, &mut moves),
-            StateHandle::Sampling(sh) => mcts.samplings[sh].available_moves(mcts, &mut moves),
+            StateHandle::Revision(rh) => mcts.revisions[rh].available_moves(mcts, &mut moves),
         }
         moves
     }
     fn make_move<R: Rng>(&self, mv: &Self::Move, mcts: &mut TRSMCTS<'a, 'b>, rng: &mut R) -> Self {
         let state = match self.handle {
             StateHandle::Terminal(..) => panic!("inconsistent state: no move from terminal"),
-            StateHandle::Revising(..) => panic!("not ready for this"),
-            StateHandle::Sampling(sh) => mcts.samplings[sh].make_move(mv, mcts, rng),
+            StateHandle::Revision(rh) => mcts.revisions[rh].make_move(mv, mcts, rng),
         };
         mcts.add_state(state)
     }
@@ -212,7 +198,8 @@ impl<'a, 'b> Revise<'a, 'b> {
                 // We're stating an intention: just the internal state changes.
                 let mut state = self.clone();
                 state.spec = Some(MCTSMoveState::DeleteRules(None));
-                StateKind::Revising(state)
+                state.playout = None;
+                StateKind::Revision(state)
             }
             MCTSMove::DeleteRule(None) => {
                 // You're done deleting: the rules don't change, but internal state does.
@@ -224,7 +211,8 @@ impl<'a, 'b> Revise<'a, 'b> {
                     let mut state = self.clone();
                     state.spec = None;
                     state.n += 1;
-                    StateKind::Revising(state)
+                    state.playout = None;
+                    StateKind::Revision(state)
                 }
             }
             MCTSMove::DeleteRule(Some(n)) => {
@@ -241,22 +229,25 @@ impl<'a, 'b> Revise<'a, 'b> {
                             spec: None,
                             n: self.n + 1,
                             trs: trs,
+                            playout: None,
                         };
-                        StateKind::Revising(revising)
+                        StateKind::Revision(revising)
                     }
                 } else {
                     let revising = Revise {
                         spec: Some(MCTSMoveState::DeleteRules(Some(n))),
                         n: self.n,
                         trs: trs,
+                        playout: None,
                     };
-                    StateKind::Revising(revising)
+                    StateKind::Revision(revising)
                 }
             }
             MCTSMove::MemorizeData => {
                 let mut state = self.clone();
                 state.spec = Some(MCTSMoveState::MemorizeData(None));
-                StateKind::Revising(state)
+                state.playout = None;
+                StateKind::Revision(state)
             }
             MCTSMove::MemorizeDatum(None) => {
                 // You're done memorizing: the rules don't change, but internal state does.
@@ -268,7 +259,7 @@ impl<'a, 'b> Revise<'a, 'b> {
                     let mut state = self.clone();
                     state.spec = None;
                     state.n += 1;
-                    StateKind::Revising(state)
+                    StateKind::Revision(state)
                 }
             }
             MCTSMove::MemorizeDatum(Some(n)) => {
@@ -283,14 +274,16 @@ impl<'a, 'b> Revise<'a, 'b> {
                     },
                     n: self.n,
                     trs: trs,
+                    playout: None,
                 };
-                StateKind::Revising(revising)
+                StateKind::Revision(revising)
             }
             MCTSMove::SampleRule => {
                 // You're stating the intention to memorize: state changes.
                 let mut state = self.clone();
                 state.spec = Some(MCTSMoveState::SampleRule(RuleContext::default()));
-                StateKind::Revising(state)
+                state.playout = None;
+                StateKind::Revision(state)
             }
             MCTSMove::SampleAtom(atom) => match self.spec {
                 Some(MCTSMoveState::SampleRule(ref rc)) => {
@@ -312,8 +305,9 @@ impl<'a, 'b> Revise<'a, 'b> {
                         } else {
                             state.spec = Some(MCTSMoveState::SampleRule(new_context));
                         }
-                        println!("#   {}", state.trs.to_string().lines().join(" "));
-                        StateKind::Revising(state)
+                        state.playout = None;
+                        println!("#   \"{}\"", state.trs.to_string().lines().join(" "));
+                        StateKind::Revision(state)
                     } else {
                         panic!("RuleContext::replace failed");
                     }
@@ -344,8 +338,9 @@ impl<'a, 'b> Revise<'a, 'b> {
                             state.spec =
                                 Some(MCTSMoveState::RegenerateRule(Some((n, new_context))));
                         }
-                        println!("#   {}", state.trs.to_string().lines().join(" "));
-                        StateKind::Revising(state)
+                        state.playout = None;
+                        println!("#   \"{}\"", state.trs.to_string().lines().join(" "));
+                        StateKind::Revision(state)
                     } else {
                         panic!("RuleContext::replace failed");
                     }
@@ -356,182 +351,58 @@ impl<'a, 'b> Revise<'a, 'b> {
                 // You're stating the intention to regenerate: state changes.
                 let mut state = self.clone();
                 state.spec = Some(MCTSMoveState::RegenerateRule(None));
-                StateKind::Revising(state)
+                StateKind::Revision(state)
             }
             MCTSMove::RegenerateThisRule(n, ref context) => {
                 // You're stating where you want to regenerate: state changes.
                 let mut state = self.clone();
                 state.spec = Some(MCTSMoveState::RegenerateRule(Some((n, context.clone()))));
-                StateKind::Revising(state)
+                StateKind::Revision(state)
             }
-            _ => panic!("Invalid move"),
         }
     }
-}
-
-impl<'b> Sample<'b> {
-    pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>) {
-        match self.spec {
-            None => {
-                // There must be at least one rule in your TRS.
-                if !self.rules.is_empty() {
-                    moves.push(MCTSMove::Empty);
-                }
-                // We can always sample
-                moves.push(MCTSMove::SampleRule);
-                // We can only add data once and that only if there's data.
-                if !(self.data || mcts.data.is_empty()) {
-                    moves.push(MCTSMove::MemorizeData);
-                }
-            }
-            Some(MCTSMoveState::MemorizeData(None)) => {
-                (0..mcts.data.len())
-                    .map(|i_datum| MCTSMove::MemorizeDatum(Some(i_datum)))
-                    .for_each(|mv| moves.push(mv));
-            }
-            Some(MCTSMoveState::MemorizeData(Some(n))) => {
-                (n + 1..mcts.data.len())
-                    .map(|i_datum| MCTSMove::MemorizeDatum(Some(i_datum)))
-                    .for_each(|mv| moves.push(mv));
-                moves.push(MCTSMove::MemorizeDatum(None));
-            }
-            Some(MCTSMoveState::SampleRule(ref context)) => {
-                if let Some(place) = context.leftmost_hole() {
-                    self.lex
-                        .rulecontext_fillers(&context, &place)
-                        .into_iter()
-                        .map(|atom| MCTSMove::SampleAtom(atom))
-                        .for_each(|mv| moves.push(mv))
-                }
-            }
-            _ => panic!("inconsistent state: invalid move state"),
-        }
-    }
-    pub fn make_move<'a, R: Rng>(
-        &self,
-        mv: &MCTSMove,
-        mcts: &TRSMCTS<'a, 'b>,
-        _rng: &mut R,
-    ) -> StateKind<'a, 'b> {
-        match *mv {
-            MCTSMove::Empty => {
-                let trs =
-                    TRS::new_unchecked(&self.lex, mcts.deterministic, mcts.bg, self.rules.clone());
-                let revising = Revise {
-                    n: 0,
-                    spec: None,
-                    trs: trs,
-                };
-                StateKind::Revising(revising)
-            }
-            MCTSMove::MemorizeData => {
-                let mut state = self.clone();
-                state.spec = Some(MCTSMoveState::MemorizeData(None));
-                state.playout = None;
-                StateKind::Sampling(state)
-            }
-            MCTSMove::MemorizeDatum(None) => {
-                // You're done memorizing: the rules don't change, but internal state does.
-                let mut state = self.clone();
-                state.spec = None;
-                state.playout = None;
-                state.data = true;
-                StateKind::Sampling(state)
-            }
-            MCTSMove::MemorizeDatum(Some(n)) => {
-                // You're actively memorizing: rules and state change.
-                let mut state = self.clone();
-                state.rules.push(mcts.data[n].clone());
-                state.spec = if n + 1 == mcts.data.len() {
-                    None
-                } else {
-                    Some(MCTSMoveState::MemorizeData(Some(n)))
-                };
-                state.playout = None;
-                StateKind::Sampling(state)
-            }
-            MCTSMove::SampleRule => {
-                // You're stating the intention to memorize: state changes.
-                let mut state = self.clone();
-                state.spec = Some(MCTSMoveState::SampleRule(RuleContext::default()));
-                state.playout = None;
-                StateKind::Sampling(state)
-            }
-            MCTSMove::SampleAtom(atom) => match self.spec {
-                Some(MCTSMoveState::SampleRule(ref rc)) => {
-                    let place = rc.leftmost_hole().expect("How did this move happen?");
-                    let mut state = self.clone();
-                    let tp = {
-                        let mut types = HashMap::new();
-                        state.lex.infer_rulecontext(rc, &mut types).drop().ok();
-                        let lex_vars = state.lex.free_vars_applied();
-                        let schema = types[&place].generalize(&lex_vars);
-                        state.lex.instantiate(&schema)
-                    };
-                    let atom =
-                        atom.unwrap_or_else(|| Atom::Variable(state.lex.invent_variable(&tp)));
-                    if let Some(new_context) = rc.replace(&place, Context::from(atom)) {
-                        if let Ok(rule) = new_context.to_rule() {
-                            state.rules.push(rule);
-                            state.spec = None;
-                            state.playout = None;
-                            println!(
-                                "#   {}",
-                                state
-                                    .rules
-                                    .iter()
-                                    .map(|r| r.pretty(&state.lex.signature()))
-                                    .join("; ")
-                            );
-                            StateKind::Sampling(state)
-                        } else {
-                            let mut state = self.clone();
-                            println!(
-                                "#   {}{}{};",
-                                state
-                                    .rules
-                                    .iter()
-                                    .map(|r| r.pretty(&state.lex.signature()))
-                                    .join("; "),
-                                if state.rules.is_empty() { "" } else { "; " },
-                                new_context.pretty(&state.lex.signature())
-                            );
-                            state.spec = Some(MCTSMoveState::SampleRule(new_context));
-                            state.playout = None;
-                            StateKind::Sampling(state)
-                        }
-                    } else {
-                        panic!("inconsistent state: couldn't fill a supposed hole");
+    pub fn playout<R: Rng>(&self, mcts: &TRSMCTS<'a, 'b>, rng: &mut R) -> TRS<'a, 'b> {
+        let mut trs = self.trs.clone();
+        let mut n_revisions = self.n;
+        // Finish whatever move is in progress.
+        match &self.spec {
+            None => (),
+            Some(MCTSMoveState::DeleteRules(progress)) => {
+                println!("#        finishing deletion");
+                let lower_bound = progress.unwrap_or(0);
+                for idx in (lower_bound..trs.len()).rev() {
+                    if rng.gen() {
+                        trs.utrs.remove_idx(idx).ok();
                     }
                 }
-                _ => panic!("inconsistent state: invalid move"),
-            },
-            _ => panic!("inconsistent state: invalid move"),
-        }
-    }
-    pub fn playout<'a, R: Rng>(&self, mcts: &TRSMCTS<'a, 'b>, rng: &mut R) -> TRS<'a, 'b> {
-        let mut data = self.data;
-        let mut lex = self.lex.clone();
-        let mut rules = self.rules.clone();
-        match self.spec {
-            None => (),
+                n_revisions += 1;
+            }
             Some(MCTSMoveState::MemorizeData(progress)) => {
+                println!("#         finishing memorization");
                 let lower_bound = progress.unwrap_or(0);
                 for rule in mcts.data.iter().skip(lower_bound) {
                     if rng.gen() {
-                        rules.push(rule.clone());
+                        trs.append_clauses(vec![rule.clone()]).ok();
                     }
                 }
-                data = true;
+                n_revisions += 1;
             }
-            Some(MCTSMoveState::SampleRule(ref context)) => {
+            Some(MCTSMoveState::RegenerateRule(progress)) => {
+                let (n, context) = progress.clone().unwrap_or_else(|| {
+                    let idx = (0..trs.len()).choose(rng).unwrap();
+                    let rulecontext = RuleContext::from(trs.utrs.rules[idx].clone());
+                    let (_, place) = rulecontext.subcontexts().into_iter().choose(rng).unwrap();
+                    let context = rulecontext.replace(&place, Context::Hole).unwrap();
+                    (idx, context)
+                });
                 println!(
-                    "#         finalizing rule context: {}",
-                    context.pretty(&lex.signature())
+                    "#         finishing regeneration with: {}",
+                    context.pretty(&trs.lex.signature())
                 );
                 loop {
                     println!("#           looping");
-                    if let Ok(rule) = lex
+                    if let Ok(rule) = trs
+                        .lex
                         .sample_rule_from_context(
                             context.clone(),
                             mcts.atom_weights,
@@ -541,35 +412,67 @@ impl<'b> Sample<'b> {
                         )
                         .drop()
                     {
-                        println!("#         sampled: {}", rule.pretty(&lex.signature()));
-                        rules.push(rule);
+                        println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
+                        trs.append_clauses(vec![rule]).ok();
+                        trs.utrs.rules.swap_remove(n);
                         break;
                     }
                 }
+                n_revisions += 1;
             }
-            _ => panic!("inconsistent state: invalid move selected"),
+            Some(MCTSMoveState::SampleRule(ref context)) => {
+                println!(
+                    "#         finalizing sample: {}",
+                    context.pretty(&trs.lex.signature())
+                );
+                loop {
+                    println!("#           looping");
+                    if let Ok(rule) = trs
+                        .lex
+                        .sample_rule_from_context(
+                            context.clone(),
+                            mcts.atom_weights,
+                            mcts.invent,
+                            mcts.max_size,
+                            rng,
+                        )
+                        .drop()
+                    {
+                        println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
+                        trs.append_clauses(vec![rule]).ok();
+                        break;
+                    }
+                }
+                n_revisions += 1;
+            }
         }
-        loop {
-            // data, new_rule, empty
-            let moves =
-                WeightedIndex::new(&[(!(data || mcts.data.is_empty()) as usize as f64), 1.0, 1.0])
-                    .unwrap();
+        // Run the remaining moves
+        while n_revisions < mcts.max_revisions {
+            // data, sample, regenerate, delete, stop
+            let moves = WeightedIndex::new(&[
+                (!mcts.data.is_empty() as usize as f64),
+                1.0,
+                (!trs.is_empty() as usize as f64),
+                ((trs.len() > 1) as usize as f64),
+                1.0,
+            ])
+            .unwrap();
             match moves.sample(rng) {
                 0 => {
                     println!("#         adding data");
                     for rule in mcts.data {
                         if rng.gen() {
-                            rules.push(rule.clone());
+                            trs.append_clauses(vec![rule.clone()]).ok();
                         }
                     }
-                    data = true;
                 }
                 1 => {
-                    let schema = TypeSchema::Monotype(lex.fresh_type_variable());
+                    let schema = TypeSchema::Monotype(trs.lex.fresh_type_variable());
                     println!("#         sampling a rule");
                     loop {
                         println!("#           looping");
-                        if let Ok(rule) = lex
+                        if let Ok(rule) = trs
+                            .lex
                             .sample_rule(
                                 &schema,
                                 mcts.atom_weights,
@@ -579,20 +482,58 @@ impl<'b> Sample<'b> {
                             )
                             .drop()
                         {
-                            println!("#           sampled: {}", rule.pretty(&lex.signature()));
-                            rules.push(rule);
+                            println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
+                            trs.append_clauses(vec![rule]).ok();
                             break;
                         }
                     }
                 }
                 2 => {
+                    let idx = (0..trs.len()).choose(rng).unwrap();
+                    let rulecontext = RuleContext::from(trs.utrs.rules[idx].clone());
+                    let (_, place) = rulecontext.subcontexts().into_iter().choose(rng).unwrap();
+                    let context = rulecontext.replace(&place, Context::Hole).unwrap();
+                    println!(
+                        "#         regenerating: {}",
+                        context.pretty(&trs.lex.signature())
+                    );
+                    loop {
+                        println!("#           looping");
+                        if let Ok(rule) = trs
+                            .lex
+                            .sample_rule_from_context(
+                                context.clone(),
+                                mcts.atom_weights,
+                                mcts.invent,
+                                mcts.max_size,
+                                rng,
+                            )
+                            .drop()
+                        {
+                            println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
+                            trs.utrs.remove_idx(idx).ok();
+                            trs.utrs.insert_idx(idx, rule).ok();
+                            break;
+                        }
+                    }
+                }
+                3 => {
+                    println!("#         deleting rules");
+                    for idx in (0..trs.len()).rev() {
+                        if rng.gen() {
+                            trs.utrs.remove_idx(idx).ok();
+                        }
+                    }
+                }
+                4 => {
                     println!("#         stopping");
                     break;
                 }
                 _ => unreachable!(),
             }
+            n_revisions += 1;
         }
-        TRS::new_unchecked(&lex, mcts.deterministic, mcts.bg, rules)
+        trs
     }
 }
 
@@ -638,25 +579,18 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             atom_weights,
             max_size,
             terminals: vec![],
-            samplings: vec![],
-            revisings: vec![],
+            revisions: vec![],
         }
     }
     pub fn add_state(&mut self, state: StateKind<'a, 'b>) -> MCTSState {
         match state {
             StateKind::Terminal(h) => self.add_terminal(h),
-            StateKind::Revising(r) => self.add_revising(r),
-            StateKind::Sampling(s) => self.add_sampling(s),
+            StateKind::Revision(r) => self.add_revision(r),
         }
     }
-    pub fn add_sampling(&mut self, state: Sample<'b>) -> MCTSState {
-        self.samplings.push(state);
-        let handle = StateHandle::Sampling(self.samplings.len() - 1);
-        MCTSState { handle }
-    }
-    pub fn add_revising(&mut self, state: Revise<'a, 'b>) -> MCTSState {
-        self.revisings.push(state);
-        let handle = StateHandle::Revising(self.revisings.len() - 1);
+    pub fn add_revision(&mut self, state: Revise<'a, 'b>) -> MCTSState {
+        self.revisions.push(state);
+        let handle = StateHandle::Revision(self.revisions.len() - 1);
         MCTSState { handle }
     }
     pub fn add_terminal(&mut self, state: Hypothesis<'a, 'b>) -> MCTSState {
@@ -665,14 +599,13 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         MCTSState { handle }
     }
     pub fn root(&mut self) -> MCTSState {
-        let state = Sample {
-            lex: self.lexicon.clone(),
-            rules: vec![],
+        let state = Revise {
+            trs: TRS::new_unchecked(&self.lexicon, self.deterministic, self.bg, vec![]),
             spec: None,
-            data: false,
+            n: 0,
             playout: None,
         };
-        self.add_sampling(state)
+        self.add_revision(state)
     }
 }
 
@@ -737,19 +670,18 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
     ) -> Self::StateEvaluation {
         println!("#     evaluating");
         match state.handle {
-            StateHandle::Terminal(sh) => {
+            StateHandle::Terminal(th) => {
                 println!("#       node is terminal");
-                mcts.terminals[sh].lposterior
+                mcts.terminals[th].lposterior
             }
-            StateHandle::Revising(_) => panic!("not prepared for this"),
-            StateHandle::Sampling(sh) => match &mcts.samplings[sh].playout {
+            StateHandle::Revision(rh) => match &mcts.revisions[rh].playout {
                 Some(th) => {
                     println!("#       found a playout");
                     mcts.terminals[*th].lposterior
                 }
                 None => {
                     println!("#       playing out");
-                    let trs = mcts.samplings[sh].playout(mcts, rng);
+                    let trs = mcts.revisions[rh].playout(mcts, rng);
                     println!(
                         "#         simulated: \"{}\"",
                         trs.to_string().lines().join(" ")
@@ -758,80 +690,10 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                     let score = h.lposterior;
                     let th = mcts.terminals.len();
                     mcts.terminals.push(h);
-                    mcts.samplings[sh].playout = Some(th);
+                    mcts.revisions[rh].playout = Some(th);
                     score
                 }
             },
         }
     }
 }
-
-//impl Move {
-//    pub fn take<'a, 'b, R: Rng>(
-//        &self,
-//        mcts: &TRSMCTS<'a, 'b>,
-//        rng: &mut R,
-//        parents: &[&TRS<'a, 'b>],
-//    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-//        match *self {
-//            Move::Compose => parents[0].compose(),
-//            Move::DeleteRule => parents[0].delete_rule(),
-//            Move::DeleteRules(t) => parents[0].delete_rules(rng, t),
-//            Move::Generalize => parents[0].generalize(),
-//            Move::LocalDifference => parents[0].local_difference(rng),
-//            Move::Memorize(deterministic) => Ok(TRS::memorize(
-//                &mcts.lexicon,
-//                deterministic,
-//                &mcts.bg,
-//                &mcts.data,
-//            )),
-//            Move::MemorizeOne => parents[0].memorize_one(&mcts.data),
-//            Move::Recurse(n) => parents[0].recurse(n),
-//            Move::RegenerateRule(aw, mss) => parents[0].regenerate_rule(aw, mss, rng),
-//            Move::SampleRule(aw, mss) => parents[0].sample_rule(aw, mss, rng),
-//            Move::Variablize => parents[0].variablize(),
-//        }
-//    }
-//    pub fn deterministic(&self) -> bool {
-//        match *self {
-//            Move::Compose
-//            | Move::DeleteRule
-//            | Move::Generalize
-//            | Move::LocalDifference
-//            | Move::Memorize(_)
-//            | Move::MemorizeOne
-//            | Move::Variablize => true,
-//            Move::DeleteRules(_)
-//            | Move::Recurse(_)
-//            | Move::RegenerateRule(..)
-//            | Move::SampleRule(..) => false,
-//        }
-//    }
-//    pub fn num_parents(&self) -> usize {
-//        match *self {
-//            Move::Memorize(_) => 0,
-//            _ => 1,
-//        }
-//    }
-//    pub fn applies(&self, parents: &[&TRS], data: &[Rule]) -> bool {
-//        self.num_parents() == parents.len()
-//            && match *self {
-//                Move::Compose
-//                | Move::DeleteRule
-//                | Move::DeleteRules(_)
-//                | Move::Generalize
-//                | Move::LocalDifference
-//                | Move::Recurse(_)
-//                | Move::RegenerateRule(..)
-//                | Move::Variablize => !parents[0].is_empty(),
-//                Move::MemorizeOne => !data.is_empty(),
-//                _ => true,
-//            }
-//    }
-//    pub fn data_sensitive(&self) -> bool {
-//        match *self {
-//            Move::Memorize(_) | Move::MemorizeOne => true,
-//            _ => false,
-//        }
-//    }
-//}
