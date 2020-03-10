@@ -88,7 +88,25 @@ pub enum MCTSMove {
     // - Variablize
 }
 
+impl<'a, 'b> StateKind<'a, 'b> {
+    pub fn new(trs: TRS<'a, 'b>, n: usize, mcts: &TRSMCTS<'a, 'b>) -> Self {
+        if n + 1 >= mcts.max_revisions {
+            StateKind::Terminal(Hypothesis::new(trs, &mcts.data, 1.0, mcts.params))
+        } else {
+            StateKind::Revision(Revise::new(trs, None, n + 1))
+        }
+    }
+}
+
 impl<'a, 'b> Revise<'a, 'b> {
+    pub fn new(trs: TRS<'a, 'b>, spec: Option<MCTSMoveState>, n: usize) -> Self {
+        Revise {
+            trs,
+            spec,
+            n,
+            playout: None,
+        }
+    }
     pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>) {
         match self.spec {
             None => {
@@ -153,185 +171,126 @@ impl<'a, 'b> Revise<'a, 'b> {
         mv: &MCTSMove,
         mcts: &TRSMCTS<'a, 'b>,
         _rng: &mut R,
-    ) -> StateKind<'a, 'b> {
+    ) -> Option<StateKind<'a, 'b>> {
         match *mv {
             MCTSMove::Generalize => {
-                // TODO: fix me via pruning
-                let mut trss = self.trs.generalize().unwrap();
-                let trs = trss.swap_remove(0);
-                let state = Revise {
-                    spec: None,
-                    n: self.n + 1,
-                    trs: trs,
-                    playout: None,
-                };
-                StateKind::Revision(state)
+                let mut trss = self.trs.generalize().ok()?;
+                Some(StateKind::new(trss.swap_remove(0), self.n, mcts))
             }
             MCTSMove::DeleteRules => {
                 // We're stating an intention: just the internal state changes.
-                let mut state = self.clone();
-                state.spec = Some(MCTSMoveState::DeleteRules(None));
-                state.playout = None;
-                StateKind::Revision(state)
+                let state = Revise::new(
+                    self.trs.clone(),
+                    Some(MCTSMoveState::DeleteRules(None)),
+                    self.n,
+                );
+                Some(StateKind::Revision(state))
             }
             MCTSMove::DeleteRule(None) => {
-                // You're done deleting: the rules don't change, but internal state does.
-                if self.n + 1 >= mcts.max_revisions {
-                    let hypothesis =
-                        Hypothesis::new(self.trs.clone(), &mcts.data, 1.0, mcts.params);
-                    StateKind::Terminal(hypothesis)
-                } else {
-                    let mut state = self.clone();
-                    state.spec = None;
-                    state.n += 1;
-                    state.playout = None;
-                    StateKind::Revision(state)
-                }
+                // You're done deleting: the rules don't change, but internal state resets.
+                Some(StateKind::new(self.trs.clone(), self.n, mcts))
             }
             MCTSMove::DeleteRule(Some(n)) => {
                 // You're actively deleting or finished not by choice: rules and state change.
                 let mut trs = self.trs.clone();
-                trs.utrs.remove_idx(n).ok();
+                trs.utrs.remove_idx(n).ok()?;
                 if n >= trs.len() {
-                    if self.n + 1 >= mcts.max_revisions {
-                        let hypothesis =
-                            Hypothesis::new(self.trs.clone(), &mcts.data, 1.0, mcts.params);
-                        StateKind::Terminal(hypothesis)
-                    } else {
-                        let revising = Revise {
-                            spec: None,
-                            n: self.n + 1,
-                            trs: trs,
-                            playout: None,
-                        };
-                        StateKind::Revision(revising)
-                    }
+                    Some(StateKind::new(trs, self.n, mcts))
                 } else {
-                    let revising = Revise {
-                        spec: Some(MCTSMoveState::DeleteRules(Some(n))),
-                        n: self.n,
-                        trs: trs,
-                        playout: None,
-                    };
-                    StateKind::Revision(revising)
+                    let state = Revise::new(trs, Some(MCTSMoveState::DeleteRules(Some(n))), self.n);
+                    Some(StateKind::Revision(state))
                 }
             }
             MCTSMove::MemorizeData => {
-                let mut state = self.clone();
-                state.spec = Some(MCTSMoveState::MemorizeData(None));
-                state.playout = None;
-                StateKind::Revision(state)
+                let state = Revise::new(
+                    self.trs.clone(),
+                    Some(MCTSMoveState::MemorizeData(None)),
+                    self.n,
+                );
+                Some(StateKind::Revision(state))
             }
             MCTSMove::MemorizeDatum(None) => {
                 // You're done memorizing: the rules don't change, but internal state does.
-                if self.n + 1 >= mcts.max_revisions {
-                    let hypothesis =
-                        Hypothesis::new(self.trs.clone(), &mcts.data, 1.0, mcts.params);
-                    StateKind::Terminal(hypothesis)
-                } else {
-                    let mut state = self.clone();
-                    state.spec = None;
-                    state.n += 1;
-                    StateKind::Revision(state)
-                }
+                Some(StateKind::new(self.trs.clone(), self.n, mcts))
             }
             MCTSMove::MemorizeDatum(Some(n)) => {
-                // You're actively memorizing: rules and state change.
+                // You're actively memorizing or finished not by choice: rules and state change.
                 let mut trs = self.trs.clone();
-                trs.append_clauses(vec![mcts.data[n].clone()]).ok();
-                let revising = Revise {
-                    spec: if n + 1 == mcts.data.len() {
-                        None
-                    } else {
-                        Some(MCTSMoveState::MemorizeData(Some(n)))
-                    },
-                    n: self.n,
-                    trs: trs,
-                    playout: None,
-                };
-                StateKind::Revision(revising)
+                trs.append_clauses(vec![mcts.data[n].clone()]).ok()?;
+                if n + 1 == mcts.data.len() {
+                    Some(StateKind::new(trs, self.n, mcts))
+                } else {
+                    let spec = Some(MCTSMoveState::MemorizeData(Some(n)));
+                    let state = Revise::new(trs, spec, self.n);
+                    Some(StateKind::Revision(state))
+                }
             }
             MCTSMove::SampleRule => {
-                // You're stating the intention to memorize: state changes.
-                let mut state = self.clone();
-                state.spec = Some(MCTSMoveState::SampleRule(RuleContext::default()));
-                state.playout = None;
-                StateKind::Revision(state)
+                // You're stating the intention to sample: state changes.
+                let spec = Some(MCTSMoveState::SampleRule(RuleContext::default()));
+                let state = Revise::new(self.trs.clone(), spec, self.n);
+                Some(StateKind::Revision(state))
             }
-            MCTSMove::SampleAtom(atom) => match self.spec {
-                Some(MCTSMoveState::SampleRule(ref rc)) => {
-                    let place = rc.leftmost_hole().expect("Sampling rule without holes.");
-                    let mut state = self.clone();
-                    let tp = {
-                        let mut types = HashMap::new();
-                        state.trs.lex.infer_rulecontext(rc, &mut types).drop().ok();
-                        let lex_vars = state.trs.lex.free_vars_applied();
-                        let schema = types[&place].generalize(&lex_vars);
-                        state.trs.lex.instantiate(&schema)
-                    };
-                    let atom =
-                        atom.unwrap_or_else(|| Atom::Variable(state.trs.lex.invent_variable(&tp)));
-                    if let Some(new_context) = rc.replace(&place, Context::from(atom)) {
-                        if let Ok(rule) = new_context.to_rule() {
-                            state.trs.append_clauses(vec![rule]).ok();
-                            state.spec = None;
-                        } else {
-                            state.spec = Some(MCTSMoveState::SampleRule(new_context));
-                        }
-                        state.playout = None;
-                        println!("#   \"{}\"", state.trs.to_string().lines().join(" "));
-                        StateKind::Revision(state)
-                    } else {
-                        panic!("RuleContext::replace failed");
-                    }
-                }
-                Some(MCTSMoveState::RegenerateRule(Some((n, ref context)))) => {
-                    let place = context.leftmost_hole().expect("rule has no holes.");
-                    let mut state = self.clone();
-                    let tp = {
-                        let mut types = HashMap::new();
-                        state
-                            .trs
-                            .lex
-                            .infer_rulecontext(context, &mut types)
-                            .drop()
-                            .ok();
-                        let lex_vars = state.trs.lex.free_vars_applied();
-                        let schema = types[&place].generalize(&lex_vars);
-                        state.trs.lex.instantiate(&schema)
-                    };
-                    let atom =
-                        atom.unwrap_or_else(|| Atom::Variable(state.trs.lex.invent_variable(&tp)));
-                    if let Some(new_context) = context.replace(&place, Context::from(atom)) {
-                        if let Ok(rule) = new_context.to_rule() {
-                            state.trs.utrs.rules.push(rule);
-                            state.trs.utrs.rules.swap_remove(n);
-                            state.spec = None;
-                        } else {
-                            state.spec =
-                                Some(MCTSMoveState::RegenerateRule(Some((n, new_context))));
-                        }
-                        state.playout = None;
-                        println!("#   \"{}\"", state.trs.to_string().lines().join(" "));
-                        StateKind::Revision(state)
-                    } else {
-                        panic!("RuleContext::replace failed");
-                    }
-                }
-                _ => panic!("move state doesn't match move"),
-            },
             MCTSMove::RegenerateRule => {
                 // You're stating the intention to regenerate: state changes.
-                let mut state = self.clone();
-                state.spec = Some(MCTSMoveState::RegenerateRule(None));
-                StateKind::Revision(state)
+                let spec = Some(MCTSMoveState::RegenerateRule(None));
+                let state = Revise::new(self.trs.clone(), spec, self.n);
+                Some(StateKind::Revision(state))
             }
             MCTSMove::RegenerateThisRule(n, ref context) => {
                 // You're stating where you want to regenerate: state changes.
-                let mut state = self.clone();
-                state.spec = Some(MCTSMoveState::RegenerateRule(Some((n, context.clone()))));
-                StateKind::Revision(state)
+                let spec = Some(MCTSMoveState::RegenerateRule(Some((n, context.clone()))));
+                let state = Revise::new(self.trs.clone(), spec, self.n);
+                Some(StateKind::Revision(state))
             }
+            MCTSMove::SampleAtom(atom) => match self.spec {
+                Some(MCTSMoveState::SampleRule(ref context)) => {
+                    let place = context.leftmost_hole()?;
+                    let mut trs = self.trs.clone();
+                    let tp = {
+                        let mut types = HashMap::new();
+                        trs.lex.infer_rulecontext(context, &mut types).drop().ok();
+                        let lex_vars = trs.lex.free_vars_applied();
+                        let schema = types[&place].generalize(&lex_vars);
+                        trs.lex.instantiate(&schema)
+                    };
+                    let atom = atom.unwrap_or_else(|| Atom::Variable(trs.lex.invent_variable(&tp)));
+                    let new_context = context.replace(&place, Context::from(atom))?;
+                    if let Ok(rule) = new_context.to_rule() {
+                        trs.append_clauses(vec![rule]).ok()?;
+                        println!("#   \"{}\"", trs.to_string().lines().join(" "));
+                        Some(StateKind::new(trs, self.n, mcts))
+                    } else {
+                        let spec = Some(MCTSMoveState::SampleRule(new_context));
+                        let state = Revise::new(trs, spec, self.n);
+                        Some(StateKind::Revision(state))
+                    }
+                }
+                Some(MCTSMoveState::RegenerateRule(Some((n, ref context)))) => {
+                    let place = context.leftmost_hole()?;
+                    let mut trs = self.trs.clone();
+                    let tp = {
+                        let mut types = HashMap::new();
+                        trs.lex.infer_rulecontext(context, &mut types).drop().ok();
+                        let lex_vars = trs.lex.free_vars_applied();
+                        let schema = types[&place].generalize(&lex_vars);
+                        trs.lex.instantiate(&schema)
+                    };
+                    let atom = atom.unwrap_or_else(|| Atom::Variable(trs.lex.invent_variable(&tp)));
+                    let new_context = context.replace(&place, Context::from(atom))?;
+                    if let Ok(rule) = new_context.to_rule() {
+                        trs.utrs.remove_idx(n).ok()?;
+                        trs.utrs.insert_idx(n, rule).ok()?;
+                        println!("#   \"{}\"", trs.to_string().lines().join(" "));
+                        Some(StateKind::new(trs, self.n, mcts))
+                    } else {
+                        let spec = Some(MCTSMoveState::RegenerateRule(Some((n, new_context))));
+                        let state = Revise::new(trs, spec, self.n);
+                        Some(StateKind::Revision(state))
+                    }
+                }
+                _ => panic!("MCTSMoveState doesn't match MCTSMove"),
+            },
         }
     }
     pub fn playout<R: Rng>(&self, mcts: &TRSMCTS<'a, 'b>, rng: &mut R) -> TRS<'a, 'b> {
@@ -521,12 +480,17 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
         }
         moves
     }
-    fn make_move<R: Rng>(&self, mv: &Self::Move, mcts: &mut TRSMCTS<'a, 'b>, rng: &mut R) -> Self {
+    fn make_move<R: Rng>(
+        &self,
+        mv: &Self::Move,
+        mcts: &mut TRSMCTS<'a, 'b>,
+        rng: &mut R,
+    ) -> Option<Self> {
         let state = match self.handle {
             StateHandle::Terminal(..) => panic!("inconsistent state: no move from terminal"),
             StateHandle::Revision(rh) => mcts.revisions[rh].make_move(mv, mcts, rng),
-        };
-        mcts.add_state(state)
+        }?;
+        Some(mcts.add_state(state))
     }
     fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut TRSMCTS) -> Vec<Self::Move> {
         self.available_moves(mcts)
