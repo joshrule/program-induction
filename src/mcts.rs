@@ -17,7 +17,7 @@ pub trait State<M: MCTS<State = Self>>: PartialEq + Sized + Sync {
     type Move: Clone + Sync + Send;
     type MoveList: IntoIterator<Item = Self::Move>;
     fn available_moves(&self, mcts: &mut M) -> Self::MoveList;
-    fn make_move<R: Rng>(&self, mov: &Self::Move, mcts: &mut M, rng: &mut R) -> Self;
+    fn make_move<R: Rng>(&self, mov: &Self::Move, mcts: &mut M, rng: &mut R) -> Option<Self>;
     fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut M) -> Self::MoveList;
 }
 
@@ -315,40 +315,59 @@ impl<M: MCTS> SearchTree<M> {
             }
         }
     }
-    // Add `MoveInfo`s representing each of the newly created `child_states`.
     fn update_tree<R: Rng>(
         &mut self,
-        child_state: <M>::State,
+        move_result: Option<<M>::State>,
         mov: MoveHandle,
         rng: &mut R,
     ) -> Option<NodeHandle> {
-        // Identify the parent handle and child handle.
-        let ph = self.moves[mov].parent;
-        let ch = self.find_or_make_node(child_state, rng);
-        // Prevent cycles: don't add moves that make a child its own ancestor.
-        if self.ancestors(ph).contains(&ch) || ph == ch {
-            println!(
-                "#     Cycle detected! Ignoring the child ({} {}).",
-                self.ancestors(ph).contains(&ch),
-                ph == ch
-            );
-            // Remove the move from the tree.
-            self.nodes[ph].outgoing = self.nodes[ph]
+        match move_result {
+            None => self.prune(mov),
+            Some(child_state) => {
+                // Identify the parent handle and child handle.
+                let ph = self.moves[mov].parent;
+                let ch = self.find_or_make_node(child_state, rng);
+                // Prevent cycles: don't add moves that make a child its own ancestor.
+                if self.ancestors(ph).contains(&ch) || ph == ch {
+                    println!(
+                        "#     Cycle detected! Ignoring the child ({} {}).",
+                        self.ancestors(ph).contains(&ch),
+                        ph == ch
+                    );
+                    self.prune(mov)
+                } else {
+                    // Give the move a child.
+                    self.moves[mov].child = Some(ch);
+                    // Add the move as a parent of the child, if new.
+                    if !self.nodes[ch].incoming.contains(&mov) {
+                        self.nodes[ch].incoming.push(mov);
+                    }
+                    Some(ch)
+                }
+            }
+        }
+    }
+    fn prune(&mut self, dead_move: MoveHandle) -> Option<MoveHandle> {
+        let mut stack = vec![dead_move];
+        while let Some(mh) = stack.pop() {
+            // Remove the move from the parent's outgoing list.
+            let mv = &self.moves[mh];
+            self.nodes[mv.parent].outgoing = self.nodes[mv.parent]
                 .outgoing
                 .iter()
-                .filter(|&mh| *mh == mov)
+                .filter(|&omh| *omh == mh)
                 .copied()
                 .collect();
-            None
-        } else {
-            // Give the move a child.
-            self.moves[mov].child = Some(ch);
-            // Add the move as a parent of the child, if new.
-            if !self.nodes[ch].incoming.contains(&mov) {
-                self.nodes[ch].incoming.push(mov);
+            // The parent can't be terminal (you just tried to take a move from it).
+            // You can prune the parent node if it has no other children.
+            // Do this by removing any incoming edges and putting them on the stack.
+            if self.nodes[mv.parent].outgoing.is_empty() {
+                while let Some(imh) = self.nodes[mv.parent].incoming.pop() {
+                    stack.push(imh);
+                }
             }
-            Some(ch)
         }
+        None
     }
     fn find_or_make_node<R: Rng>(&mut self, s: <M>::State, rng: &mut R) -> NodeHandle {
         match self.nodes.iter().position(|n| n.state == s) {
