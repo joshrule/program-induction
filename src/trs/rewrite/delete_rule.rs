@@ -1,7 +1,8 @@
-use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use rand::Rng;
+use std::collections::HashMap;
 use term_rewriting::{Rule, Term};
+use trs::{as_result, SampleError, TRS};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Delete a learned rule from the rewrite system.
@@ -72,9 +73,16 @@ impl<'a, 'b> TRS<'a, 'b> {
         if rules.is_empty() {
             Err(SampleError::OptionsExhausted)
         } else {
-            let mut new_rules = Vec::with_capacity(rules.len());
+            let mut new_rules: Vec<Rule> = Vec::with_capacity(rules.len());
             while !rules.is_empty() {
-                let new_rule = rules[0].clone();
+                let mut new_rule = rules[0].clone();
+                let n = new_rules
+                    .iter()
+                    .map(|r| r.lhs.variables().iter().map(|v| v.id).max().unwrap_or(0))
+                    .max()
+                    .map(|n| n + 1)
+                    .unwrap_or(0);
+                new_rule.offset(n);
                 if (start == 0 && stop > 0)
                     || (start > 0
                         && rules
@@ -86,6 +94,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                         .all(|rule: &Rule| Term::pmatch(vec![(&rule.lhs, &new_rule.lhs)]).is_none())
                 {
                     // in safe zone or outside safe zone with useful rule
+                    new_rule.canonicalize(&mut HashMap::new());
                     new_rules.push(new_rule);
                 }
                 start = 1.max(start) - 1;

@@ -15,9 +15,15 @@ impl<'a, 'b> TRS<'a, 'b> {
                 p_rule,
                 atom_weights,
             } => {
-                let p_num_rules = Box::new(move |k| fail_geometric_logpdf(k, 1.0 - p_rule));
+                let p_num_rules = |k| fail_geometric_logpdf(k, 1.0 - p_rule);
                 self.lex
-                    .logprior_utrs(&self.utrs, p_num_rules, atom_weights, true)
+                    .logprior_utrs(
+                        &self.utrs,
+                        p_num_rules,
+                        atom_weights,
+                        true,
+                        &mut self.lex.0.ctx.clone(),
+                    )
                     .unwrap_or(NEG_INFINITY)
             }
             Prior::BlockGenerative {
@@ -26,10 +32,15 @@ impl<'a, 'b> TRS<'a, 'b> {
                 n_blocks,
                 atom_weights,
             } => {
-                let p_num_rules =
-                    Box::new(move |k| block_generative_logpdf(p_null, 1.0 - p_rule, k, n_blocks));
+                let p_num_rules = |k| block_generative_logpdf(p_null, 1.0 - p_rule, k, n_blocks);
                 self.lex
-                    .logprior_utrs(&self.utrs, p_num_rules, atom_weights, true)
+                    .logprior_utrs(
+                        &self.utrs,
+                        p_num_rules,
+                        atom_weights,
+                        true,
+                        &mut self.lex.0.ctx.clone(),
+                    )
                     .unwrap_or(NEG_INFINITY)
             }
             Prior::StringBlockGenerative {
@@ -41,8 +52,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                 t_max,
                 d_max,
             } => {
-                let p_num_rules =
-                    Box::new(move |k| block_generative_logpdf(p_null, 1.0 - p_rule, k, n_blocks));
+                let p_num_rules = |k| block_generative_logpdf(p_null, 1.0 - p_rule, k, n_blocks);
                 self.lex
                     .logprior_srs(
                         &self.utrs,
@@ -52,6 +62,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                         dist,
                         t_max,
                         d_max,
+                        &mut self.lex.0.ctx.clone(),
                     )
                     .unwrap_or(NEG_INFINITY)
             }

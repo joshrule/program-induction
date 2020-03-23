@@ -4,25 +4,38 @@ use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term, Variable};
 use trs::{as_result, rewrite::FactoredSolution, SampleError, TRS};
 
-type Composition = (Term, Place, Place, Type);
+pub type Composition = (Term, Place, Place, Type);
 
 impl<'a, 'b> TRS<'a, 'b> {
     pub fn compose(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let (_, clauses): (Vec<usize>, Vec<Rule>) = self.clauses().into_iter().unzip();
-        let trss = clauses
-            .iter()
-            .flat_map(|r| self.find_compositions(r))
-            .unique()
+        let trss = self
+            .find_all_compositions()
+            .into_iter()
             .filter_map(|composition| self.try_composition(&composition, &clauses).ok())
             .filter_map(|solution| self.adopt_composition(solution))
             .collect_vec();
         as_result(trss)
     }
+    pub fn find_all_compositions(&self) -> Vec<Composition> {
+        self.clauses()
+            .into_iter()
+            .map(|(_, c)| c)
+            .flat_map(|c| self.find_compositions(&c))
+            .unique()
+            .collect_vec()
+    }
+    pub fn compose_by(&self, composition: &Composition) -> Option<TRS<'a, 'b>> {
+        let clauses = self.clauses().into_iter().map(|(_, c)| c).collect_vec();
+        self.try_composition(composition, &clauses)
+            .ok()
+            .and_then(|solution| self.adopt_composition(solution))
+    }
     fn find_compositions(&self, rule: &Rule) -> Vec<Composition> {
         // Typecheck the rule.
-        let snapshot = self.lex.snapshot();
+        let mut ctx = self.lex.0.ctx.clone();
         let mut map = HashMap::new();
-        if self.lex.infer_rule(rule, &mut map).keep().is_err() {
+        if self.lex.infer_rule(rule, &mut map, &mut ctx).is_err() {
             return vec![];
         }
         // Find the symbols in the rule that might decompose.
@@ -37,23 +50,22 @@ impl<'a, 'b> TRS<'a, 'b> {
                 *position = 1;
             }
             // If the argument has the appropriate type:
-            let outer_snapshot = self.lex.snapshot();
-            if self.lex.unify(&tp, &map[&lhs_place]).is_ok() {
+            let outer_snapshot = ctx.len();
+            if ctx.unify(&tp, &map[&lhs_place]).is_ok() {
                 // For each subterm in the RHS:
                 for rhs_place in &rhss {
                     // If the argument has the appropriate type:
-                    let inner_snapshot = self.lex.snapshot();
-                    if rhs_place.len() > 1 && self.lex.unify(&tp, &map[rhs_place]).is_ok() {
+                    let inner_snapshot = ctx.len();
+                    if rhs_place.len() > 1 && ctx.unify(&tp, &map[rhs_place]).is_ok() {
                         // that item can be decomposed.
-                        let tp = tp.apply(&self.lex.0.ctx.read().expect("poisoned context"));
+                        let tp = tp.apply(&ctx);
                         transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone(), tp));
                     }
-                    self.lex.rollback(inner_snapshot);
+                    ctx.rollback(inner_snapshot);
                 }
             }
-            self.lex.rollback(outer_snapshot);
+            ctx.rollback(outer_snapshot);
         }
-        self.lex.rollback(snapshot);
         transforms
     }
     fn try_composition(
@@ -67,9 +79,9 @@ impl<'a, 'b> TRS<'a, 'b> {
         let tp = Type::arrow(t.3.clone(), t.3.clone());
         let f = lex.invent_operator(None, 0, &tp);
         let g = lex.invent_operator(None, 0, &tp);
-        let v = lex.invent_variable(&t.3);
+        let x = Variable { id: 0 };
         // Add the rule T x = F (G x).
-        let master = vec![TRS::make_txfgx_rule(t.0.clone(), f, g, v, op)?];
+        let master = vec![TRS::make_txfgx_rule(t.0.clone(), f, g, x, op)?];
         // Process the existing rules into subproblems.
         let mut old_rules = vec![];
         let mut f_subproblem = vec![];

@@ -22,11 +22,21 @@ mod sample_rule;
 mod swap_lhs_and_rhs;
 mod variablize;
 
+pub use self::compose::Composition;
+pub use self::recurse::Recursion;
+pub use self::variablize::Variablization;
 use itertools::Itertools;
 use rand::{seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};
 use term_rewriting::{MergeStrategy, Operator, Rule, Term, Variable, TRS as UntypedTRS};
 use trs::{Lexicon, Prior, SampleError, TypeError};
+// For hack
+use rand::{
+    distributions::{Distribution, WeightedIndex},
+    seq::SliceRandom,
+};
+use term_rewriting::{Context, RuleContext};
+use trs::Environment;
 
 pub(crate) type Rules = Vec<Rule>;
 pub(crate) type FactoredSolution<'a> = (Lexicon<'a>, Rules, Rules, Rules, Rules);
@@ -51,37 +61,23 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
     /// # extern crate term_rewriting;
-    /// # use programinduction::trs::{TRS, Lexicon};
-    /// # use term_rewriting::{Signature, parse_rule};
+    /// # use programinduction::trs::{parse_lexicon, parse_rule, TRS};
     /// # use polytype::Context as TypeContext;
-    /// let mut sig = Signature::default();
-    ///
-    /// let mut ops = vec![];
-    /// sig.new_op(2, Some("PLUS".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int), tp!(int)]]);
-    /// sig.new_op(1, Some("SUCC".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int)]]);
-    /// sig.new_op(0, Some("ZERO".to_string()));
-    /// ops.push(ptp![int]);
+    /// let mut lex = parse_lexicon(
+    ///     "PLUS/2: int -> int -> int; SUCC/1: int-> int; ZERO/0: int;",
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
     ///
     /// let rules = vec![
-    ///     parse_rule(&mut sig, "PLUS(x_ ZERO) = x_").expect("parsed rule"),
-    ///     parse_rule(&mut sig, "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_))").expect("parsed rule"),
+    ///     parse_rule("PLUS(x_ ZERO) = x_", &mut lex).expect("parsed rule"),
+    ///     parse_rule("PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_))", &mut lex).expect("parsed rule"),
     /// ];
     ///
-    /// let vars = vec![
-    ///     ptp![int],
-    ///     ptp![int],
-    ///     ptp![int],
-    /// ];
     ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
+    /// let trs = TRS::new(&lex, true, &[], rules).unwrap();
     ///
-    /// let ctx = lexicon.context();
-    ///
-    /// let trs = TRS::new(&lexicon, true, &[], rules).unwrap();
-    ///
-    /// assert_eq!(trs.size(), 12);
+    /// assert_eq!(trs.len(), 2);
     /// ```
     ///
     /// [`Lexicon`]: struct.Lexicon.html
@@ -92,7 +88,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         rules: Vec<Rule>,
     ) -> Result<TRS<'c, 'd>, TypeError> {
         let trs = TRS::new_unchecked(lexicon, deterministic, background, rules);
-        lexicon.infer_utrs(&trs.utrs)?;
+        lexicon.infer_utrs(&trs.utrs, &mut lexicon.0.ctx.clone())?;
         Ok(trs)
     }
 
@@ -189,10 +185,6 @@ impl<'a, 'b> TRS<'a, 'b> {
         old_clause: &Rule,
         new_clause: Rule,
     ) -> Result<&mut TRS<'a, 'b>, SampleError> {
-        // TODO: why are we type-checking here?
-        self.lex
-            .infer_rule(&new_clause, &mut HashMap::new())
-            .drop()?;
         self.utrs.replace(n, old_clause, new_clause)?;
         Ok(self)
     }
@@ -311,6 +303,136 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// Is the `Lexicon` deterministic?
     pub fn is_deterministic(&self) -> bool {
         self.utrs.is_deterministic()
+    }
+
+    pub fn take_move<R: Rng>(
+        &self,
+        data: &[Rule],
+        invent: bool,
+        max_size: usize,
+        rules: &[Rule],
+        rng: &mut R,
+    ) -> (TRS<'a, 'b>, String) {
+        loop {
+            let mut trs = self.clone();
+            for rule in trs.utrs.rules.iter_mut() {
+                rule.canonicalize(&mut HashMap::new());
+            }
+            let moves = WeightedIndex::new(&[
+                // Memorize Data
+                (!data.is_empty() as usize as f64),
+                // Sample Rule
+                1.0,
+                // Regenerate
+                (!trs.is_empty() as usize as f64),
+                // Delete
+                ((trs.len() > 1) as usize as f64),
+                // Variablize
+                (!trs.is_empty() as usize as f64),
+                // Generalize
+                (!trs.is_empty() as usize as f64),
+                // Compose
+                (!trs.is_empty() as usize as f64),
+                // Recurse
+                (!trs.is_empty() as usize as f64),
+                // Stop
+                1.0,
+            ])
+            .unwrap();
+            match moves.sample(rng) {
+                // Memorize
+                0 => {
+                    for rule in data {
+                        if rng.gen() {
+                            trs.append_clauses(vec![rule.clone()]).ok();
+                        }
+                    }
+                    return (trs, "memorize".to_string());
+                }
+                // Sample
+                1 => {
+                    let rule = rules.choose(rng).unwrap().clone();
+                    trs.append_clauses(vec![rule]).ok();
+                    return (trs, "sample".to_string());
+                }
+                // Regenerate
+                2 => {
+                    let idx = (0..trs.len()).choose(rng).unwrap();
+                    let rulecontext = RuleContext::from(trs.utrs.rules[idx].clone());
+                    let (_, place) = rulecontext.subcontexts().into_iter().choose(rng).unwrap();
+                    let context = rulecontext.replace(&place, Context::Hole).unwrap();
+                    // enumerate all ways to fill the hole
+                    let mut ctx = trs.lex.0.ctx.clone();
+                    let mut types = HashMap::new();
+                    trs.lex
+                        .infer_rulecontext(&context, &mut types, &mut ctx)
+                        .ok();
+                    let invent = invent && place[0] == 0 && place.as_slice() != [0];
+                    let env = Environment::from_rulecontext(&context, &types, invent);
+                    let mut lex_vars = trs.lex.free_vars(&mut ctx);
+                    lex_vars.append(&mut env.free_vars(&mut ctx));
+                    let schema = types[&place].generalize(&lex_vars);
+                    let terms = trs.lex.enumerate_terms(&schema, max_size, &env, &ctx);
+                    let term = terms.choose(rng).unwrap().clone();
+                    trs.utrs.rules[idx] = trs.utrs.rules[idx].replace(&place, term).unwrap();
+                    return (trs, "regenerate".to_string());
+                }
+                // Delete
+                3 => {
+                    for idx in (0..trs.len()).rev() {
+                        if rng.gen() {
+                            trs.utrs.remove_idx(idx).ok();
+                        }
+                    }
+                    return (trs, "delete".to_string());
+                }
+                // Variablize
+                4 => {
+                    let (mut types, vars) = trs.analyze_variablizations_by_depth();
+                    for var in &vars {
+                        if rng.gen() {
+                            if let Some(new_trs) = trs.variablize_by(var, &mut types) {
+                                trs = new_trs;
+                            }
+                        }
+                    }
+                    return (trs, "variablize".to_string());
+                }
+                // Generalize
+                5 => {
+                    if let Ok(mut trss) = trs.generalize() {
+                        return (trss.swap_remove(0), "generalize".to_string());
+                    }
+                }
+                // Compose
+                6 => {
+                    if let Some(new_trs) = trs
+                        .find_all_compositions()
+                        .into_iter()
+                        .choose(rng)
+                        .and_then(|composition| trs.compose_by(&composition))
+                    {
+                        return (new_trs, "compose".to_string());
+                    }
+                }
+                // Recurse
+                7 => {
+                    if let Some(new_trs) = trs
+                        .find_all_recursions()
+                        .into_iter()
+                        .choose(rng)
+                        .and_then(|recursion| trs.recurse_by(&recursion))
+                    {
+                        return (new_trs, "recurse".to_string());
+                    }
+                }
+                // Stop
+                8 => {
+                    return (trs, "stop".to_string());
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
 impl<'a, 'b> fmt::Display for TRS<'a, 'b> {

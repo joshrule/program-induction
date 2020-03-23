@@ -1,6 +1,8 @@
 use super::{super::as_result, SampleError, TRS};
 use rand::Rng;
+use std::collections::HashMap;
 use term_rewriting::{Context, RuleContext};
+use trs::lexicon::Environment;
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Regenerate some portion of a rule
@@ -11,6 +13,10 @@ impl<'a, 'b> TRS<'a, 'b> {
         rng: &mut R,
     ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;
+        let mut types = HashMap::new();
+        let mut ctx = self.lex.0.ctx.clone();
+        self.lex.infer_rule(&clause, &mut types, &mut ctx)?;
+        let env = Environment::from_rule(&clause, &types, true);
         let rulecontext = RuleContext::from(clause.clone());
         let subcontexts = rulecontext.subcontexts();
         let mut trss = Vec::with_capacity(subcontexts.len());
@@ -18,10 +24,15 @@ impl<'a, 'b> TRS<'a, 'b> {
             for _attempt in 0..100 {
                 let template = rulecontext.replace(&place, Context::Hole).unwrap();
                 let mut trs = self.clone();
-                let sample_result = trs
-                    .lex
-                    .sample_rule_from_context(template, atom_weights, true, max_size, rng)
-                    .drop();
+                let mut ctx = trs.lex.0.to_mut().ctx.clone();
+                let sample_result = trs.lex.sample_rule_from_context(
+                    &template,
+                    atom_weights,
+                    max_size,
+                    &env,
+                    &mut ctx,
+                    rng,
+                );
                 if let Ok(new_clause) = sample_result {
                     if new_clause.lhs != new_clause.rhs().unwrap() {
                         let mut new_rules = vec![new_clause];

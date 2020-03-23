@@ -31,7 +31,7 @@
 //! \\(\\mathcal{D}\^\*\\) and \\(\\theta\^\*\\) solving:
 //! \\[
 //! \\begin{aligned}
-//! 	J(\\mathcal{D},\\theta) &\\triangleq
+//!   J(\\mathcal{D},\\theta) &\\triangleq
 //!         \\mathbb{P}[\\mathcal{D},\\theta]
 //!         \\prod\_{x\\in X} \\sum\_p \\mathbb{P}[x|p]\\mathbb{P}[p|\\mathcal{D},\\theta] \\\\
 //!     \\mathcal{D}\^\* &= \\underset{\\mathcal{D}}{\\text{arg}\\,\\text{max}}

@@ -82,15 +82,9 @@ impl ::std::error::Error for ParseError {
 /// [`polytype`]: ../../../polytype/index.html
 /// [augmented Backus-Naur form]: https://en.wikipedia.org/wiki/Augmented_Backus–Naur_form
 pub fn parse_lexicon<'a>(input: &str, ctx: TypeContext) -> Result<Lexicon<'a>, ParseError> {
-    lexicon(
-        CompleteStr(input),
-        Signature::default(),
-        vec![],
-        vec![],
-        ctx,
-    )
-    .map(|(_, t)| t)
-    .map_err(|_| ParseError)
+    lexicon(CompleteStr(input), Signature::default(), vec![], ctx)
+        .map(|(_, t)| t)
+        .map_err(|_| ParseError)
 }
 
 /// Given a [`Lexicon`], parse and typecheck a [`TRS`]. The format of the
@@ -185,12 +179,6 @@ pub fn parse_rules(input: &str, lex: &mut Lexicon) -> Result<Vec<Rule>, ParseErr
         .map_err(|_| ParseError)
 }
 
-#[derive(Debug, Clone)]
-enum AtomName {
-    Variable(String),
-    Operator(String, u8),
-}
-
 fn schema_wrapper(input: CompleteStr) -> nom::IResult<CompleteStr, TypeSchema> {
     if let Ok(schema) = TypeSchema::parse(*input) {
         Ok((CompleteStr(""), schema))
@@ -199,25 +187,15 @@ fn schema_wrapper(input: CompleteStr) -> nom::IResult<CompleteStr, TypeSchema> {
     }
 }
 
-fn make_atom(
-    name: AtomName,
+fn make_operator(
+    (name, arity): (String, u8),
     sig: &mut Signature,
     schema: TypeSchema,
-    vars: &mut Vec<TypeSchema>,
     ops: &mut Vec<TypeSchema>,
 ) -> Atom {
-    match name {
-        AtomName::Variable(s) => {
-            let v = sig.new_var(Some(s));
-            vars.push(schema);
-            Atom::Variable(v)
-        }
-        AtomName::Operator(s, a) => {
-            let o = sig.new_op(a, Some(s));
-            ops.push(schema);
-            Atom::Operator(o)
-        }
-    }
+    let o = sig.new_op(arity, Some(name));
+    ops.push(schema);
+    Atom::Operator(o)
 }
 
 named!(colon<CompleteStr, CompleteStr>, tag!(":"));
@@ -234,30 +212,27 @@ named!(slash<CompleteStr, CompleteStr>, tag!("/"));
 // - ; for ending statements
 named!(identifier<CompleteStr, CompleteStr>, is_not!("[!]/| #_:()=;"));
 named!(underscore<CompleteStr, CompleteStr>, tag!("_"));
-named!(atom_name<CompleteStr, AtomName>,
-       alt!(map!(terminated!(identifier, underscore),
-                 |s| AtomName::Variable(s.to_string())) |
-            map!(do_parse!(ident: identifier >>
-                           slash >>
-                           arity: digit >>
-                           (ident, arity)),
-                 |(s, a)| AtomName::Operator(s.to_string(), a.parse::<u8>().unwrap()))));
+named!(op_dec<CompleteStr, (String, u8)>,
+        map!(do_parse!(ident: identifier >>
+                       slash >>
+                       arity: digit >>
+                       (ident, arity)),
+             |(s, a)| (s.to_string(), a.parse::<u8>().unwrap())));
 named!(schema<CompleteStr, TypeSchema>,
        call!(schema_wrapper));
 named!(comment<CompleteStr, CompleteStr>,
        map!(preceded!(tag!("#"), take_until_and_consume!("\n")),
             |s| CompleteStr(&s.trim())));
-named_args!(declaration<'a>(sig: &mut Signature, vars: &mut Vec<TypeSchema>, ops: &mut Vec<TypeSchema>) <CompleteStr<'a>, (Atom, TypeSchema)>,
-       map!(ws!(do_parse!(name: atom_name >>
+named_args!(declaration<'a>(sig: &mut Signature, ops: &mut Vec<TypeSchema>) <CompleteStr<'a>, (Atom, TypeSchema)>,
+       map!(ws!(do_parse!(name: op_dec >>
                       colon >>
                       schema: schema >>
                       (name, schema))),
-            |(n, s)| (make_atom(n, sig, s.clone(), vars, ops), s)
+            |(n, s)| (make_operator(n, sig, s.clone(), ops), s)
        ));
-fn simple_lexicon<'a, 'b>(
+fn lexicon<'a, 'b>(
     input: CompleteStr<'a>,
     mut sig: Signature,
-    mut vars: Vec<TypeSchema>,
     mut ops: Vec<TypeSchema>,
     ctx: TypeContext,
 ) -> nom::IResult<CompleteStr<'a>, Lexicon<'b>> {
@@ -266,21 +241,12 @@ fn simple_lexicon<'a, 'b>(
         ws!(many0!(do_parse!(
             many0!(ws!(comment))
                 >> dec: take_until_and_consume!(";")
-                >> expr_res!(declaration(dec, &mut sig, &mut vars, &mut ops))
+                >> expr_res!(declaration(dec, &mut sig, &mut ops))
                 >> many0!(ws!(comment))
                 >> ()
         ))),
-        |_| Lexicon::from_signature(sig, ops, vars, ctx)
+        |_| Lexicon::from_signature(sig, ops, ctx)
     )
-}
-fn lexicon<'a, 'b>(
-    input: CompleteStr<'a>,
-    sig: Signature,
-    vars: Vec<TypeSchema>,
-    ops: Vec<TypeSchema>,
-    ctx: TypeContext,
-) -> nom::IResult<CompleteStr<'a>, Lexicon<'b>> {
-    simple_lexicon(input, sig, vars, ops, ctx)
 }
 #[allow(clippy::cognitive_complexity)]
 fn trs<'a, 'b, 'c>(
@@ -301,16 +267,17 @@ fn trs<'a, 'b, 'c>(
                             >> many0!(ws!(comment))
                             >> (rule.1)
                     ))
-                >> trs: expr_res!(TRS::new(lex, deterministic, background, rules))
-                >> (trs)
+                >> (TRS::new_unchecked(lex, deterministic, background, rules))
         )
     )
 }
 fn typed_rule<'a>(input: &'a str, lex: &mut Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
+    lex.0.to_mut().signature.clear_variables();
     let result = parse_untyped_rule(&mut lex.0.to_mut().signature, input);
     if let Ok(rule) = result {
-        add_parsed_variables_to_lexicon(lex);
-        if lex.infer_rule(&rule, &mut HashMap::new()).drop().is_ok() {
+        let mut ctx = lex.0.ctx.clone();
+        let result = lex.infer_rule(&rule, &mut HashMap::new(), &mut ctx);
+        if result.is_ok() {
             return Ok((CompleteStr(""), rule));
         }
     }
@@ -319,31 +286,14 @@ fn typed_rule<'a>(input: &'a str, lex: &mut Lexicon) -> nom::IResult<CompleteStr
         nom::ErrorKind::Custom(0),
     )))
 }
-fn add_parsed_variables_to_lexicon(lex: &mut Lexicon) {
-    let mut vars = lex.0.to_mut().signature.variables();
-    vars.sort_unstable_by_key(|var| var.id());
-    for var in vars {
-        if var.id() == lex.0.vars.len() {
-            let tp = lex
-                .0
-                .to_mut()
-                .ctx
-                .write()
-                .expect("poisoned context")
-                .new_variable();
-            let schema = TypeSchema::Monotype(tp);
-            lex.0.to_mut().vars.push(schema);
-        }
-    }
-}
 fn typed_term<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, Term> {
     let result = parse_untyped_term(&mut lex.0.to_mut().signature, *input);
     if let Ok(term) = result {
-        add_parsed_variables_to_lexicon(lex);
-        if lex.infer_term(&term, &mut HashMap::new()).drop().is_ok() {
+        let mut ctx = lex.0.ctx.clone();
+        if lex.infer_term(&term, &mut HashMap::new(), &mut ctx).is_ok() {
             return Ok((CompleteStr(""), term));
         }
     }
@@ -355,10 +305,9 @@ fn typed_context<'a>(
 ) -> nom::IResult<CompleteStr<'a>, Context> {
     let result = parse_untyped_context(&mut lex.0.to_mut().signature, *input);
     if let Ok(context) = result {
-        add_parsed_variables_to_lexicon(lex);
+        let mut ctx = lex.0.ctx.clone();
         if lex
-            .infer_context(&context, &mut HashMap::new())
-            .drop()
+            .infer_context(&context, &mut HashMap::new(), &mut ctx)
             .is_ok()
         {
             return Ok((CompleteStr(""), context));
@@ -372,10 +321,9 @@ fn typed_rulecontext<'a>(
 ) -> nom::IResult<CompleteStr<'a>, RuleContext> {
     let result = parse_untyped_rulecontext(&mut lex.0.to_mut().signature, *input);
     if let Ok(rule) = result {
-        add_parsed_variables_to_lexicon(lex);
+        let mut ctx = lex.0.ctx.clone();
         if lex
-            .infer_rulecontext(&rule, &mut HashMap::new())
-            .drop()
+            .infer_rulecontext(&rule, &mut HashMap::new(), &mut ctx)
             .is_ok()
         {
             return Ok((CompleteStr(""), rule));
@@ -414,29 +362,12 @@ mod tests {
 
     #[test]
     fn declaration_op_test() {
-        let mut vars = vec![];
-        let mut ops = vec![];
-        let mut sig = Signature::default();
-        let (_, (a, s)) = declaration(
-            CompleteStr("SUCC/1: int -> int"),
-            &mut sig,
-            &mut vars,
-            &mut ops,
-        )
-        .unwrap();
-        assert_eq!(a.display(&sig), "SUCC");
-        assert_eq!(s.to_string(), "int → int");
-    }
-
-    #[test]
-    fn declaration_var_test() {
-        let mut vars = vec![];
         let mut ops = vec![];
         let mut sig = Signature::default();
         let (_, (a, s)) =
-            declaration(CompleteStr("x_: int"), &mut sig, &mut vars, &mut ops).unwrap();
-        assert_eq!(a.display(&sig), "x_");
-        assert_eq!(s.to_string(), "int");
+            declaration(CompleteStr("SUCC/1: int -> int"), &mut sig, &mut ops).unwrap();
+        assert_eq!(a.display(&sig), "SUCC");
+        assert_eq!(s.to_string(), "int → int");
     }
 
     #[test]
@@ -444,7 +375,6 @@ mod tests {
         let res = lexicon(
             CompleteStr("# COMMENT\nSUCC: int -> int;\nx_: list(int);"),
             Signature::default(),
-            vec![],
             vec![],
             TypeContext::default(),
         );
@@ -457,7 +387,6 @@ mod tests {
             CompleteStr("ZERO/0: int; SUCC/1: int -> int;"),
             Signature::default(),
             vec![],
-            vec![],
             TypeContext::default(),
         )
         .unwrap()
@@ -465,7 +394,7 @@ mod tests {
         let res = typed_rule("SUCC(x_) = ZERO", &mut lex);
         let sig = &lex.0.signature;
 
-        assert_eq!(res.unwrap().1.display(sig), "SUCC(x_) = ZERO");
+        assert_eq!(res.unwrap().1.display(sig), "SUCC(v0_) = ZERO");
     }
 
     #[test]
@@ -474,13 +403,13 @@ mod tests {
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             Signature::default(),
             vec![],
-            vec![],
             TypeContext::default(),
         )
         .unwrap()
         .1;
+
         let res = trs(
-            CompleteStr("PLUS(ZERO x_) = ZERO; PLUS(SUCC(x_) y_) = SUCC(PLUS(x_ y_));"),
+            CompleteStr("PLUS(ZERO v0_) = ZERO; PLUS(SUCC(v0_) v1_) = SUCC(PLUS(v0_ v1_));"),
             &mut lex,
             true,
             &[],
@@ -489,7 +418,7 @@ mod tests {
 
         assert_eq!(
             res.unwrap().1.utrs.display(sig),
-            "PLUS(ZERO x_) = ZERO;\nPLUS(SUCC(x_) y_) = SUCC(PLUS(x_ y_));"
+            "PLUS(ZERO v0_) = ZERO;\nPLUS(SUCC(v0_) v1_) = SUCC(PLUS(v0_ v1_));"
         );
     }
 
@@ -499,15 +428,14 @@ mod tests {
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             Signature::default(),
             vec![],
-            vec![],
             TypeContext::default(),
         )
         .unwrap()
         .1;
-        let res = typed_context(CompleteStr("PLUS(x_ [!])"), &mut lex);
+        let res = typed_context(CompleteStr("PLUS(v0_ [!])"), &mut lex);
         let sig = &lex.0.signature;
 
-        assert_eq!(res.unwrap().1.display(sig), "PLUS(x_ [!])");
+        assert_eq!(res.unwrap().1.display(sig), "PLUS(v0_ [!])");
     }
 
     #[test]
@@ -516,15 +444,14 @@ mod tests {
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             Signature::default(),
             vec![],
-            vec![],
             TypeContext::default(),
         )
         .unwrap()
         .1;
-        let res = typed_rulecontext(CompleteStr("PLUS(x_ [!]) = ZERO"), &mut lex);
+        let res = typed_rulecontext(CompleteStr("PLUS(v0_ [!]) = ZERO"), &mut lex);
         let sig = &lex.0.signature;
 
-        assert_eq!(res.unwrap().1.display(sig), "PLUS(x_ [!]) = ZERO");
+        assert_eq!(res.unwrap().1.display(sig), "PLUS(v0_ [!]) = ZERO");
     }
 
     #[test]
@@ -533,13 +460,12 @@ mod tests {
             CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
             Signature::default(),
             vec![],
-            vec![],
             TypeContext::default(),
         )
         .unwrap()
         .1;
         let res = templates(
-            CompleteStr("PLUS(x_ [!]) = ZERO; [!] = SUCC(ZERO);"),
+            CompleteStr("PLUS(v0_ [!]) = ZERO; [!] = SUCC(ZERO);"),
             &mut lex,
         );
         let sig = &lex.0.signature;
@@ -551,6 +477,6 @@ mod tests {
             .map(|rc| format!("{};", rc.display(sig)))
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(res_string, "PLUS(x_ [!]) = ZERO;\n[!] = SUCC(ZERO);");
+        assert_eq!(res_string, "PLUS(v0_ [!]) = ZERO;\n[!] = SUCC(ZERO);");
     }
 }

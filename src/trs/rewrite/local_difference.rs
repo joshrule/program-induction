@@ -15,43 +15,22 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # extern crate programinduction;
     /// # extern crate rand;
     /// # extern crate term_rewriting;
-    /// # use programinduction::trs::{TRS, Lexicon};
+    /// # use programinduction::trs::{parse_lexicon, parse_trs};
     /// # use polytype::Context as TypeContext;
-    /// # use rand::{thread_rng};
-    /// # use term_rewriting::{Signature, parse_rule};
-    /// let mut sig = Signature::default();
-    ///
-    /// let mut ops = vec![];
-    /// sig.new_op(2, Some(".".to_string()));
-    /// ops.push(ptp![0, 1; @arrow[tp!(@arrow[tp!(0), tp!(1)]), tp!(0), tp!(1)]]);
-    /// sig.new_op(2, Some("PLUS".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int), tp!(int)]]);
-    /// sig.new_op(1, Some("SUCC".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int)]]);
-    /// sig.new_op(0, Some("ZERO".to_string()));
-    /// ops.push(ptp![int]);
-    ///
-    /// let rules = vec![
-    ///     parse_rule(&mut sig, "SUCC(PLUS(x_ SUCC(y_))) = SUCC(SUCC(PLUS(x_ y_)))").expect("parsed rule"),
-    /// ];
-    ///
-    /// let vars = vec![
-    ///     ptp![int],
-    ///     ptp![int],
-    ///     ptp![int],
-    /// ];
-    ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
-    ///
-    /// let mut trs = TRS::new(&lexicon, true, &[], rules).unwrap();
-    ///
-    /// assert_eq!(trs.len(), 1);
-    ///
+    /// # use rand::thread_rng;
+    /// let mut lex = parse_lexicon(
+    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
+    /// let trs = parse_trs("SUCC(PLUS(v0_ SUCC(v1_))) = SUCC(SUCC(PLUS(v0_ v1_)));", &mut lex, true, &[]).expect("parsed trs");
     /// let mut rng = thread_rng();
     ///
-    /// let num_new_trss = trs.local_difference(&mut rng).map(|x| x.len()).ok();
+    /// assert_eq!(1, trs.len());
     ///
-    /// assert_eq!(Some(2), num_new_trss)
+    /// let new_trss = trs.local_difference(&mut rng).unwrap();
+    ///
+    /// assert_eq!(2, new_trss.len())
     /// ```
     pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
         let (n, clause) = self.choose_clause(rng)?;

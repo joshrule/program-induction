@@ -6,7 +6,7 @@ extern crate term_rewriting;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use polytype::{Context as TypeContext, TypeSchema};
-use programinduction::trs::{parse_lexicon, parse_term, Lexicon};
+use programinduction::trs::{parse_lexicon, parse_term, Environment, Lexicon};
 use rand::{rngs::StdRng, SeedableRng};
 use std::collections::HashMap;
 use term_rewriting::Term;
@@ -48,11 +48,15 @@ fn create_test_term(lex: &mut Lexicon) -> Term {
 pub fn lexicon_infer_term_benchmark(c: &mut Criterion) {
     let mut lex = create_test_lexicon();
     let term = create_test_term(&mut lex);
-    let mut types = &mut HashMap::new();
 
     c.bench_function("lexicon_infer_term", |b| {
         b.iter(|| {
-            Lexicon::infer_term(black_box(&lex), black_box(&term), black_box(&mut types)).drop()
+            Lexicon::infer_term(
+                black_box(&lex),
+                black_box(&term),
+                black_box(&mut HashMap::new()),
+                black_box(&mut lex.context().clone()),
+            )
         })
     });
 }
@@ -60,9 +64,9 @@ pub fn lexicon_infer_term_benchmark(c: &mut Criterion) {
 pub fn lexicon_logprior_term_benchmark(c: &mut Criterion) {
     let mut lex = create_test_lexicon();
     let term = create_test_term(&mut lex);
-    let schema = TypeSchema::Monotype(lex.fresh_type_variable());
+    let mut ctx = lex.context().clone();
+    let schema = TypeSchema::Monotype(ctx.new_variable());
     let atom_weights = (5.0, 5.0, 1.0, 1.0);
-    let invent = true;
 
     c.bench_function("lexicon_logprior_term", |b| {
         b.iter(|| {
@@ -71,33 +75,51 @@ pub fn lexicon_logprior_term_benchmark(c: &mut Criterion) {
                 black_box(&term),
                 black_box(&schema),
                 black_box(atom_weights),
-                black_box(invent),
+                black_box(&mut Environment::new(true)),
+                black_box(&mut ctx.clone()),
             )
         })
     });
 }
 
 pub fn lexicon_sample_term_benchmark(c: &mut Criterion) {
-    let mut lex = create_test_lexicon();
-    let schema = TypeSchema::Monotype(lex.fresh_type_variable());
+    let lex = create_test_lexicon();
+    let mut ctx = lex.context().clone();
+    let schema = TypeSchema::Monotype(ctx.new_variable());
     let atom_weights = (5.0, 5.0, 1.0, 1.0);
-    let invent = true;
     let variable = true;
     let max_size = 20;
-    let mut vars = vec![];
     let mut rng = StdRng::seed_from_u64(1);
 
     c.bench_function("lexicon_sample_term", |b| {
         b.iter(|| {
             Lexicon::sample_term(
-                black_box(&mut lex),
+                black_box(&lex),
                 black_box(&schema),
                 black_box(atom_weights),
-                black_box(invent),
                 black_box(variable),
                 black_box(max_size),
-                black_box(&mut vars),
+                black_box(&mut Environment::new(true)),
+                black_box(&mut ctx.clone()),
                 black_box(&mut rng),
+            )
+        })
+    });
+}
+
+pub fn lexicon_enumerate_terms_benchmark(c: &mut Criterion) {
+    let lex = create_test_lexicon();
+    let mut ctx = lex.context().clone();
+    let schema = TypeSchema::Monotype(ctx.new_variable());
+    let env = Environment::new(true);
+
+    c.bench_function("enumerate", |b| {
+        b.iter(|| {
+            black_box(&lex).enumerate_terms(
+                black_box(&schema),
+                black_box(5),
+                black_box(&env),
+                black_box(&ctx),
             )
         })
     });
@@ -108,5 +130,6 @@ criterion_group!(
     lexicon_infer_term_benchmark,
     lexicon_logprior_term_benchmark,
     lexicon_sample_term_benchmark,
+    lexicon_enumerate_terms_benchmark,
 );
 criterion_main!(lexicon);

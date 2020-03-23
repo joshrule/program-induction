@@ -12,54 +12,27 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # extern crate programinduction;
     /// # extern crate rand;
     /// # extern crate term_rewriting;
-    /// # use programinduction::trs::{TRS, Lexicon};
-    /// # use rand::{thread_rng};
+    /// # use programinduction::trs::{parse_lexicon, parse_trs};
     /// # use polytype::Context as TypeContext;
-    /// # use term_rewriting::{Signature, parse_rule};
-    /// let mut sig = Signature::default();
-    ///
-    /// let mut ops = vec![];
-    /// sig.new_op(2, Some(".".to_string()));
-    /// ops.push(ptp![0, 1; @arrow[tp!(@arrow[tp!(0), tp!(1)]), tp!(0), tp!(1)]]);
-    /// sig.new_op(2, Some("PLUS".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int), tp!(int)]]);
-    /// sig.new_op(1, Some("SUCC".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int)]]);
-    /// sig.new_op(0, Some("ZERO".to_string()));
-    /// ops.push(ptp![int]);
-    ///
-    /// let rules = vec![
-    ///     parse_rule(&mut sig, "PLUS(x_ ZERO) = x_").expect("parsed rule"),
-    ///     parse_rule(&mut sig, "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_))").expect("parsed rule"),
-    /// ];
-    ///
-    /// let vars = vec![
-    ///     ptp![int],
-    ///     ptp![int],
-    ///     ptp![int],
-    /// ];
-    ///
-    /// println!("{:?}", sig.operators());
-    /// for op in sig.operators() {
-    ///     println!("{:?}/{}", op.name(&sig), op.arity())
-    /// }
-    /// for r in &rules {
-    ///     println!("{:?}", r);
-    /// }
-    ///
-    /// let ctx = TypeContext::default();
-    /// let lexicon = Lexicon::from_signature(sig.clone(), ops, vars, ctx);
-    ///
-    /// let mut trs = TRS::new(&lexicon, true, &[], rules).unwrap();
-    ///
-    /// let pretty_before = trs.to_string();
-    ///
+    /// # use rand::thread_rng;
     /// let mut rng = thread_rng();
+    /// let mut lex = parse_lexicon(
+    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
+    /// let trs1 = parse_trs(
+    ///     "PLUS(v0_ ZERO) = v0_; PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_));",
+    ///     &mut lex,
+    ///     true,
+    ///     &[]
+    /// )
+    ///     .expect("parsed trs");
     ///
-    /// let new_trs = trs.move_rule(&mut rng).expect("failed when moving rule");
+    /// let trs2 = trs1.move_rule(&mut rng).expect("moved rule");
     ///
-    /// assert_ne!(pretty_before, new_trs.to_string());
-    /// assert_eq!(new_trs.to_string(), "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_));\nPLUS(x_ ZERO) = x_;");
+    /// assert_eq!(trs1.to_string(), "PLUS(v0_ ZERO) = v0_;\nPLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_));");
+    /// assert_eq!(trs2.to_string(), "PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_));\nPLUS(v0_ ZERO) = v0_;");
     /// ```
     pub fn move_rule<R: Rng>(&self, rng: &mut R) -> Result<TRS<'a, 'b>, SampleError> {
         let len = self.len();

@@ -1,35 +1,37 @@
 use super::{super::as_result, Lexicon, SampleError, TRS};
 use itertools::Itertools;
-use polytype::Type;
+use polytype::{Context as TypeContext, Type};
 // use rand::{prelude::SliceRandom, Rng};
 use std::collections::HashMap;
-use term_rewriting::{Operator, Place, Rule, Term};
+use term_rewriting::{Context, Operator, Place, Rule, RuleContext, Term, Variable};
 use utils::weighted_permutation;
 
-type Transform = (Term, Place, Place, Type);
+pub type Recursion = (Term, Place, Place, Type);
 type Case = (Option<Rule>, Rule);
+type Unroll = (Rule, Vec<Rule>);
 
 impl<'a, 'b> TRS<'a, 'b> {
     pub fn recurse(&self, n_sampled: usize) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-        let snapshot = self.lex.snapshot();
-        let op = self.lex.has_op(Some("."), 2)?;
         let (trss, ns): (Vec<_>, Vec<_>) = self
-            .find_all_transforms()
+            .find_all_recursions()
             .into_iter()
-            .filter_map(|transform| {
-                let mut trs = self.clone();
-                trs.transform_rules(&transform, op)
+            .filter_map(|recursion| {
+                self.try_recursion(&recursion)
                     .ok()
-                    .and_then(|solution| trs.adopt_recursive_solution(solution))
+                    .and_then(|solution| self.adopt_recursion(solution))
             })
             .unzip();
-        // Return the results.
-        self.lex.rollback(snapshot);
         as_result(weighted_permutation(&trss, &ns, Some(n_sampled)))
     }
-    fn adopt_recursive_solution(
+    pub fn recurse_by(&self, recursion: &Recursion) -> Option<TRS<'a, 'b>> {
+        self.try_recursion(recursion)
+            .ok()
+            .and_then(|solution| self.adopt_recursion(solution))
+            .map(|(trs, _)| trs)
+    }
+    fn adopt_recursion(
         &self,
-        solution: Vec<(Rule, Vec<Rule>)>,
+        (lex, solution): (Lexicon<'b>, Vec<(Rule, Vec<Rule>)>),
     ) -> Option<(TRS<'a, 'b>, f64)> {
         let (old_rules, new_ruless): (Vec<_>, Vec<_>) = solution.into_iter().unzip();
         let mut new_rules = TRS::reorder_rules(new_ruless);
@@ -37,7 +39,12 @@ impl<'a, 'b> TRS<'a, 'b> {
         match new_rules.len() {
             1 => None,
             n => {
-                let mut trs = self.clone();
+                let mut trs = TRS::new_unchecked(
+                    &lex,
+                    self.utrs.is_deterministic(),
+                    self.background,
+                    self.utrs.rules.clone(),
+                );
                 trs.remove_clauses(&old_rules).ok()?;
                 trs.prepend_clauses(new_rules).ok()?;
                 let trs = trs.smart_delete(0, n).ok()?;
@@ -88,12 +95,11 @@ impl<'a, 'b> TRS<'a, 'b> {
             let v = &map[k];
             if let Some(tp) = v.returns() {
                 let tps = v.args().unwrap();
-                let snapshot = lex.snapshot();
-                if tps.len() == 1 && lex.unify(tp, tps[0]).is_ok() {
-                    let new_tp = tp.apply(&lex.0.ctx.read().expect("poisoned context"));
+                let mut ctx = lex.0.ctx.clone();
+                if tps.len() == 1 && ctx.unify(tp, tps[0]).is_ok() {
+                    let new_tp = tp.apply(&ctx);
                     fns.push((rule.at(k).unwrap(), k.to_vec(), new_tp));
                 }
-                lex.rollback(snapshot);
             }
         }
         fns
@@ -105,10 +111,10 @@ impl<'a, 'b> TRS<'a, 'b> {
             .map(|x| x.1)
             .partition(|x| x[0] == 0)
     }
-    fn find_all_transforms(&self) -> Vec<Transform> {
+    pub fn find_all_recursions(&self) -> Vec<Recursion> {
         self.clauses()
             .iter()
-            .flat_map(|(_, c)| TRS::find_transforms(c, &self.lex))
+            .flat_map(|(_, c)| self.find_recursions(c))
             .unique()
             .collect_vec()
     }
@@ -117,47 +123,46 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// - lhs_place: some LHS subterm which could be f's input (lhs_place: a)
     /// - rhs_place: some RHS subterm which could be f's output (rhs_place: a)
     /// - type: the type of the recursed object
-    fn find_transforms(rule: &Rule, lex: &Lexicon) -> Vec<(Term, Place, Place, Type)> {
+    fn find_recursions(&self, rule: &Rule) -> Vec<Recursion> {
         let mut map = HashMap::new();
-        if lex.infer_rule(rule, &mut map).keep().is_err() {
+        let mut ctx = self.lex.0.ctx.clone();
+        if self.lex.infer_rule(rule, &mut map, &mut ctx).is_err() {
             return vec![];
         }
-        let fs = TRS::collect_recursive_fns(&map, lex, rule);
+        let fs = TRS::collect_recursive_fns(&map, &self.lex, rule);
         let (lhss, rhss) = TRS::partition_subrules(rule);
         let mut transforms = vec![];
         for (f, place, tp) in fs {
             for lhs_place in &lhss {
-                let outer_snapshot = lex.snapshot();
+                let outer_snapshot = ctx.len();
                 let diff_place = place != *lhs_place;
                 let trivial = lhs_place.starts_with(&place[0..place.len() - 1])
                     && lhs_place.ends_with(&[1])
                     && lhs_place.len() == place.len();
-                if diff_place && !trivial && lex.unify(&tp, &map[lhs_place]).is_ok() {
+                if diff_place && !trivial && ctx.unify(&tp, &map[lhs_place]).is_ok() {
                     for rhs_place in &rhss {
-                        let inner_snapshot = lex.snapshot();
-                        if lex.unify(&tp, &map[rhs_place]).is_ok() {
-                            let tp = tp.apply(&lex.0.ctx.read().expect("poisoned context"));
+                        let inner_snapshot = ctx.len();
+                        if ctx.unify(&tp, &map[rhs_place]).is_ok() {
+                            let tp = tp.apply(&ctx);
                             transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone(), tp));
                         }
-                        lex.rollback(inner_snapshot);
+                        ctx.rollback(inner_snapshot);
                     }
                 }
-                lex.rollback(outer_snapshot);
+                ctx.rollback(outer_snapshot);
             }
         }
         transforms
     }
-    fn transform_rules(
-        &mut self,
-        t: &Transform,
-        op: Operator,
-    ) -> Result<Vec<(Rule, Vec<Rule>)>, SampleError> {
+    fn try_recursion(&self, t: &Recursion) -> Result<(Lexicon<'b>, Vec<Unroll>), SampleError> {
         // Collect the full transform for each rule that can be transformed.
+        let mut lex = self.lex.clone();
+        let op = lex.has_op(Some("."), 2)?;
         let new_ruless = self
             .clauses()
             .into_iter()
             .filter_map(|(_, rule)| {
-                TRS::transform_rule(t, op, &rule, &mut self.lex).map(|rs| (rule, rs))
+                TRS::transform_rule(t, op, &rule, &mut lex).map(|rs| (rule, rs))
             })
             .collect_vec();
         // Reconcile the base cases.
@@ -167,10 +172,10 @@ impl<'a, 'b> TRS<'a, 'b> {
         new_ruless
             .iter_mut()
             .for_each(|(_, new_rules)| new_rules.reverse());
-        as_result(new_ruless)
+        as_result(new_ruless).map(|new_ruless| (lex, new_ruless))
     }
     fn transform_rule(
-        (f, lhs, rhs, tp): &Transform,
+        (f, lhs, rhs, tp): &Recursion,
         op: Operator,
         rule: &Rule,
         lex: &mut Lexicon,
@@ -248,19 +253,21 @@ impl<'a, 'b> TRS<'a, 'b> {
     ) -> Result<(Rule, Rule), SampleError> {
         // Perform necessary checks:
         // 0. the rule typechecks;
-        let snapshot = lex.snapshot();
+        let mut ctx = lex.0.ctx.clone();
         let mut map = HashMap::new();
-        if let Err(e) = lex.infer_rule(rule, &mut map).keep() {
-            lex.rollback(snapshot);
-            return Err(SampleError::from(e));
-        }
-        // 1. f is at the head of the LHS;
+        lex.infer_rule(rule, &mut map, &mut ctx)?;
+        // 1. f is at the head of the LHS; and
         TRS::leftmost_symbol_matches(&rule, f, lex, &map)?;
-        // 2. lhs_place exists and has the appropriate type; and
-        let lhs_structure = TRS::check_place(rule, lhs_place, var_type, lex, &map)?;
-        // 3. rhs_place exists and has the appropriate type.
-        let rhs_structure = TRS::check_place(rule, rhs_place, var_type, lex, &map)?;
-        let new_var = lex.invent_variable(var_type);
+        // 2. lhs_place and rhs_place exist and have the appropriate types.
+        let lhs_structure = TRS::check_place(rule, lhs_place, var_type, &mut ctx, &map)?;
+        let rhs_structure = TRS::check_place(rule, rhs_place, var_type, &mut ctx, &map)?;
+        // TODO: incorrect
+        let mut context = RuleContext::from(rule.clone());
+        context = context
+            .replace(&lhs_place, Context::Hole)
+            .ok_or(SampleError::Subterm)?;
+        let id = context.variables().len();
+        let new_var = Variable { id };
         // Swap lhs_structure for: new_var.
         let mut rec = rule
             .replace(lhs_place, Term::Variable(new_var))
@@ -280,7 +287,6 @@ impl<'a, 'b> TRS<'a, 'b> {
         };
         let base = Rule::new(new_lhs, vec![rhs_structure.clone()]).ok_or(SampleError::Subterm)?;
         // Return.
-        lex.rollback(snapshot);
         Ok((rec, base))
     }
     fn leftmost_symbol_matches(
@@ -299,11 +305,11 @@ impl<'a, 'b> TRS<'a, 'b> {
         rule: &'c Rule,
         place: &[usize],
         tp: &Type,
-        lex: &Lexicon,
+        ctx: &mut TypeContext,
         map: &HashMap<Place, Type>,
     ) -> Result<&'c Term, SampleError> {
         map.get(place)
-            .and_then(|place_tp| lex.unify(tp, place_tp).ok())
+            .and_then(|place_tp| ctx.unify(tp, place_tp).ok())
             .and_then(|_| rule.at(place))
             .ok_or(SampleError::Subterm)
     }
@@ -338,12 +344,14 @@ mod tests {
     #[test]
     fn find_transforms_test() {
         let mut lex = create_test_lexicon();
-        let rule = parse_rule(
-            "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)))",
+        let trs = parse_trs(
+            "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)));",
             &mut lex,
+            true,
+            &[]
         )
             .expect("parsed rule");
-        let transforms = TRS::find_transforms(&rule, &lex);
+        let transforms = trs.find_recursions(&trs.utrs.rules[0]);
         for (t, p1, p2, tp) in &transforms {
             println!("{} {:?} {:?} {}", t.pretty(&lex.signature()), p1, p2, tp);
         }
@@ -359,7 +367,7 @@ mod tests {
             &[]
         )
             .expect("parsed trs");
-        let transforms = trs.find_all_transforms();
+        let transforms = trs.find_all_recursions();
         for (t, p1, p2, tp) in &transforms {
             println!("{} {:?} {:?} {}", t.pretty(&lex.signature()), p1, p2, tp);
         }
@@ -378,7 +386,8 @@ mod tests {
         let lhs_place = vec![0, 1, 1];
         let rhs_place = vec![1, 1];
         let mut map = HashMap::new();
-        lex.infer_rule(&rule, &mut map);
+        let mut ctx = lex.0.ctx.clone();
+        lex.infer_rule(&rule, &mut map, &mut ctx).ok();
         let result = TRS::transform_inner(
             &f,
             &lhs_place,
@@ -393,7 +402,7 @@ mod tests {
         let sig = &lex.0.signature;
 
         assert_eq!(
-            "C (CONS (DIGIT 9) var0_) = CONS (DIGIT 9) (C var0_)",
+            "C (CONS (DIGIT 9) v0_) = CONS (DIGIT 9) (C v0_)",
             new_rule1.pretty(sig),
         );
         assert_eq!(
@@ -405,21 +414,20 @@ mod tests {
     fn transform_test() {
         let trs_str = ".(C .(.(CONS .(DIGIT 2)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(.(CONS .(DIGIT 9)) .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(.(CONS .(DIGIT 0)) .(.(CONS .(.(DECC .(DIGIT 5)) 4)) NIL)))))))))) = .(.(CONS .(DIGIT 2)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(.(CONS .(DIGIT 9)) .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(.(CONS .(DIGIT 3)) .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(.(CONS .(DIGIT 0)) NIL))))))));";
         let mut lex = create_test_lexicon();
-        let mut trs = parse_trs(trs_str, &mut lex, true, &[]).expect("parsed trs");
+        let trs = parse_trs(trs_str, &mut lex, true, &[]).expect("parsed trs");
         let f = parse_term("C", &mut lex).expect("parsed term");
         let lhs_place = vec![0, 1, 1];
         let rhs_place = vec![1, 1];
         let tp = tp![list];
         let tuple = (f, lhs_place, rhs_place, tp);
-        let op = lex.has_op(Some("."), 2).unwrap();
 
-        let result = trs.transform_rules(&tuple, op);
+        let result = trs.try_recursion(&tuple);
         assert!(result.is_ok());
 
-        let mut new_ruless = result.unwrap();
+        let (lex, mut new_ruless) = result.unwrap();
         assert_eq!(1, new_ruless.len());
 
-        let sig = &trs.lex.0.signature;
+        let sig = &lex.0.signature;
         let (old_rule, new_rules) = new_ruless.pop().unwrap();
         println!("{}", old_rule.pretty(sig));
         assert_eq!(trs_str, format!("{};", old_rule.display(sig)));
@@ -433,35 +441,35 @@ mod tests {
             new_rules[0].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 0) var7_) = CONS (DIGIT 0) (C var7_)",
+            "C (CONS (DIGIT 0) v0_) = CONS (DIGIT 0) (C v0_)",
             new_rules[1].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DECC (DIGIT 7) 7) var6_) = CONS (DECC (DIGIT 7) 7) (C var6_)",
+            "C (CONS (DECC (DIGIT 7) 7) v0_) = CONS (DECC (DIGIT 7) 7) (C v0_)",
             new_rules[2].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 3) var5_) = CONS (DIGIT 3) (C var5_)",
+            "C (CONS (DIGIT 3) v0_) = CONS (DIGIT 3) (C v0_)",
             new_rules[3].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DECC (DIGIT 2) 0) var4_) = CONS (DECC (DIGIT 2) 0) (C var4_)",
+            "C (CONS (DECC (DIGIT 2) 0) v0_) = CONS (DECC (DIGIT 2) 0) (C v0_)",
             new_rules[4].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 9) var3_) = CONS (DIGIT 9) (C var3_)",
+            "C (CONS (DIGIT 9) v0_) = CONS (DIGIT 9) (C v0_)",
             new_rules[5].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DECC (DIGIT 1) 0) var2_) = CONS (DECC (DIGIT 1) 0) (C var2_)",
+            "C (CONS (DECC (DIGIT 1) 0) v0_) = CONS (DECC (DIGIT 1) 0) (C v0_)",
             new_rules[6].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 3) var1_) = CONS (DIGIT 3) (C var1_)",
+            "C (CONS (DIGIT 3) v0_) = CONS (DIGIT 3) (C v0_)",
             new_rules[7].pretty(sig),
         );
         assert_eq!(
-            "C (CONS (DIGIT 2) var0_) = CONS (DIGIT 2) (C var0_)",
+            "C (CONS (DIGIT 2) v0_) = CONS (DIGIT 2) (C v0_)",
             new_rules[8].pretty(sig),
         );
     }

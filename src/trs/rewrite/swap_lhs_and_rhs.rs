@@ -7,81 +7,54 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// Selects a rule from the TRS at random, swaps the LHS and RHS if possible and inserts the resulting rules
     /// back into the TRS imediately after the background.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
     /// # extern crate rand;
     /// # extern crate term_rewriting;
-    /// # use programinduction::trs::{TRS, Lexicon};
+    /// # use programinduction::trs::{parse_lexicon, parse_trs};
     /// # use polytype::Context as TypeContext;
-    /// # use rand::{thread_rng};
-    /// # use term_rewriting::{Signature, parse_rule};
-    /// let mut sig = Signature::default();
-    ///
-    /// let mut ops = vec![];
-    /// sig.new_op(2, Some(".".to_string()));
-    /// ops.push(ptp![0, 1; @arrow[tp!(@arrow[tp!(0), tp!(1)]), tp!(0), tp!(1)]]);
-    /// sig.new_op(2, Some("PLUS".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int), tp!(int)]]);
-    /// sig.new_op(1, Some("SUCC".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int)]]);
-    /// sig.new_op(0, Some("ZERO".to_string()));
-    /// ops.push(ptp![int]);
-    ///
-    /// let rules = vec![
-    ///     parse_rule(&mut sig, "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_)) | PLUS(SUCC(x_) y_)").expect("parsed rule"),
-    /// ];
-    ///
-    /// let vars = vec![
-    ///     ptp![int],
-    ///     ptp![int],
-    ///     ptp![int],
-    /// ];
-    ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
-    ///
-    /// let mut trs = TRS::new(&lexicon, false, &[], rules).unwrap();
-    /// println!("{}", trs);
-    ///
-    /// assert_eq!(trs.len(), 1);
-    ///
+    /// # use rand::thread_rng;
     /// let mut rng = thread_rng();
+    /// let mut lex = parse_lexicon(
+    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
     ///
-    /// if let Ok(new_trs) = trs.swap_lhs_and_rhs(&mut rng) {
-    ///     assert_eq!(new_trs.len(), 2);
-    ///     let display_str = format!("{}", new_trs);
-    ///     assert_eq!(display_str, "SUCC(PLUS(x_ y_)) = PLUS(x_ SUCC(y_));\nPLUS(SUCC(x_) y_) = PLUS(x_ SUCC(y_));");
-    /// } else {
-    ///     assert_eq!(trs.len(), 1);
-    /// }
+    /// let trs1 = parse_trs(
+    ///     "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_)) | PLUS(SUCC(x_) y_);",
+    ///     &mut lex,
+    ///     false,
+    ///     &[]
+    /// )
+    ///     .expect("parsed trs");
+    /// assert_eq!(trs1.len(), 1);
+    /// assert_eq!(trs1.to_string(), "PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_)) | PLUS(SUCC(v0_) v1_);");
     ///
+    /// let trs2 = trs1.swap_lhs_and_rhs(&mut rng).unwrap();
+    /// assert_eq!(trs2.len(), 2);
+    /// assert_eq!(trs2.to_string(), "SUCC(PLUS(v0_ v1_)) = PLUS(v0_ SUCC(v1_));\nPLUS(SUCC(v0_) v1_) = PLUS(v0_ SUCC(v1_));");
+    /// ```
     ///
-    /// let mut sig = Signature::default();
+    /// ```
+    /// # #[macro_use] extern crate polytype;
+    /// # extern crate programinduction;
+    /// # extern crate rand;
+    /// # extern crate term_rewriting;
+    /// # use programinduction::trs::{parse_lexicon, parse_trs};
+    /// # use polytype::Context as TypeContext;
+    /// # use rand::thread_rng;
+    /// let mut rng = thread_rng();
+    /// let mut lex = parse_lexicon(
+    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
     ///
-    /// let mut ops = vec![];
-    /// sig.new_op(2, Some(".".to_string()));
-    /// ops.push(ptp![0, 1; @arrow[tp!(@arrow[tp!(0), tp!(1)]), tp!(0), tp!(1)]]);
-    /// sig.new_op(2, Some("A".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int), tp!(int)]]);
-    /// sig.new_op(1, Some("B".to_string()));
-    /// ops.push(ptp![@arrow[tp!(int), tp!(int)]]);
-    ///
-    /// let rules = vec![
-    ///     parse_rule(&mut sig, "A(x_ y_) = B(x_ )").expect("parsed rule"),
-    /// ];
-    ///
-    /// let vars = vec![
-    ///     ptp![int],
-    ///     ptp![int],
-    ///     ptp![int],
-    /// ];
-    ///
-    /// let lexicon = Lexicon::from_signature(sig, ops, vars, TypeContext::default());
-    ///
-    /// let mut trs = TRS::new(&lexicon, true, &[], rules).unwrap();
-    ///
+    /// let trs = parse_trs("PLUS(x_ y_) = SUCC(x_);", &mut lex, true, &[] ).expect("parsed trs");
     /// assert!(trs.swap_lhs_and_rhs(&mut rng).is_err());
     /// ```
     pub fn swap_lhs_and_rhs<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {

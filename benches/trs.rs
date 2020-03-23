@@ -116,9 +116,9 @@ pub fn trs_variablize_benchmark(c: &mut Criterion) {
 }
 
 criterion_group!(
-    benches,
+    trs,
     trs_is_alpha_benchmark,
     trs_same_shape_benchmark,
     trs_variablize_benchmark,
 );
-criterion_main!(benches);
+criterion_main!(trs);
