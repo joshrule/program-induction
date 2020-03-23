@@ -4,8 +4,8 @@
 
 // TODO:
 // - Replace Eq constraint on State with some sort of hash for speed.
-// - ask for moves & states to be Debug for better debugging.
-// - Create a recycling pool for moves.
+// - ask for moves & states to be Debug for easier debugging.
+// - Create a recycling pool for moves & nodes.
 use rand::Rng;
 
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
@@ -13,7 +13,7 @@ type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEv
 pub type NodeHandle = usize;
 pub type MoveHandle = usize;
 
-pub trait State<M: MCTS<State = Self>>: PartialEq + Sized + Sync {
+pub trait State<M: MCTS<State = Self>>: std::hash::Hash + Eq + Sized + Sync {
     type Move: Clone + Sync + Send;
     type MoveList: IntoIterator<Item = Self::Move>;
     fn available_moves(&self, mcts: &mut M) -> Self::MoveList;
