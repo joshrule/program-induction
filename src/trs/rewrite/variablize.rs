@@ -1,7 +1,7 @@
 use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
-use std::{collections::HashMap, convert::TryFrom};
+use std::{collections::HashMap, convert::TryFrom, time::Instant};
 use term_rewriting::{Context, Place, Rule, RuleContext, Term, Variable};
 
 pub type Variablization = (usize, Type, Vec<Place>);
@@ -45,16 +45,48 @@ impl<'a, 'b> TRS<'a, 'b> {
         } else {
             self.lgg()?
         };
-        let mut trss = vec![];
-        let mut types = trs.collect_types();
-        let vars = trs.find_all_variablizations(&types);
-        trs.augment_trss(&mut trss, vars, &mut types);
+        let (ruless, combos) = trs.analyze_variablizations();
+        let trss = combos
+            .into_iter()
+            .map(|combo| {
+                let mut trs = trs.clone();
+                for (m, n) in combo.into_iter().enumerate() {
+                    trs.utrs.rules[m] = ruless[m][n].clone();
+                }
+                trs
+            })
+            .collect_vec();
         as_result(trss)
     }
-    pub fn analyze_variablizations_by_depth(&self) -> (Types, Vec<Variablization>) {
-        let types = self.collect_types();
-        let all_vars = self.find_all_variablizations(&types);
-        (types, all_vars)
+    pub fn analyze_variablizations(&self) -> (Vec<Vec<Rule>>, Vec<Vec<usize>>) {
+        let t = Instant::now();
+        if self.is_empty() {
+            (vec![], vec![])
+        } else {
+            let trs = if self.len() < 2 {
+                self.clone()
+            } else {
+                self.lgg().unwrap_or_else(|_| self.clone())
+            };
+            println!("  lgg: {:.4} {}", t.elapsed().as_secs_f64(), trs);
+            let mut types = trs.collect_types();
+            println!("  types: {:.4}", t.elapsed().as_secs_f64());
+            let mut vars = trs.find_all_variablizations(&types);
+            println!("  vars: {:.4} {}", t.elapsed().as_secs_f64(), vars.len());
+            let new_rules = trs.compute_unique_rules(&mut vars, &mut types);
+            println!(
+                "  new_rules: {:.4} {}",
+                t.elapsed().as_secs_f64(),
+                new_rules.iter().map(|rs| rs.len()).sum::<usize>()
+            );
+            let new_trss = trs.compute_unique_trss(&new_rules);
+            println!(
+                "  new_trss: {:.4} {}",
+                t.elapsed().as_secs_f64(),
+                new_trss.len(),
+            );
+            (new_rules, new_trss)
+        }
     }
     pub fn variablize_by(
         &self,
@@ -78,12 +110,11 @@ impl<'a, 'b> TRS<'a, 'b> {
             })
             .collect()
     }
-    fn augment_trss(
+    fn compute_unique_rules(
         &self,
-        trss: &mut Vec<TRS<'a, 'b>>,
-        mut vars: Vec<Variablization>,
+        vars: &mut Vec<Variablization>,
         types: &mut Types,
-    ) {
+    ) -> Vec<Vec<Rule>> {
         // Sort variablizations by the lexicographically deepest place they affect.
         let clauses = self.utrs.clauses();
         let self_len = clauses.len();
@@ -91,30 +122,82 @@ impl<'a, 'b> TRS<'a, 'b> {
             let best_place = places.iter().filter(|place| place[0] == 0).max().unwrap();
             (self_len - *rule, best_place.clone())
         });
-        // if unique so far, push self onto trss
-        if self.unique_shape(trss) {
-            trss.push(self.clone())
-        }
-        // For each variablization:
-        let mut new_trss = Vec::new();
+        let mut all_rules = Vec::with_capacity(self.len());
+        let mut n = 0;
+        // Add the rule to the list.
+        let mut rules = Vec::with_capacity(vars.len());
+        rules.push(self.utrs.rules[0].clone());
         while let Some((affected, tp, places)) = vars.pop() {
-            // For each trs in trss:
-            for trs in trss.iter() {
-                let clauses = trs.utrs.clauses();
+            // Store the solutions whenever you move to the next rule.
+            if affected != n {
+                self.filter_background(&mut rules);
+                all_rules.push(rules.clone());
+                rules.clear();
+                n = affected;
+                rules.push(self.utrs.rules[n].clone());
+            }
+            let mut new_rules = Vec::with_capacity(rules.len());
+            for rule in &rules {
                 // Try the variablization
-                if let Some(mut new_rules) =
-                    trs.apply_variablization(&tp, &places, affected, &clauses, types)
+                if let Some(new_rule) = self.apply_variablization_to_rule(&tp, &places, rule, types)
                 {
-                    if let Some(new_trs) = trs.adopt_solution(&mut new_rules) {
-                        // Add any unique ones to trss.
-                        if new_trs.unique_shape(trss) && new_trs.unique_shape(&new_trss) {
-                            new_trss.push(new_trs);
-                        }
+                    // Keep unique ones.
+                    if !new_rules
+                        .iter()
+                        .any(|other| Rule::same_shape(&new_rule, other))
+                        && !rules.iter().any(|other| Rule::same_shape(&new_rule, other))
+                    {
+                        new_rules.push(new_rule);
                     }
                 }
             }
-            trss.append(&mut new_trss);
+            rules.append(&mut new_rules);
         }
+        self.filter_background(&mut rules);
+        all_rules.push(rules);
+        all_rules
+    }
+    fn compute_unique_trss(&self, ruless: &[Vec<Rule>]) -> Vec<Vec<usize>> {
+        let mut stack = vec![vec![]];
+        let mut second_stack = vec![];
+        for rules in ruless {
+            while let Some(combo) = stack.pop() {
+                for n in 0..rules.len() {
+                    if self.rule_can_be_added(ruless, &combo, n) {
+                        let mut new_combo = combo.clone();
+                        new_combo.push(n);
+                        second_stack.push(new_combo);
+                    }
+                }
+            }
+            std::mem::swap(&mut stack, &mut second_stack);
+        }
+        stack
+    }
+    fn rule_can_be_added(&self, ruless: &[Vec<Rule>], combo: &[usize], n: usize) -> bool {
+        // TODO: incorrect for non-deterministic case
+        let mut max = 0;
+        for (m, &n) in combo.iter().enumerate() {
+            if let Some(rule_max) = ruless[m][n].variables().iter().map(|v| v.id).max() {
+                max = max.max(rule_max + 1);
+            }
+        }
+        let bg_max = self
+            .background
+            .iter()
+            .flat_map(|r| r.variables())
+            .map(|v| v.id)
+            .max()
+            .map(|n| n + 1)
+            .unwrap_or(0);
+        max = max.max(bg_max);
+        let mut lhs = ruless[combo.len()][n].lhs.clone();
+        lhs.offset(max);
+        let bg_lhss = self.background.iter().map(|r| &r.lhs);
+        let combo_lhss = combo.iter().enumerate().map(|(m, &n)| &ruless[m][n].lhs);
+        bg_lhss
+            .chain(combo_lhss)
+            .all(|prior| Term::pmatch(vec![(prior, &lhs)]).is_none())
     }
     fn find_all_variablizations(&self, types: &Types) -> Vec<Variablization> {
         self.utrs
@@ -416,89 +499,80 @@ mod tests {
     }
 
     #[test]
-    fn augment_trss_test_0() {
-        let mut lex = create_test_lexicon();
-        let trs = parse_trs(".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL;", &mut lex, true, &[])
-            .expect("parsed trs");
-        let mut types = trs.collect_types();
-        let mut trss = vec![];
-        let vars = trs.find_all_variablizations(&types);
-        trs.augment_trss(&mut trss, vars, &mut types);
-
-        assert_eq!(
-            trss.iter().map(|trs| trs.to_string()).join("\n"),
-            [
-                ".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL;",
-                ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;",
-                ".(C .(.(CONS v0_) NIL)) = NIL;",
-                ".(C .(.(CONS v0_) v1_)) = v1_;",
-                ".(C .(.(v0_ .(v1_ v2_)) NIL)) = NIL;",
-                ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;",
-                ".(C .(.(v0_ v1_) NIL)) = NIL;",
-                ".(C .(.(v0_ v1_) v2_)) = v2_;",
-                ".(C .(v0_ NIL)) = NIL;",
-                ".(C .(v0_ v1_)) = v1_;",
-                ".(C v0_) = NIL;",
-                ".(v0_ .(.(CONS .(v1_ v2_)) NIL)) = NIL;",
-                ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;",
-                ".(v0_ .(.(CONS v1_) NIL)) = NIL;",
-                ".(v0_ .(.(CONS v1_) v2_)) = v2_;",
-                ".(v0_ .(.(v1_ .(v2_ v3_)) NIL)) = NIL;",
-                ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_;",
-                ".(v0_ .(.(v1_ v2_) NIL)) = NIL;",
-                ".(v0_ .(.(v1_ v2_) v3_)) = v3_;",
-                ".(v0_ .(v1_ NIL)) = NIL;",
-                ".(v0_ .(v1_ v2_)) = v2_;",
-                ".(v0_ v1_) = NIL;",
-            ]
-            .iter()
-            .join("\n")
-        );
-    }
-
-    #[test]
-    fn augment_trss_test_1() {
-        let mut lex = create_test_lexicon();
-        let trs = parse_trs(
-            ".(C .(.(CONS .(v0_ v1_)) v2_)) = .(.(CONS .(v0_ v1_)) .(C v2_));",
-            &mut lex,
-            true,
-            &[],
-        )
-        .expect("parsed trs");
-        let mut types = trs.collect_types();
-        let mut trss = vec![];
-        let vars = trs.find_all_variablizations(&types);
-        trs.augment_trss(&mut trss, vars, &mut types);
-
-        assert_eq!(
-            trss.iter().map(|trs| trs.to_string()).join("\n"),
-            [
-                ".(C .(.(CONS .(v0_ v1_)) v2_)) = .(.(CONS .(v0_ v1_)) .(C v2_));",
-                ".(C .(.(CONS v0_) v1_)) = .(.(CONS v0_) .(C v1_));",
-                ".(C .(.(v0_ .(v1_ v2_)) v3_)) = .(.(v0_ .(v1_ v2_)) .(C v3_));",
-                ".(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_));",
-                ".(C .(v0_ v1_)) = .(v0_ .(C v1_));",
-                ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_));",
-                ".(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
-                ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
-                ".(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
-                ".(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
-            ]
-            .iter()
-            .join("\n")
-        );
-    }
-
-    #[test]
-    fn augment_trss_test_2() {
+    fn compute_unique_rules_test() {
         let mut lex = create_test_lexicon();
         let trs = parse_trs(".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL; .(C .(.(CONS .(v0_ v1_)) v2_)) = .(.(CONS .(v0_ v1_)) .(C v2_));", &mut lex, true, &[])
             .expect("parsed trs");
         let mut types = trs.collect_types();
-        let mut trss = vec![];
-        let vars = trs.find_all_variablizations(&types);
-        trs.augment_trss(&mut trss, vars, &mut types);
+        let mut vars = trs.find_all_variablizations(&types);
+        let ruless = trs.compute_unique_rules(&mut vars, &mut types);
+        // See augment_trss_test_[0,1]
+        assert_eq!(ruless.len(), 2);
+
+        assert_eq!(ruless[0].len(), 22);
+        let firsts_expected = [
+            ".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_",
+            ".(C .(.(CONS v0_) NIL)) = NIL",
+            ".(C .(.(CONS v0_) v1_)) = v1_",
+            ".(C .(.(v0_ .(v1_ v2_)) NIL)) = NIL",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_",
+            ".(C .(.(v0_ v1_) NIL)) = NIL",
+            ".(C .(.(v0_ v1_) v2_)) = v2_",
+            ".(C .(v0_ NIL)) = NIL",
+            ".(C .(v0_ v1_)) = v1_",
+            ".(C v0_) = NIL",
+            ".(v0_ .(.(CONS .(v1_ v2_)) NIL)) = NIL",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_",
+            ".(v0_ .(.(CONS v1_) NIL)) = NIL",
+            ".(v0_ .(.(CONS v1_) v2_)) = v2_",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) NIL)) = NIL",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_",
+            ".(v0_ .(.(v1_ v2_) NIL)) = NIL",
+            ".(v0_ .(.(v1_ v2_) v3_)) = v3_",
+            ".(v0_ .(v1_ NIL)) = NIL",
+            ".(v0_ .(v1_ v2_)) = v2_",
+            ".(v0_ v1_) = NIL",
+        ];
+        for first in ruless[0].iter().map(|rule| rule.display(lex.signature())) {
+            assert!(firsts_expected.contains(&first.as_str()));
+        }
+
+        assert_eq!(ruless[1].len(), 10);
+        let seconds_expected = [
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = .(.(CONS .(v0_ v1_)) .(C v2_))",
+            ".(C .(.(CONS v0_) v1_)) = .(.(CONS v0_) .(C v1_))",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = .(.(v0_ .(v1_ v2_)) .(C v3_))",
+            ".(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_))",
+            ".(C .(v0_ v1_)) = .(v0_ .(C v1_))",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_))",
+            ".(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_))",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_))",
+            ".(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_))",
+            ".(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_))",
+        ];
+        for second in ruless[1].iter().map(|rule| rule.display(lex.signature())) {
+            assert!(seconds_expected.contains(&second.as_str()));
+        }
+    }
+
+    #[test]
+    fn compute_unique_trss_test() {
+        let mut lex = create_test_lexicon();
+        let trs = parse_trs(".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL; .(C .(.(CONS .(v0_ v1_)) v2_)) = .(.(CONS .(v0_ v1_)) .(C v2_));", &mut lex, true, &[])
+            .expect("parsed trs");
+        let mut types = trs.collect_types();
+        let mut vars = trs.find_all_variablizations(&types);
+        let ruless = trs.compute_unique_rules(&mut vars, &mut types);
+        let combos = trs.compute_unique_trss(&ruless);
+        // See augment_trss_test_2
+        for combo in &combos {
+            for (m, &n) in combo.iter().enumerate() {
+                println!("{}", ruless[m][n].pretty(trs.lex.signature()));
+            }
+            println!();
+        }
+        assert_eq!(combos.len(), 163);
 
         let rule_1s = vec![
             ".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL;",
@@ -526,12 +600,92 @@ mod tests {
             ".(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
         ];
 
-        let trs_strs = trss.iter().map(|trs| trs.to_string()).collect_vec();
+        let misc_trss = vec![
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(C .(.(CONS v0_) v1_)) = .(.(CONS v0_) .(C v1_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(C .(.(v0_ .(v1_ v2_)) v3_)) = .(.(v0_ .(v1_ v2_)) .(C v3_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(C .(.(CONS .(v0_ v1_)) v2_)) = v2_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(C .(.(v0_ .(v1_ v2_)) v3_)) = .(.(v0_ .(v1_ v2_)) .(C v3_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(C .(.(CONS v0_) v1_)) = v1_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(C .(.(CONS v0_) v1_)) = .(.(CONS v0_) .(C v1_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(C .(.(v0_ .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(C .(.(v0_ v1_) v2_)) = v2_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(C .(.(v0_ v1_) v2_)) = v2_;\n.(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_));",
+            ".(C .(.(v0_ v1_) v2_)) = v2_;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(C .(.(v0_ v1_) v2_)) = v2_;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(C .(.(v0_ v1_) v2_)) = v2_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(C .(.(v0_ v1_) v2_)) = v2_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(C .(v0_ v1_)) = v1_;\n.(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_));",
+            ".(C .(v0_ v1_)) = v1_;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(C .(v0_ v1_)) = v1_;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(C .(v0_ v1_)) = v1_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(C .(v0_ v1_)) = v1_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(C .(.(CONS v0_) v1_)) = .(.(CONS v0_) .(C v1_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(C .(.(v0_ .(v1_ v2_)) v3_)) = .(.(v0_ .(v1_ v2_)) .(C v3_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(v0_ .(.(CONS .(v1_ v2_)) v3_)) = v3_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(v0_ .(.(CONS v1_) v2_)) = v2_;\n.(C .(.(v0_ .(v1_ v2_)) v3_)) = .(.(v0_ .(v1_ v2_)) .(C v3_));",
+            ".(v0_ .(.(CONS v1_) v2_)) = v2_;\n.(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_));",
+            ".(v0_ .(.(CONS v1_) v2_)) = v2_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(v0_ .(.(CONS v1_) v2_)) = v2_;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(v0_ .(.(CONS v1_) v2_)) = v2_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(v0_ .(.(CONS v1_) v2_)) = v2_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_;\n.(C .(.(CONS v0_) v1_)) = .(.(CONS v0_) .(C v1_));",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_;\n.(C .(.(v0_ v1_) v2_)) = .(.(v0_ v1_) .(C v2_));",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = v4_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(v0_ .(.(v1_ v2_) v3_)) = v3_;\n.(C .(v0_ v1_)) = .(v0_ .(C v1_));",
+            ".(v0_ .(.(v1_ v2_) v3_)) = v3_;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+            ".(C v0_) = NIL;\n.(v0_ .(.(CONS .(v1_ v2_)) v3_)) = .(.(CONS .(v1_ v2_)) .(v0_ v3_));",
+            ".(C v0_) = NIL;\n.(v0_ .(.(CONS v1_) v2_)) = .(.(CONS v1_) .(v0_ v2_));",
+            ".(C v0_) = NIL;\n.(v0_ .(.(v1_ .(v2_ v3_)) v4_)) = .(.(v1_ .(v2_ v3_)) .(v0_ v4_));",
+            ".(C v0_) = NIL;\n.(v0_ .(.(v1_ v2_) v3_)) = .(.(v1_ v2_) .(v0_ v3_));",
+            ".(C v0_) = NIL;\n.(v0_ .(v1_ v2_)) = .(v1_ .(v0_ v2_));",
+        ];
+
+        let trs_strs = combos
+            .into_iter()
+            .map(|combo| {
+                let mut trs = trs.clone();
+                for (m, n) in combo.into_iter().enumerate() {
+                    trs.utrs.rules[m] = ruless[m][n].clone();
+                }
+                trs.to_string()
+            })
+            .collect_vec();
+
         for rule1 in &rule_1s {
             for rule2 in &rule_2s {
                 assert!(trs_strs.contains(&format!("{}\n{}", rule1, rule2)));
             }
         }
+        for misc_trs in &misc_trss {
+            assert!(trs_strs.contains(&misc_trs.to_string()));
+        }
+        assert_eq!(trs_strs.len(), 163);
     }
 
     #[test]
@@ -552,7 +706,12 @@ mod tests {
         let mut lex = create_test_lexicon();
         let trs = parse_trs(".(C .(.(CONS .(.(DECC .(DIGIT 5)) 4)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 0)) NIL)) = NIL; .(C .(.(CONS .(DIGIT 2)) var13_)) = .(.(CONS .(DIGIT 2)) .(C var13_)); .(C .(.(CONS .(DIGIT 0)) var20_)) = .(.(CONS .(DIGIT 0)) .(C var20_)); .(C .(.(CONS .(.(DECC .(DIGIT 7)) 7)) var19_)) = .(.(CONS .(.(DECC .(DIGIT 7)) 7)) .(C var19_)); .(C .(.(CONS .(.(DECC .(DIGIT 2)) 0)) var17_)) = .(.(CONS .(.(DECC .(DIGIT 2)) 0)) .(C var17_)); .(C .(.(CONS .(DIGIT 9)) var16_)) = .(.(CONS .(DIGIT 9)) .(C var16_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 0)) var15_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 0)) .(C var15_)); .(C .(.(CONS .(DIGIT 3)) var14_)) = .(.(CONS .(DIGIT 3)) .(C var14_)); .(C .(.(CONS .(.(DECC .(DIGIT 3)) 2)) var23_)) = .(.(CONS .(.(DECC .(DIGIT 3)) 2)) .(C var23_)); .(C .(.(CONS .(.(DECC .(DIGIT 1)) 6)) var22_)) = .(.(CONS .(.(DECC .(DIGIT 1)) 6)) .(C var22_));", &mut lex, true, &[]).expect("parsed trs");
 
-        let trss = trs.variablize();
-        assert_eq!(trss.unwrap().len(), 100);
+        let trss = trs.variablize().unwrap();
+        // see augment_trss_test_2
+        for trs in trss.iter().sorted_by_key(|trs| trs.size()) {
+            println!("{}", trs.to_string().lines().join(" "));
+        }
+        assert_eq!(trss.len(), 163);
+        assert!(false);
     }
 }

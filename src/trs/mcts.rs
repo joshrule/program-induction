@@ -3,18 +3,15 @@
 //   likelihoods so just incrementally update.
 use itertools::Itertools;
 use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluator, MCTS};
-use polytype::{Type, TypeSchema};
+use polytype::TypeSchema;
 use rand::{
     distributions::{Distribution, WeightedIndex},
-    prelude::IteratorRandom,
+    prelude::{IteratorRandom, SliceRandom},
     Rng,
 };
 use std::{collections::HashMap, convert::TryFrom};
-use term_rewriting::{Atom, Context, Place, Rule, RuleContext};
-use trs::{
-    lexicon::Environment, Composition, Hypothesis, Lexicon, ModelParams, Recursion, Variablization,
-    TRS,
-};
+use term_rewriting::{Atom, Context, Rule, RuleContext};
+use trs::{lexicon::Environment, Composition, Hypothesis, Lexicon, ModelParams, Recursion, TRS};
 use utils::logsumexp;
 
 type RevisionHandle = usize;
@@ -77,8 +74,8 @@ pub enum MCTSMoveState {
     SampleRule(RuleContext),
     RegenerateRule(Option<(usize, RuleContext)>),
     DeleteRules(Option<usize>),
-    Variablize(HashMap<Rule, HashMap<Place, Type>>, Vec<Variablization>),
-    VariablizeBy(usize, RevisionHandle),
+    Variablize(Vec<Vec<Rule>>, Vec<Vec<usize>>),
+    VariablizeBy(Vec<usize>, RevisionHandle),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,7 +89,7 @@ pub enum MCTSMove {
     DeleteRules,
     DeleteRule(Option<usize>),
     Variablize,
-    VariablizeBy(Option<(usize, RevisionHandle)>),
+    VariablizeBy(Option<(Vec<usize>, RevisionHandle)>),
     Generalize,
     Compose(Option<Composition>),
     Recurse(Option<Recursion>),
@@ -141,17 +138,24 @@ impl<'a, 'b> Revise<'a, 'b> {
                     moves.push(MCTSMove::MemorizeData);
                 }
             }
-            Some(MCTSMoveState::Variablize(_, ref vars)) => {
-                for idx in 0..vars.len() {
-                    moves.push(MCTSMove::VariablizeBy(Some((idx, rh))))
+            Some(MCTSMoveState::Variablize(_, ref combos)) => {
+                for n in combos.iter().map(|c| c[..1].to_vec()).unique() {
+                    moves.push(MCTSMove::VariablizeBy(Some((n, rh))))
                 }
             }
-            Some(MCTSMoveState::VariablizeBy(n, rh)) => match mcts.revisions[rh].spec {
-                Some(MCTSMoveState::Variablize(_, ref vars)) => {
-                    for idx in n..vars.len() {
-                        moves.push(MCTSMove::VariablizeBy(Some((idx, rh))))
+            Some(MCTSMoveState::VariablizeBy(ref path, rh)) => match mcts.revisions[rh].spec {
+                Some(MCTSMoveState::Variablize(_, ref combos)) => {
+                    let next = path.len();
+                    for n in combos
+                        .iter()
+                        .filter(|c| c.starts_with(path))
+                        .map(|c| c[next])
+                        .unique()
+                    {
+                        let mut new_path = path.clone();
+                        new_path.push(n);
+                        moves.push(MCTSMove::VariablizeBy(Some((new_path, rh))))
                     }
-                    moves.push(MCTSMove::VariablizeBy(None));
                 }
                 _ => panic!("Variablize state confusion"),
             },
@@ -238,8 +242,8 @@ impl<'a, 'b> Revise<'a, 'b> {
                 Some(StateKind::new(trs, self.n, mcts))
             }
             MCTSMove::Variablize => {
-                let (types, vars) = self.trs.analyze_variablizations_by_depth();
-                let spec = Some(MCTSMoveState::Variablize(types, vars));
+                let (rules, combos) = self.trs.analyze_variablizations();
+                let spec = Some(MCTSMoveState::Variablize(rules, combos));
                 let state = Revise::new(self.trs.clone(), spec, self.n);
                 Some(StateKind::Revision(state))
             }
@@ -247,13 +251,16 @@ impl<'a, 'b> Revise<'a, 'b> {
                 // You're done variablizing, by choice.
                 Some(StateKind::new(self.trs.clone(), self.n, mcts))
             }
-            MCTSMove::VariablizeBy(Some((n, rh))) => match mcts.revisions[rh].spec {
-                Some(MCTSMoveState::Variablize(ref mut types, ref vars)) => {
-                    let trs = self.trs.variablize_by(&vars[n], types)?;
-                    if n >= vars.len() {
+            MCTSMove::VariablizeBy(Some((ref path, rh))) => match mcts.revisions[rh].spec {
+                Some(MCTSMoveState::Variablize(ref rules, ref combos)) => {
+                    let m = path.len() - 1;
+                    let n = *(path.last().unwrap());
+                    let mut trs = self.trs.clone();
+                    trs.utrs.rules[m] = rules[m][combos[n][m]].clone();
+                    if m >= trs.len() {
                         Some(StateKind::new(trs, self.n, mcts))
                     } else {
-                        let spec = Some(MCTSMoveState::VariablizeBy(n + 1, rh));
+                        let spec = Some(MCTSMoveState::VariablizeBy(path.clone(), rh));
                         let state = Revise::new(trs, spec, self.n);
                         Some(StateKind::Revision(state))
                     }
@@ -386,27 +393,23 @@ impl<'a, 'b> Revise<'a, 'b> {
                 }
                 n_revisions += 1;
             }
-            Some(MCTSMoveState::Variablize(ref types, ref vars)) => {
-                // TODO: not ideal
-                let mut new_types = types.clone();
-                for var in vars {
-                    if rng.gen() {
-                        if let Some(new_trs) = trs.variablize_by(var, &mut new_types) {
-                            trs = new_trs;
-                        }
+            Some(MCTSMoveState::Variablize(ref rules, ref combos)) => {
+                if let Some(combo) = combos.choose(rng) {
+                    for (i, &idx) in combo.iter().enumerate() {
+                        trs.utrs.rules[i] = rules[i][idx].clone();
                     }
+                    n_revisions += 1;
                 }
             }
-            Some(MCTSMoveState::VariablizeBy(n, rh)) => match mcts.revisions[*rh].spec {
-                Some(MCTSMoveState::Variablize(ref types, ref vars)) => {
-                    // TODO: not ideal
-                    let mut new_types = types.clone();
-                    for var in vars.iter().skip(*n) {
-                        if rng.gen() {
-                            if let Some(new_trs) = trs.variablize_by(var, &mut new_types) {
-                                trs = new_trs;
-                            }
+            Some(MCTSMoveState::VariablizeBy(ref path, ref rh)) => match mcts.revisions[*rh].spec {
+                Some(MCTSMoveState::Variablize(ref rules, ref combos)) => {
+                    let next = path.len();
+                    if let Some(combo) = combos.iter().filter(|c| c.starts_with(&path)).choose(rng)
+                    {
+                        for (m, &n) in combo.iter().enumerate().skip(next) {
+                            trs.utrs.rules[m] = rules[m][n].clone();
                         }
+                        n_revisions += 1;
                     }
                 }
                 _ => panic!("variablize state mismatch"),
@@ -585,15 +588,13 @@ impl<'a, 'b> Revise<'a, 'b> {
                 }
                 4 => {
                     println!("#         variablizing");
-                    let (mut types, vars) = trs.analyze_variablizations_by_depth();
-                    for var in &vars {
-                        if rng.gen() {
-                            if let Some(new_trs) = trs.variablize_by(var, &mut types) {
-                                trs = new_trs;
-                            }
+                    let (rules, combos) = trs.analyze_variablizations();
+                    if let Some(combo) = combos.choose(rng) {
+                        for (i, &idx) in combo.iter().enumerate() {
+                            trs.utrs.rules[idx] = rules[i][idx].clone();
                         }
+                        n_revisions += 1;
                     }
-                    n_revisions += 1;
                 }
                 5 => {
                     println!("#         generalizing");

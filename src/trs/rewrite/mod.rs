@@ -360,22 +360,26 @@ impl<'a, 'b> TRS<'a, 'b> {
                     let idx = (0..trs.len()).choose(rng).unwrap();
                     let rulecontext = RuleContext::from(trs.utrs.rules[idx].clone());
                     let (_, place) = rulecontext.subcontexts().into_iter().choose(rng).unwrap();
-                    let context = rulecontext.replace(&place, Context::Hole).unwrap();
+                    let mut context = rulecontext.replace(&place, Context::Hole).unwrap();
+                    context.canonicalize(&mut HashMap::new());
                     // enumerate all ways to fill the hole
                     let mut ctx = trs.lex.0.ctx.clone();
                     let mut types = HashMap::new();
-                    trs.lex
+                    if trs
+                        .lex
                         .infer_rulecontext(&context, &mut types, &mut ctx)
-                        .ok();
-                    let invent = invent && place[0] == 0 && place.as_slice() != [0];
-                    let env = Environment::from_rulecontext(&context, &types, invent);
-                    let mut lex_vars = trs.lex.free_vars(&mut ctx);
-                    lex_vars.append(&mut env.free_vars(&mut ctx));
-                    let schema = types[&place].generalize(&lex_vars);
-                    let terms = trs.lex.enumerate_terms(&schema, max_size, &env, &ctx);
-                    let term = terms.choose(rng).unwrap().clone();
-                    trs.utrs.rules[idx] = trs.utrs.rules[idx].replace(&place, term).unwrap();
-                    return (trs, "regenerate".to_string());
+                        .is_ok()
+                    {
+                        let invent = invent && place[0] == 0 && place.as_slice() != [0];
+                        let env = Environment::from_rulecontext(&context, &types, invent);
+                        let mut lex_vars = trs.lex.free_vars(&mut ctx);
+                        lex_vars.append(&mut env.free_vars(&mut ctx));
+                        let schema = types[&place].generalize(&lex_vars);
+                        let terms = trs.lex.enumerate_terms(&schema, max_size, &env, &ctx);
+                        let term = terms.choose(rng).unwrap().clone();
+                        trs.utrs.rules[idx] = trs.utrs.rules[idx].replace(&place, term).unwrap();
+                        return (trs, "regenerate".to_string());
+                    }
                 }
                 // Delete
                 3 => {
@@ -388,12 +392,10 @@ impl<'a, 'b> TRS<'a, 'b> {
                 }
                 // Variablize
                 4 => {
-                    let (mut types, vars) = trs.analyze_variablizations_by_depth();
-                    for var in &vars {
-                        if rng.gen() {
-                            if let Some(new_trs) = trs.variablize_by(var, &mut types) {
-                                trs = new_trs;
-                            }
+                    let (rules, combos) = trs.analyze_variablizations();
+                    if let Some(combo) = combos.choose(rng) {
+                        for (i, &idx) in combo.iter().enumerate() {
+                            trs.utrs.rules[idx] = rules[i][idx].clone();
                         }
                     }
                     return (trs, "variablize".to_string());
