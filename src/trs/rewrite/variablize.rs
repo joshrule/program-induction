@@ -1,40 +1,13 @@
 use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
-use std::{collections::HashMap, convert::TryFrom, time::Instant};
+use std::{collections::HashMap, convert::TryFrom};
 use term_rewriting::{Context, Place, Rule, RuleContext, Term, Variable};
 
 pub type Variablization = (usize, Type, Vec<Place>);
-//type Rules = Vec<usize>;
-//type Cluster<'a> = Vec<(Rules, &'a Variablization)>;
 type Types = HashMap<Rule, HashMap<Place, Type>>;
 
 impl<'a, 'b> TRS<'a, 'b> {
-    /// Compress the `TRS` by computing least general generalizations of its rules.
-    pub fn lgg(&self) -> Result<TRS<'a, 'b>, SampleError> {
-        if self.len() < 2 {
-            return Err(SampleError::Subterm);
-        }
-        let mut l2 = self.utrs.clauses();
-        l2.reverse();
-        let mut l1 = Vec::with_capacity(l2.len());
-        l1.push(l2.pop().unwrap());
-        'next_rule: for r2 in l2.into_iter().rev() {
-            for r1 in &mut l1 {
-                if let Some(r3) = Rule::least_general_generalization(r1, &r2) {
-                    *r1 = r3;
-                    continue 'next_rule;
-                }
-            }
-            l1.push(r2);
-        }
-        for r1 in l1.iter_mut() {
-            r1.canonicalize(&mut HashMap::new());
-        }
-        let mut trs = self.clone();
-        trs.utrs.rules = l1;
-        Ok(trs)
-    }
     /// Replace subterms of [`term_rewriting::Rule`]s with [`term_rewriting::Variable`]s.
     ///
     /// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
@@ -59,7 +32,6 @@ impl<'a, 'b> TRS<'a, 'b> {
         as_result(trss)
     }
     pub fn analyze_variablizations(&self) -> (Vec<Vec<Rule>>, Vec<Vec<usize>>) {
-        let t = Instant::now();
         if self.is_empty() {
             (vec![], vec![])
         } else {
@@ -68,47 +40,12 @@ impl<'a, 'b> TRS<'a, 'b> {
             } else {
                 self.lgg().unwrap_or_else(|_| self.clone())
             };
-            println!("  lgg: {:.4} {}", t.elapsed().as_secs_f64(), trs);
             let mut types = trs.collect_types();
-            println!("  types: {:.4}", t.elapsed().as_secs_f64());
             let mut vars = trs.find_all_variablizations(&types);
-            println!("  vars: {:.4} {}", t.elapsed().as_secs_f64(), vars.len());
             let new_rules = trs.compute_unique_rules(&mut vars, &mut types);
-            println!(
-                "  new_rules: {:.4} {}",
-                t.elapsed().as_secs_f64(),
-                new_rules.iter().map(|rs| rs.len()).sum::<usize>()
-            );
             let new_trss = trs.compute_unique_trss(&new_rules);
-            println!(
-                "  new_trss: {:.4} {}",
-                t.elapsed().as_secs_f64(),
-                new_trss.len(),
-            );
             (new_rules, new_trss)
         }
-    }
-    pub fn variablize_by(
-        &self,
-        (affected, tp, places): &Variablization,
-        types: &mut Types,
-    ) -> Option<TRS<'a, 'b>> {
-        let clauses = self.utrs.clauses();
-        let mut new_rules = self.apply_variablization(tp, places, *affected, &clauses, types)?;
-        self.adopt_solution(&mut new_rules)
-    }
-    fn collect_types(&self) -> Types {
-        self.clauses()
-            .into_iter()
-            .filter_map(|(_, r)| {
-                let mut ctx = self.lex.0.ctx.clone();
-                let mut types = HashMap::new();
-                self.lex
-                    .infer_rule(&r, &mut types, &mut ctx)
-                    .ok()
-                    .map(|_| (r, types))
-            })
-            .collect()
     }
     fn compute_unique_rules(
         &self,
@@ -139,8 +76,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             let mut new_rules = Vec::with_capacity(rules.len());
             for rule in &rules {
                 // Try the variablization
-                if let Some(new_rule) = self.apply_variablization_to_rule(&tp, &places, rule, types)
-                {
+                if let Some(new_rule) = self.apply_variablization(&tp, &places, rule, types) {
                     // Keep unique ones.
                     if !new_rules
                         .iter()
@@ -199,7 +135,48 @@ impl<'a, 'b> TRS<'a, 'b> {
             .chain(combo_lhss)
             .all(|prior| Term::pmatch(vec![(prior, &lhs)]).is_none())
     }
-    fn find_all_variablizations(&self, types: &Types) -> Vec<Variablization> {
+    pub fn variablize_by(
+        &self,
+        (affected, tp, places): &Variablization,
+        types: &mut Types,
+    ) -> Option<TRS<'a, 'b>> {
+        let mut clauses = self.utrs.clauses();
+        let rule = &clauses[*affected];
+        let new_rule = self.apply_variablization(tp, places, rule, types)?;
+        clauses[*affected] = new_rule;
+        self.adopt_solution(&mut clauses)
+    }
+    pub fn collect_types(&self) -> Types {
+        self.clauses()
+            .into_iter()
+            .filter_map(|(_, r)| {
+                let mut ctx = self.lex.0.ctx.clone();
+                let mut types = HashMap::new();
+                self.lex
+                    .infer_rule(&r, &mut types, &mut ctx)
+                    .ok()
+                    .map(|_| (r, types))
+            })
+            .collect()
+    }
+    pub fn try_all_variablizations(&self) -> Vec<Vec<Rule>> {
+        let mut types = self.collect_types();
+        let vars = self.find_all_variablizations(&types);
+        let clauses = self.utrs.clauses();
+        clauses
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                vars.iter()
+                    .filter(|(n, _, _)| i == *n)
+                    .filter_map(|(_, tp, places)| {
+                        self.apply_variablization(tp, places, &c, &mut types)
+                    })
+                    .collect_vec()
+            })
+            .collect_vec()
+    }
+    pub fn find_all_variablizations(&self, types: &Types) -> Vec<Variablization> {
         self.utrs
             .clauses()
             .iter()
@@ -226,21 +203,6 @@ impl<'a, 'b> TRS<'a, 'b> {
         Some(map)
     }
     fn apply_variablization(
-        &self,
-        tp: &Type,
-        places: &[Place],
-        affected: usize,
-        rules: &[Rule],
-        types: &mut Types,
-    ) -> Option<Vec<Rule>> {
-        let mut new_rules = rules.to_vec();
-        match self.apply_variablization_to_rule(tp, places, &rules[affected], types) {
-            Some(new_rule) => new_rules[affected] = new_rule,
-            None => return None,
-        }
-        Some(new_rules)
-    }
-    fn apply_variablization_to_rule(
         &self,
         tp: &Type,
         places: &[Place],
@@ -278,40 +240,31 @@ impl<'a, 'b> TRS<'a, 'b> {
             })
     }
     fn adopt_solution(&self, rules: &mut Vec<Rule>) -> Option<TRS<'a, 'b>> {
-        let self_len = self.len();
-
         self.filter_background(rules);
-        if rules.len() != self_len {
-            return None;
-        }
 
-        for i in 0..rules.len() {
-            // Ensure alpha-unique rules.
-            for j in 0..i {
-                if Rule::alpha(&rules[i], &rules[j]).is_some() {
+        let mut i = 0;
+        while i < rules.len() {
+            if rules[..i]
+                .iter()
+                .any(|other| Rule::alpha(&other, &rules[i]).is_some())
+            {
+                rules.remove(i);
+            } else if self.is_deterministic() {
+                if rules[..i]
+                    .iter()
+                    .any(|other| Term::alpha(vec![(&other.lhs, &rules[i].lhs)]).is_some())
+                {
                     return None;
                 }
-            }
-            // Ensure alpha-unique LHSs if deterministic.
-            if self.is_deterministic() {
-                for j in (i + 1)..rules.len() {
-                    if Term::alpha(vec![(&rules[j].lhs, &rules[i].lhs)]).is_some() {
-                        return None;
-                    }
-                }
+            } else {
+                i += 1;
             }
         }
 
         // Create a new TRS.
         let mut trs = self.clone();
         trs.utrs.rules = rules.to_vec();
-        trs.smart_delete(0, 0).ok().and_then(|trs| {
-            if trs.len() == self_len {
-                Some(trs)
-            } else {
-                None
-            }
-        })
+        trs.smart_delete(0, 0).ok()
     }
 }
 
@@ -458,43 +411,35 @@ mod tests {
             .sorted_by_key(|(n, tp, places)| format!("{} {} {:?}", n, tp, places))
         {
             result_strings.push(format!("{} {} {:?}", n, tp, places));
-            if let Some(new_rs) = trs.apply_variablization(&tp, &places, n, &clauses, &mut types) {
-                result_strings.push(format!(
-                    "{}",
-                    new_rs
-                        .iter()
-                        .map(|r| r.pretty(&trs.lex.signature()))
-                        .join("; ")
-                ));
+            if let Some(new_r) = trs.apply_variablization(&tp, &places, &clauses[n], &mut types) {
+                result_strings.push(format!("{}", new_r.pretty(&trs.lex.signature())));
             }
         }
         assert_eq!(
-            result_strings.iter().join("\n"),
+            result_strings,
             [
                 "0 list [[0, 1, 1], [1]]",
-                "C (CONS (v0_ v1_) v2_) = v2_; C (CONS (v0_ v1_) v2_) = CONS (v0_ v1_) (C v2_)",
+                "C (CONS (v0_ v1_) v2_) = v2_",
                 "0 list [[0, 1]]",
-                "C v0_ = []; C (CONS (v0_ v1_) v2_) = CONS (v0_ v1_) (C v2_)",
+                "C v0_ = []",
                 "0 list → list [[0, 0]]",
-                "v0_ (CONS (v1_ v2_) []) = []; C (CONS (v0_ v1_) v2_) = CONS (v0_ v1_) (C v2_)",
+                "v0_ (CONS (v1_ v2_) []) = []",
                 "0 list → list [[0, 1, 0]]",
-                "C (v0_ []) = []; C (CONS (v0_ v1_) v2_) = CONS (v0_ v1_) (C v2_)",
+                "C (v0_ []) = []",
                 "0 nat [[0, 1, 0, 1]]",
-                "C (CONS v0_ []) = []; C (CONS (v0_ v1_) v2_) = CONS (v0_ v1_) (C v2_)",
+                "C (CONS v0_ []) = []",
                 "0 nat → list → list [[0, 1, 0, 0]]",
-                "C (v0_ (v1_ v2_) []) = []; C (CONS (v0_ v1_) v2_) = CONS (v0_ v1_) (C v2_)",
+                "C (v0_ (v1_ v2_) []) = []",
                 "1 list [[0, 1]]",
                 "1 list → list [[0, 0], [1, 1, 0]]",
-                "C (CONS (v0_ v1_) []) = []; v0_ (CONS (v1_ v2_) v3_) = CONS (v1_ v2_) (v0_ v3_)",
+                "v0_ (CONS (v1_ v2_) v3_) = CONS (v1_ v2_) (v0_ v3_)",
                 "1 list → list [[0, 1, 0], [1, 0]]",
-                "C (CONS (v0_ v1_) []) = []; C (v0_ v1_) = v0_ (C v1_)",
+                "C (v0_ v1_) = v0_ (C v1_)",
                 "1 nat [[0, 1, 0, 1], [1, 0, 1]]",
-                "C (CONS (v0_ v1_) []) = []; C (CONS v0_ v1_) = CONS v0_ (C v1_)",
+                "C (CONS v0_ v1_) = CONS v0_ (C v1_)",
                 "1 nat → list → list [[0, 1, 0, 0], [1, 0, 0]]",
-                "C (CONS (v0_ v1_) []) = []; C (v0_ (v1_ v2_) v3_) = v0_ (v1_ v2_) (C v3_)",
+                "C (v0_ (v1_ v2_) v3_) = v0_ (v1_ v2_) (C v3_)",
             ]
-            .iter()
-            .join("\n")
         );
     }
 
@@ -712,6 +657,5 @@ mod tests {
             println!("{}", trs.to_string().lines().join(" "));
         }
         assert_eq!(trss.len(), 163);
-        assert!(false);
     }
 }
