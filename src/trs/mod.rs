@@ -40,7 +40,7 @@ use Task;
 
 use polytype;
 use std::fmt;
-use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError};
+use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError, Term};
 
 #[derive(Debug, Clone)]
 /// The error type for type inference.
@@ -160,9 +160,15 @@ pub struct Hypothesis<'a, 'b> {
 }
 
 impl<'a, 'b> Hypothesis<'a, 'b> {
-    pub fn new(trs: TRS<'a, 'b>, data: &[Rule], t: f64, params: ModelParams) -> Hypothesis<'a, 'b> {
+    pub fn new(
+        trs: TRS<'a, 'b>,
+        data: &[Rule],
+        input: Option<&Term>,
+        t: f64,
+        params: ModelParams,
+    ) -> Hypothesis<'a, 'b> {
         let lprior = trs.log_prior(params.prior);
-        let llikelihood = trs.log_likelihood(data, params.likelihood);
+        let llikelihood = trs.log_likelihood(data, input, params.likelihood);
         let temperature = params.schedule.temperature(t);
         let lposterior = (params.p_temp * lprior + params.l_temp * llikelihood) / temperature;
         Hypothesis {
@@ -174,8 +180,8 @@ impl<'a, 'b> Hypothesis<'a, 'b> {
             params,
         }
     }
-    pub fn change_data(&mut self, data: &[Rule]) {
-        self.llikelihood = self.trs.log_likelihood(data, self.params.likelihood);
+    pub fn change_data(&mut self, data: &[Rule], input: Option<&Term>) {
+        self.llikelihood = self.trs.log_likelihood(data, input, self.params.likelihood);
         self.lposterior = (self.params.p_temp * self.lprior
             + self.params.l_temp * self.llikelihood)
             / self.temperature;
@@ -273,13 +279,14 @@ pub enum SingleLikelihood {
 /// [`TRS`]: struct.TRS.html
 pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
     data: &'a [Rule],
+    input: Option<&'a Term>,
     params: ModelParams,
     lex: &Lexicon,
     t: f64,
     observation: O,
 ) -> Result<Task<'a, Lexicon<'c>, TRS<'b, 'c>, O>, TypeError> {
     Ok(Task {
-        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.log_posterior(data, t, params)),
+        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.log_posterior(data, input, t, params)),
         // assuming the data have no variables, we can use the Lexicon's ctx.
         tp: lex.infer_rules(data, &mut lex.0.ctx.clone())?,
         observation,

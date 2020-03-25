@@ -6,7 +6,7 @@ use rand::{
 use std::{cmp, f64, iter::repeat};
 
 pub fn logsumexp(lps: &[f64]) -> f64 {
-    let largest = lps.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let largest = lps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if largest == f64::NEG_INFINITY {
         f64::NEG_INFINITY
     } else {

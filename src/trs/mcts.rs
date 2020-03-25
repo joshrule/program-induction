@@ -1,5 +1,3 @@
-// TODO:
-// - penalize likelihood for non-list-literals
 use itertools::Itertools;
 use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluator, MCTS};
 use polytype::TypeSchema;
@@ -9,7 +7,7 @@ use rand::{
     Rng,
 };
 use std::{collections::HashMap, convert::TryFrom};
-use term_rewriting::{Atom, Context, Rule, RuleContext};
+use term_rewriting::{Atom, Context, Rule, RuleContext, Term};
 use trs::{lexicon::Environment, Composition, Hypothesis, Lexicon, ModelParams, Recursion, TRS};
 use utils::logsumexp;
 
@@ -45,6 +43,7 @@ pub struct TRSMCTS<'a, 'b> {
     pub bg: &'a [Rule],
     pub deterministic: bool,
     pub data: &'a [Rule],
+    pub input: Option<&'a Term>,
     pub revisions: Vec<Revise<'a, 'b>>,
     pub terminals: Vec<Hypothesis<'a, 'b>>,
     pub model: ModelParams,
@@ -149,7 +148,9 @@ impl Distribution<MCTSMove> for MoveDist {
 impl<'a, 'b> StateKind<'a, 'b> {
     pub fn new(trs: TRS<'a, 'b>, n: usize, mcts: &TRSMCTS<'a, 'b>) -> Self {
         if n + 1 >= mcts.params.max_revisions {
-            StateKind::Terminal(Hypothesis::new(trs, &mcts.data, 1.0, mcts.model))
+            StateKind::Terminal(Hypothesis::new(
+                trs, &mcts.data, mcts.input, 1.0, mcts.model,
+            ))
         } else {
             StateKind::Revision(Revise::new(trs, None, n + 1))
         }
@@ -251,7 +252,8 @@ impl<'a, 'b> Revise<'a, 'b> {
     pub fn make_move(&self, mv: &MCTSMove, mcts: &TRSMCTS<'a, 'b>) -> Option<StateKind<'a, 'b>> {
         match *mv {
             MCTSMove::Stop => {
-                let hypothesis = Hypothesis::new(self.trs.clone(), &mcts.data, 1.0, mcts.model);
+                let hypothesis =
+                    Hypothesis::new(self.trs.clone(), &mcts.data, mcts.input, 1.0, mcts.model);
                 Some(StateKind::Terminal(hypothesis))
             }
             MCTSMove::Generalize => {
@@ -704,6 +706,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         bg: &'a [Rule],
         deterministic: bool,
         data: &'a [Rule],
+        input: Option<&'a Term>,
         model: ModelParams,
         params: MCTSParams,
     ) -> TRSMCTS<'a, 'b> {
@@ -712,6 +715,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             bg,
             deterministic,
             data,
+            input,
             model,
             params,
             terminals: vec![],
@@ -820,7 +824,7 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                     "#         simulated: \"{}\"",
                     trs.to_string().lines().join(" ")
                 );
-                let h = Hypothesis::new(trs, &mcts.data, 1.0, mcts.model);
+                let h = Hypothesis::new(trs, &mcts.data, mcts.input, 1.0, mcts.model);
                 let score = h.lposterior;
                 let th = mcts.terminals.len();
                 mcts.terminals.push(h);
