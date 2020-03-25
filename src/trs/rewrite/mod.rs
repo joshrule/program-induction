@@ -393,13 +393,13 @@ impl<'a, 'b> TRS<'a, 'b> {
                 }
                 // Variablize
                 4 => {
-                    let (rules, combos) = trs.analyze_variablizations();
-                    if let Some(combo) = combos.choose(rng) {
-                        for (i, &idx) in combo.iter().enumerate() {
-                            trs.utrs.rules[idx] = rules[i][idx].clone();
+                    let ruless = trs.try_all_variablizations();
+                    if let Some(m) = (0..ruless.len()).choose(rng) {
+                        if let Some(n) = (0..ruless[m].len()).choose(rng) {
+                            trs.utrs.rules[m] = ruless[m][n].clone();
+                            return (trs, "variablize".to_string());
                         }
                     }
-                    return (trs, "variablize".to_string());
                 }
                 // Generalize
                 5 => {
