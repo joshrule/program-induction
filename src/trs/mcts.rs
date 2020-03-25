@@ -1,6 +1,9 @@
 // TODO:
 // - Update posterior computation to be more efficient. Let hypothesis store
 //   likelihoods so just incrementally update.
+// - add AntiUnify move
+// - refactor playout
+// - penalize likelihood for non-list-literals
 use itertools::Itertools;
 use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluator, MCTS};
 use polytype::TypeSchema;
@@ -70,11 +73,11 @@ pub struct MCTSStateEvaluator;
 pub enum MCTSMoveState {
     Compose,
     Recurse,
+    Variablize,
     MemorizeData(Option<usize>),
     SampleRule(RuleContext),
     RegenerateRule(Option<(usize, RuleContext)>),
     DeleteRules(Option<usize>),
-    Variablize(Vec<Vec<Rule>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,9 +90,8 @@ pub enum MCTSMove {
     RegenerateThisRule(usize, RuleContext),
     DeleteRules,
     DeleteRule(Option<usize>),
-    Variablize,
-    VariablizeBy(usize, usize, RevisionHandle),
     Generalize,
+    Variablize(Option<(usize, Rule)>),
     Compose(Option<Composition>),
     Recurse(Option<Recursion>),
     Stop,
@@ -114,7 +116,7 @@ impl<'a, 'b> Revise<'a, 'b> {
             playout: None,
         }
     }
-    pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>, rh: RevisionHandle) {
+    pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>, _rh: RevisionHandle) {
         match self.spec {
             None => {
                 // Search can always stop or sample a new rule.
@@ -126,7 +128,7 @@ impl<'a, 'b> Revise<'a, 'b> {
                     moves.push(MCTSMove::Generalize);
                     moves.push(MCTSMove::Compose(None));
                     moves.push(MCTSMove::Recurse(None));
-                    moves.push(MCTSMove::Variablize);
+                    moves.push(MCTSMove::Variablize(None));
                 }
                 // A TRS must have >1 rule to delete without creating cycles.
                 if self.trs.len() > 1 {
@@ -137,10 +139,11 @@ impl<'a, 'b> Revise<'a, 'b> {
                     moves.push(MCTSMove::MemorizeData);
                 }
             }
-            Some(MCTSMoveState::Variablize(ref ruless)) => {
-                for m in 0..ruless.len() {
-                    for n in 0..ruless[m].len() {
-                        moves.push(MCTSMove::VariablizeBy(m, n, rh))
+            Some(MCTSMoveState::Variablize) => {
+                let ruless = self.trs.try_all_variablizations();
+                for (m, rules) in ruless.into_iter().enumerate() {
+                    for rule in rules {
+                        moves.push(MCTSMove::Variablize(Some((m, rule))))
                     }
                 }
             }
@@ -226,20 +229,16 @@ impl<'a, 'b> Revise<'a, 'b> {
                 let trs = self.trs.recurse_by(recursion)?;
                 Some(StateKind::new(trs, self.n, mcts))
             }
-            MCTSMove::Variablize => {
-                let rules = self.trs.try_all_variablizations();
-                let spec = Some(MCTSMoveState::Variablize(rules));
+            MCTSMove::Variablize(None) => {
+                let spec = Some(MCTSMoveState::Variablize);
                 let state = Revise::new(self.trs.clone(), spec, self.n);
                 Some(StateKind::Revision(state))
             }
-            MCTSMove::VariablizeBy(m, n, rh) => match mcts.revisions[rh].spec {
-                Some(MCTSMoveState::Variablize(ref rules)) => {
-                    let mut trs = self.trs.clone();
-                    trs.utrs.rules[m] = rules[m][n].clone();
-                    Some(StateKind::new(trs, self.n, mcts))
-                }
-                _ => panic!("variablize state mismatch"),
-            },
+            MCTSMove::Variablize(Some((m, ref rule))) => {
+                let mut trs = self.trs.clone();
+                trs.utrs.rules[m] = rule.clone();
+                Some(StateKind::new(trs, self.n, mcts))
+            }
             MCTSMove::DeleteRules => {
                 // We're stating an intention: just the internal state changes.
                 let state = Revise::new(
@@ -366,7 +365,8 @@ impl<'a, 'b> Revise<'a, 'b> {
                 }
                 n_revisions += 1;
             }
-            Some(MCTSMoveState::Variablize(ref ruless)) => {
+            Some(MCTSMoveState::Variablize) => {
+                let ruless = self.trs.try_all_variablizations();
                 if let Some(m) = (0..ruless.len()).choose(rng) {
                     if let Some(n) = (0..ruless[m].len()).choose(rng) {
                         trs.utrs.rules[m] = ruless[m][n].clone();
