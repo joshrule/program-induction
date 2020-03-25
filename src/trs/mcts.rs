@@ -1,8 +1,5 @@
 // TODO:
-// - Update posterior computation to be more efficient. Let hypothesis store
-//   likelihoods so just incrementally update.
 // - penalize likelihood for non-list-literals
-// - non-terminals collect multiple playouts
 use itertools::Itertools;
 use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluator, MCTS};
 use polytype::TypeSchema;
@@ -35,7 +32,7 @@ pub struct Revise<'a, 'b> {
     n: usize,
     trs: TRS<'a, 'b>,
     spec: Option<MCTSMoveState>,
-    playout: Option<TerminalHandle>,
+    playout: Vec<TerminalHandle>,
 }
 
 pub enum StateKind<'a, 'b> {
@@ -165,7 +162,7 @@ impl<'a, 'b> Revise<'a, 'b> {
             trs,
             spec,
             n,
-            playout: None,
+            playout: vec![],
         }
     }
     pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>, _rh: RevisionHandle) {
@@ -251,11 +248,7 @@ impl<'a, 'b> Revise<'a, 'b> {
             }
         }
     }
-    pub fn make_move(
-        &self,
-        mv: &MCTSMove,
-        mcts: &mut TRSMCTS<'a, 'b>,
-    ) -> Option<StateKind<'a, 'b>> {
+    pub fn make_move(&self, mv: &MCTSMove, mcts: &TRSMCTS<'a, 'b>) -> Option<StateKind<'a, 'b>> {
         match *mv {
             MCTSMove::Stop => {
                 let hypothesis = Hypothesis::new(self.trs.clone(), &mcts.data, 1.0, mcts.model);
@@ -398,7 +391,7 @@ impl<'a, 'b> Revise<'a, 'b> {
             },
         }
     }
-    pub fn playout<R: Rng>(&self, mcts: &mut TRSMCTS<'a, 'b>, rng: &mut R) -> TRS<'a, 'b> {
+    pub fn playout<R: Rng>(&self, mcts: &TRSMCTS<'a, 'b>, rng: &mut R) -> TRS<'a, 'b> {
         let mut trs = self.trs.clone();
         let mut steps_remaining = mcts.params.max_revisions.saturating_sub(self.n);
         self.finish_step_in_progress(&mut trs, &mut steps_remaining, mcts, rng);
@@ -411,7 +404,7 @@ impl<'a, 'b> Revise<'a, 'b> {
         &self,
         trs: &mut TRS<'a, 'b>,
         steps_remaining: &mut usize,
-        mcts: &mut TRSMCTS<'a, 'b>,
+        mcts: &TRSMCTS<'a, 'b>,
         rng: &mut R,
     ) {
         let move_dist = MoveDist::new(trs, &mcts.data);
@@ -547,7 +540,7 @@ impl<'a, 'b> Revise<'a, 'b> {
         &self,
         trs: &mut TRS,
         steps_remaining: &mut usize,
-        mcts: &mut TRSMCTS<'a, 'b>,
+        mcts: &TRSMCTS<'a, 'b>,
         rng: &mut R,
     ) {
         match &self.spec {
@@ -726,9 +719,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         }
     }
     fn make_move(&mut self, mv: &MCTSMove, rh: RevisionHandle) -> Option<StateKind<'a, 'b>> {
-        // TODO: remove clone, perhaps by pull revision make move up to this level?
-        let revision = self.revisions[rh].clone();
-        revision.make_move(mv, self)
+        self.revisions[rh].make_move(mv, self)
     }
     pub fn add_state(&mut self, state: StateKind<'a, 'b>) -> MCTSState {
         match state {
@@ -751,7 +742,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             trs: TRS::new_unchecked(&self.lexicon, self.deterministic, self.bg, vec![]),
             spec: None,
             n: 0,
-            playout: None,
+            playout: vec![],
         };
         self.add_revision(state)
     }
@@ -822,28 +813,20 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                 println!("#       node is terminal");
                 mcts.terminals[th].lposterior
             }
-            StateHandle::Revision(rh) => match &mcts.revisions[rh].playout {
-                Some(th) => {
-                    println!("#       found a playout");
-                    mcts.terminals[*th].lposterior
-                }
-                None => {
-                    println!("#       playing out");
-                    // TODO: remove clone
-                    let revision = mcts.revisions[rh].clone();
-                    let trs = revision.playout(mcts, rng);
-                    println!(
-                        "#         simulated: \"{}\"",
-                        trs.to_string().lines().join(" ")
-                    );
-                    let h = Hypothesis::new(trs, &mcts.data, 1.0, mcts.model);
-                    let score = h.lposterior;
-                    let th = mcts.terminals.len();
-                    mcts.terminals.push(h);
-                    mcts.revisions[rh].playout = Some(th);
-                    score
-                }
-            },
+            StateHandle::Revision(rh) => {
+                println!("#       playing out");
+                let trs = mcts.revisions[rh].playout(mcts, rng);
+                println!(
+                    "#         simulated: \"{}\"",
+                    trs.to_string().lines().join(" ")
+                );
+                let h = Hypothesis::new(trs, &mcts.data, 1.0, mcts.model);
+                let score = h.lposterior;
+                let th = mcts.terminals.len();
+                mcts.terminals.push(h);
+                mcts.revisions[rh].playout.push(th);
+                score
+            }
         }
     }
 }
