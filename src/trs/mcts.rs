@@ -1,9 +1,9 @@
 // TODO:
 // - Update posterior computation to be more efficient. Let hypothesis store
 //   likelihoods so just incrementally update.
-// - add AntiUnify move
 // - refactor playout
 // - penalize likelihood for non-list-literals
+// - non-terminals collect multiple playouts
 use itertools::Itertools;
 use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluator, MCTS};
 use polytype::TypeSchema;
@@ -91,6 +91,7 @@ pub enum MCTSMove {
     DeleteRules,
     DeleteRule(Option<usize>),
     Generalize,
+    AntiUnify,
     Variablize(Option<(usize, Rule)>),
     Compose(Option<Composition>),
     Recurse(Option<Recursion>),
@@ -131,8 +132,10 @@ impl<'a, 'b> Revise<'a, 'b> {
                     moves.push(MCTSMove::Variablize(None));
                 }
                 // A TRS must have >1 rule to delete without creating cycles.
+                // Anti-unification relies on having two rules to unify.
                 if self.trs.len() > 1 {
                     moves.push(MCTSMove::DeleteRules);
+                    moves.push(MCTSMove::AntiUnify);
                 }
                 // We can only add data if there's data to add.
                 if !mcts.data.is_empty() {
@@ -210,6 +213,10 @@ impl<'a, 'b> Revise<'a, 'b> {
             MCTSMove::Generalize => {
                 let mut trss = self.trs.generalize().ok()?;
                 Some(StateKind::new(trss.swap_remove(0), self.n, mcts))
+            }
+            MCTSMove::AntiUnify => {
+                let trs = self.trs.lgg().ok()?;
+                Some(StateKind::new(trs, self.n, mcts))
             }
             MCTSMove::Compose(None) => {
                 let spec = Some(MCTSMoveState::Compose);
@@ -468,6 +475,8 @@ impl<'a, 'b> Revise<'a, 'b> {
                 (!trs.is_empty() as usize as f64),
                 // Recurse
                 (!trs.is_empty() as usize as f64),
+                // AntiUnify
+                ((trs.len() > 1) as usize as f64),
                 // Stop
                 1.0,
             ])
@@ -588,6 +597,13 @@ impl<'a, 'b> Revise<'a, 'b> {
                     }
                 }
                 8 => {
+                    println!("#         anti-unifying");
+                    if let Ok(new_trs) = trs.lgg() {
+                        trs = new_trs;
+                        n_revisions += 1;
+                    }
+                }
+                9 => {
                     println!("#         stopping");
                     break;
                 }
