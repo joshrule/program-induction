@@ -342,6 +342,45 @@ mod tests {
         .expect("parsed lexicon")
     }
     #[test]
+    fn collect_recursive_fns_test() {
+        let mut lex = create_test_lexicon();
+        let rule = parse_rule(
+            "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) (CONS (DIGIT 0) NIL)))) = (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 3) 2 ) NIL)))",
+            &mut lex,
+        )
+            .expect("parsed rule");
+        let mut map = HashMap::new();
+        let mut ctx = lex.0.ctx.clone();
+        lex.infer_rule(&rule, &mut map, &mut ctx).unwrap();
+        let fs = TRS::collect_recursive_fns(&map, &lex, &rule);
+        assert_eq!(fs.len(), 1);
+        assert_eq!(
+            format!(
+                "{} {:?} {}",
+                fs[0].0.display(lex.signature()),
+                fs[0].1,
+                fs[0].2
+            ),
+            "C [0, 0] list"
+        );
+
+        let rule = parse_rule("C = C", &mut lex).expect("parsed rule");
+        let mut map = HashMap::new();
+        let mut ctx = lex.0.ctx.clone();
+        lex.infer_rule(&rule, &mut map, &mut ctx).unwrap();
+        let fs = TRS::collect_recursive_fns(&map, &lex, &rule);
+        assert_eq!(fs.len(), 1);
+        assert_eq!(
+            format!(
+                "{} {:?} {}",
+                fs[0].0.display(lex.signature()),
+                fs[0].1,
+                fs[0].2
+            ),
+            "C [0] list"
+        );
+    }
+    #[test]
     fn find_transforms_test() {
         let mut lex = create_test_lexicon();
         let trs = parse_trs(
