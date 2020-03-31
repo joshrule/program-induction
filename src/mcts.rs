@@ -3,7 +3,7 @@
 //! [Monte Carlo Tree Search]: https://en.wikipedia.org/wiki/Monte_Carlo_tree_search
 
 // TODO:
-// - Replace Eq constraint on State with some sort of hash for speed.
+// - Find States via Hash rather than Eq.
 // - ask for moves & states to be Debug for easier debugging.
 // - Create a recycling pool for moves & nodes.
 use rand::Rng;
@@ -31,6 +31,7 @@ pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
 pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized + Sync {
     type StateEvaluation: Clone + Sync + Send + Into<f64>;
     fn evaluate<R: Rng>(&self, &M::State, &mut M, &mut R) -> Self::StateEvaluation;
+    fn reread(&self, &M::State, &mut M) -> Self::StateEvaluation;
     fn zero(&self) -> f64 {
         0.0
     }
@@ -70,6 +71,7 @@ pub struct Node<M: MCTS> {
     outgoing: Vec<MoveHandle>,
     evaluation: StateEvaluation<M>,
     maximum_valid_depth: usize,
+    soft_pruned: bool,
     pub q: f64,
     pub n: f64,
 }
@@ -159,6 +161,7 @@ impl<M: MCTS> SearchTree<M> {
             n: 1.0,
             evaluation,
             maximum_valid_depth: mcts.max_depth(),
+            soft_pruned: moves.is_empty(),
         };
         SearchTree {
             mcts,
@@ -198,12 +201,13 @@ impl<M: MCTS> SearchTree<M> {
     pub fn mcts_mut(&mut self) -> &mut M {
         &mut self.mcts
     }
-    pub fn reevaluate_states<R: Rng>(&mut self, rng: &mut R) {
+    pub fn reevaluate_states(&mut self) {
         println!("#     reevaluating states");
         // iterate over the nodes and copy the evaluation information from the objects.
         println!("#       reevaluating nodes");
+        // Read data from the state.
         for node in self.nodes.iter_mut() {
-            node.evaluation = self.state_eval.evaluate(&node.state, &mut self.mcts, rng);
+            node.evaluation = self.state_eval.reread(&node.state, &mut self.mcts);
             println!(
                 "#         new evaluation: {:.4}",
                 node.evaluation.clone().into()
@@ -216,8 +220,6 @@ impl<M: MCTS> SearchTree<M> {
         let mut stack = vec![self.root];
         let mut finished = vec![];
         while let Some(&node) = stack.last() {
-            // println!("#      stack: {:?}", stack);
-            // println!("#      finished: {:?}", finished);
             let ready = self.nodes[node]
                 .outgoing
                 .iter()
@@ -244,6 +246,8 @@ impl<M: MCTS> SearchTree<M> {
         }
     }
     pub fn update_moves(&mut self) {
+        let mut unpruned = Vec::with_capacity(self.nodes.len());
+        // Add moves as appropriate.
         for nh in 0..self.nodes.len() {
             let old_moves = self.nodes[nh]
                 .outgoing
@@ -264,6 +268,18 @@ impl<M: MCTS> SearchTree<M> {
                 };
                 self.moves.push(new_move);
                 self.nodes[nh].outgoing.push(handle);
+                unpruned.push(nh);
+            }
+        }
+        // Backpropagate any changes in soft pruning.
+        while let Some(nh) = unpruned.pop() {
+            println!("#     unpruning {}", nh);
+            self.nodes[nh].soft_pruned = false;
+            for &mh in &self.nodes[nh].incoming {
+                let parent = self.moves[mh].parent;
+                if !unpruned.contains(&parent) {
+                    unpruned.push(parent);
+                }
             }
         }
     }
@@ -285,7 +301,14 @@ impl<M: MCTS> SearchTree<M> {
         let mut nh = self.root;
         loop {
             // Choose a move.
-            let moves = self.nodes[nh].outgoing.iter().map(|n| &self.moves[*n]);
+            let moves = self.nodes[nh]
+                .outgoing
+                .iter()
+                .filter(|mh| match self.moves[**mh].child {
+                    None => true,
+                    Some(child_nh) => !self.nodes[child_nh].soft_pruned,
+                })
+                .map(|mh| &self.moves[*mh]);
             println!("#   got some moves");
             // Looks weird, but helps prevent a borrowing issue;
             match self.move_eval.choose(moves, nh, &self) {
@@ -395,6 +418,7 @@ impl<M: MCTS> SearchTree<M> {
                     state: s,
                     n: 0.0, // fixed during backprop
                     maximum_valid_depth: self.mcts.max_depth(),
+                    soft_pruned: outgoing.is_empty(),
                     q: self.state_eval.zero(),
                     evaluation,
                     incoming,
@@ -410,15 +434,30 @@ impl<M: MCTS> SearchTree<M> {
             }
         }
     }
-    // Bubble search statistics back to the root.
+    // Bubble search statistics and pruning information back to the root.
     fn backpropagate(&mut self, new_node: NodeHandle) {
         println!("#   backpropagating from {}.", new_node);
         let evaluation = self.nodes[new_node].evaluation.clone().into();
         let mut stack = vec![new_node];
         while let Some(nh) = stack.pop() {
             println!("#     dealing with node {}.", nh);
+            // Update q.
             self.nodes[nh].q = self.mcts.combine_qs(self.nodes[nh].q, evaluation);
+            // Update n.
             self.nodes[nh].n += 1.0;
+            // Update soft-prune.
+            let prunable = self.nodes[nh]
+                .outgoing
+                .iter()
+                .all(|mh| match self.moves[*mh].child {
+                    None => false,
+                    Some(child_nh) => self.nodes[child_nh].soft_pruned,
+                });
+            if prunable {
+                println!("#       pruning");
+                self.nodes[nh].soft_pruned = true;
+            }
+            // Add nodes to stack as appropriate.
             for &mh in &self.nodes[nh].incoming {
                 stack.push(self.moves[mh].parent)
             }

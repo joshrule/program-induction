@@ -30,7 +30,7 @@ mod lexicon;
 pub mod mcts;
 pub mod parser;
 mod rewrite;
-pub use self::lexicon::{EnumerationLimit, Environment, Lexicon};
+pub use self::lexicon::{Environment, GenerationLimit, Lexicon};
 pub use self::parser::{
     parse_context, parse_lexicon, parse_rule, parse_rulecontext, parse_rulecontexts, parse_rules,
     parse_term, parse_trs,
@@ -74,7 +74,7 @@ impl ::std::error::Error for TypeError {
 pub enum SampleError {
     TypeError(TypeError),
     TRSError(TRSError),
-    SizeExceeded(usize, usize),
+    SizeExceeded,
     OptionsExhausted,
     Subterm,
     Trivial,
@@ -99,9 +99,7 @@ impl fmt::Display for SampleError {
         match *self {
             SampleError::TypeError(ref e) => write!(f, "type error: {}", e),
             SampleError::TRSError(ref e) => write!(f, "TRS error: {}", e),
-            SampleError::SizeExceeded(size, max_size) => {
-                write!(f, "size {} exceeded maximum of {}", size, max_size)
-            }
+            SampleError::SizeExceeded => write!(f, "exceeded maximum size"),
             SampleError::OptionsExhausted => write!(f, "failed to sample (options exhausted)"),
             SampleError::Subterm => write!(f, "cannot sample subterm"),
             SampleError::Trivial => write!(f, "result is a trivial rule"),

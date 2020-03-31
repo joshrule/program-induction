@@ -159,7 +159,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             // Infer the type for this place.
             let return_tp = TRS::compute_place_type(&mut self.lex.0.ctx.clone(), &types)?;
             // Create the new operator for this place. TODO HACK: make applicative parameterizable.
-            let new_op = TRS::new_operator(&mut self.lex, true, &vars, &return_tp, &env)?;
+            let new_op = TRS::new_operator(&mut self.lex, true, &vars, &return_tp, &env, &mut ctx)?;
             // Create the rules expressing subproblems for this place.
             for (lhs_term, rhs_term) in &terms {
                 let new_rule = TRS::new_rule(&self.lex, new_op, lhs_term, rhs_term, var, &vars)?;
@@ -251,6 +251,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         vars: &[Variable],
         return_tp: &Type,
         env: &Environment,
+        ctx: &mut TypeContext,
     ) -> Result<Operator, SampleError> {
         // Construct the name.
         let name = None;
@@ -262,6 +263,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             let schema = lex.infer_variable(var, env)?;
             tp = Type::arrow(schema.instantiate(&mut lex.0.to_mut().ctx), tp);
         }
+        tp = tp.apply_compress(ctx);
         // Create the new variable.
         Ok(lex.invent_operator(name, arity, &tp))
     }
@@ -418,9 +420,12 @@ mod tests {
         let return_tp = tp!(LIST);
         let mut ctx = lex.0.ctx.clone();
         let mut env = Environment::new(true);
-        env.invent_variable(&tp!(INT), &mut ctx);
-        env.invent_variable(&tp!(LIST), &mut ctx);
-        let op = TRS::new_operator(&mut lex, applicative, vars, &return_tp, &env).unwrap();
+        env.invent_variable(&mut ctx);
+        env.invent_variable(&mut ctx);
+        ctx.extend(0, tp!(INT));
+        ctx.extend(1, tp!(LIST));
+        let op =
+            TRS::new_operator(&mut lex, applicative, vars, &return_tp, &env, &mut ctx).unwrap();
         let context = Context::from(Atom::from(op));
         let mut map = HashMap::new();
         let tp = lex.infer_context(&context, &mut map, &mut ctx).unwrap();

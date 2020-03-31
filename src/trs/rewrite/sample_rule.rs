@@ -1,7 +1,7 @@
-use super::{super::as_result, SampleError, TRS};
 use polytype::TypeSchema;
 use rand::Rng;
 use std::collections::HashMap;
+use trs::{as_result, GenerationLimit, SampleError, TRS};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Sample a rule and add it to the rewrite system.
@@ -47,9 +47,10 @@ impl<'a, 'b> TRS<'a, 'b> {
         let mut trs = self.clone();
         let schema = TypeSchema::Monotype(trs.lex.0.to_mut().ctx.new_variable());
         let mut ctx = trs.lex.0.ctx.clone();
+        let limit = GenerationLimit::TermSize(max_size);
         let rule = trs
             .lex
-            .sample_rule(&schema, atom_weights, max_size, true, &mut ctx, rng)?;
+            .sample_rule(&schema, atom_weights, limit, true, &mut ctx, rng)?;
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }

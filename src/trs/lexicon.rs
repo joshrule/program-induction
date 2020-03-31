@@ -7,7 +7,6 @@ use rand::{
 };
 use std::{
     borrow::Cow,
-    cmp::Ordering,
     collections::{HashMap, VecDeque},
     convert::TryFrom,
     f64::NEG_INFINITY,
@@ -22,6 +21,7 @@ use trs::gp::TRSGP;
 type SampleChoice = (Atom, Vec<Type>, Environment, TypeContext);
 type RuleEnumerationPartial = (
     RuleContext,
+    Vec<usize>,
     (usize, usize),
     Vec<Type>,
     Environment,
@@ -32,23 +32,24 @@ type RuleEnumerationPartial = (
 pub struct SampleParams {
     atom_weights: (f64, f64, f64, f64),
     variable: bool,
-    max_size: usize,
+    limit: GenerationLimit,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum GenerationLimit {
+    TotalSize(usize),
+    TermSize(usize),
 }
 
 pub struct TermEnumeration<'a> {
     stack: Vec<(Context, usize, Vec<Type>, Environment, TypeContext)>,
-    max_size: usize,
+    limit: GenerationLimit,
     lex: &'a Lex,
-}
-
-pub enum EnumerationLimit {
-    TotalSize(usize),
-    SideSize(usize),
 }
 
 pub struct RuleEnumeration<'a> {
     stack: Vec<RuleEnumerationPartial>,
-    max_size: EnumerationLimit,
+    limit: GenerationLimit,
     lex: &'a Lex,
     invent: bool,
 }
@@ -77,15 +78,36 @@ pub struct Environment {
 fn fit_schema(
     tp: &Type,
     schema: &TypeSchema,
+    protected: &[usize],
     constant: bool,
     ctx: &mut TypeContext,
 ) -> Result<Vec<Type>, SampleError> {
     let query_tp = schema.instantiate(ctx);
     let result = if constant {
-        ctx.unify(&query_tp, tp).map(|_| Vec::new())
+        println!("query type: {}", query_tp);
+        println!("requested type: {}", tp);
+        println!("protected: {:?}", protected);
+        ctx.unify_protect(&query_tp, &tp, &protected).map(|_| {
+            println!("success");
+            Vec::new()
+        })
     } else {
-        ctx.unify(query_tp.returns().ok_or(TypeError::Malformed)?, tp)
-            .map(|_| query_tp.args_destruct().unwrap_or_else(Vec::new))
+        println!("query type: {}", query_tp);
+        println!(
+            "querying: {}",
+            query_tp.returns().ok_or(TypeError::Malformed)?
+        );
+        println!("requested type: {}", tp);
+        println!("protected: {:?}", protected);
+        ctx.unify_protect(
+            query_tp.returns().ok_or(TypeError::Malformed)?,
+            tp,
+            &protected,
+        )
+        .map(|_| {
+            println!("success");
+            query_tp.args_destruct().unwrap_or_else(Vec::new)
+        })
     };
     result.map_err(SampleError::from)
 }
@@ -234,11 +256,10 @@ impl Environment {
     pub fn is_empty(&self) -> bool {
         self.env.is_empty()
     }
-    pub fn invent_variable(&mut self, tp: &Type, ctx: &mut TypeContext) -> Option<Variable> {
+    pub fn invent_variable(&mut self, ctx: &mut TypeContext) -> Option<Variable> {
         if self.invent {
             let var = Variable { id: self.env.len() };
-            let lex_vars = self.free_vars(ctx);
-            let schema = tp.generalize(&lex_vars);
+            let schema = TypeSchema::Monotype(ctx.new_variable());
             let mut free_vars = schema.free_vars();
             self.env.push(schema);
             self.free_vars.append(&mut free_vars);
@@ -281,9 +302,11 @@ impl<'a> Lexicon<'a> {
             let mut ctx = self.0.ctx.clone();
             self.0.infer_rulecontext(context, &mut types, &mut ctx).ok();
             let invent = place[0] == 0;
+            // TODO: broken
+            let unify = vec![];
             let env = Environment::from_rulecontext(context, &types, invent);
             self.0
-                .valid_atoms(&types[place], &env, &mut ctx)
+                .valid_atoms(&types[place], &unify, &env, &mut ctx)
                 .into_iter()
                 .filter_map(|(atom, _, _, _)| {
                     if place == [0] && atom.is_variable() {
@@ -489,14 +512,14 @@ impl<'a> Lexicon<'a> {
     ) -> Vec<Term> {
         self.0.enumerate_terms(schema, n, env, ctx)
     }
-    /// Enumerate `Rule`s of length `n` or less.
+    /// Enumerate [`Rule`]s of length `n` or less.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
-    /// # use programinduction::trs::{parse_lexicon, EnumerationLimit, Environment, Lexicon};
+    /// # use programinduction::trs::{parse_lexicon, GenerationLimit, Environment, Lexicon};
     /// # use polytype::{TypeSchema, Context as TypeContext};
     /// let mut lex = parse_lexicon(
     ///    &[
@@ -510,14 +533,83 @@ impl<'a> Lexicon<'a> {
     /// let mut ctx = lex.context().clone();
     /// let schema = TypeSchema::Monotype(ctx.new_variable());
     /// let invent = false;
-    /// let max_size = EnumerationLimit::TotalSize(11);
-    /// let terms = lex.enumerate_rules(&schema, max_size, false, &ctx);
+    /// let max_size = GenerationLimit::TotalSize(11);
+    /// let terms = lex.enumerate_rules(&schema, max_size, invent, &ctx);
     /// assert_eq!(terms.len(), 64);
     /// ```
+    ///
+    /// ```
+    /// # #[macro_use] extern crate polytype;
+    /// # extern crate programinduction;
+    /// # use programinduction::trs::{parse_lexicon, GenerationLimit, Environment, Lexicon};
+    /// # use polytype::{TypeSchema, Context as TypeContext};
+    /// let mut lex = parse_lexicon(
+    ///     &[
+    ///         "C/0: list -> list;",
+    ///         "CONS/0: nat -> list -> list;",
+    ///         "NIL/0: list;",
+    ///         "HEAD/0: list -> nat;",
+    ///         "TAIL/0: list -> list;",
+    ///         "EMPTY/0: list -> bool;",
+    ///         "EQUAL/0: t1. t1 -> t1 -> bool;",
+    ///         "IF/0: t1. bool -> t1 -> t1 -> t1;",
+    ///         ">/0: nat -> nat -> bool;",
+    ///         "+/0: nat -> nat -> nat;",
+    ///         "-/0: nat -> nat -> nat;",
+    ///         "TRUE/0: bool;",
+    ///         "FALSE/0: bool;",
+    ///         "DIGIT/0: int -> nat;",
+    ///         "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+    ///         "0/0: int; 1/0: int; 2/0: int;",
+    ///         "3/0: int; 4/0: int; 5/0: int;",
+    ///         "6/0: int; 7/0: int; 8/0: int;",
+    ///         "9/0: int;",
+    ///     ]
+    ///         .join(" "),
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
+    /// let mut ctx = lex.context().clone();
+    /// let schema = TypeSchema::Monotype(ctx.new_variable());
+    /// let invent = true;
+    /// let max_size = GenerationLimit::TermSize(3);
+    /// let rules = lex.enumerate_rules(&schema, max_size, invent, &ctx);
+    /// for rule in &rules {
+    ///     println!("{}", rule.pretty(lex.signature()));
+    /// }
+    /// // assert_eq!(rules.len(), 121);
+    /// ```
+    ///
+    /// ```
+    /// # #[macro_use] extern crate polytype;
+    /// # extern crate programinduction;
+    /// # use programinduction::trs::{parse_lexicon, GenerationLimit, Environment, Lexicon};
+    /// # use polytype::{TypeSchema, Context as TypeContext};
+    /// let mut lex = parse_lexicon(
+    ///     &[
+    ///         "ID/0: t1 . t1 -> t1;",
+    ///         "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+    ///     ]
+    ///         .join(" "),
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
+    /// let mut ctx = lex.context().clone();
+    /// let schema = TypeSchema::Monotype(ctx.new_variable());
+    /// let invent = true;
+    /// let max_size = GenerationLimit::TermSize(3);
+    /// let rules = lex.enumerate_rules(&schema, max_size, invent, &ctx);
+    /// for rule in &rules {
+    ///     println!("{}", rule.pretty(lex.signature()));
+    /// }
+    /// assert_eq!(rules.len(), 8);
+    /// ```
+    ///
+    /// [`Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
     pub fn enumerate_rules(
         &self,
         schema: &TypeSchema,
-        n: EnumerationLimit,
+        n: GenerationLimit,
         invent: bool,
         ctx: &TypeContext,
     ) -> Vec<Rule> {
@@ -654,7 +746,7 @@ impl<'a> Lexicon<'a> {
     ///     TypeContext::default())
     ///     .expect("parsed lexicon");
     /// let schema = ptp![int];
-    /// let atom_weights = (1.5, 1.5, 1.0, 1.5);
+    /// let atom_weights = (2.0, 2.0, 1.0, 2.0);
     /// let variable = true;
     /// let max_size = 20;
     /// let env = Environment::new(true);
@@ -686,39 +778,95 @@ impl<'a> Lexicon<'a> {
     pub fn sample_term_from_context<R: Rng>(
         &self,
         context: &Context,
+        arg_types: &mut Vec<Type>,
         params: SampleParams,
         env: &Environment,
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<Term, SampleError> {
         self.0
-            .sample_term_from_context(context, params, env, ctx, rng)
+            .sample_term_internal(context, arg_types, params, env, ctx, rng)
     }
     /// Sample a `Rule`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate polytype;
+    /// # extern crate programinduction;
+    /// # extern crate rand;
+    /// # use programinduction::trs::{GenerationLimit, parse_lexicon, Lexicon};
+    /// # use polytype::Context as TypeContext;
+    /// # use rand::{thread_rng};
+    /// let mut lex = parse_lexicon(
+    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///     TypeContext::default())
+    ///     .expect("parsed lexicon");
+    /// let schema = ptp![int];
+    /// let atom_weights = (3.0, 3.0, 1.0, 3.0);
+    /// let limit = GenerationLimit::TotalSize(40);
+    /// let invent = true;
+    /// let mut ctx = lex.context().clone();
+    /// let mut rng = thread_rng();
+    ///
+    /// for i in 0..50 {
+    ///     let rule = lex.sample_rule(&schema, atom_weights, limit, invent, &mut ctx, &mut rng).unwrap();
+    ///     println!("{}. {}", i, rule.pretty(&lex.signature()));
+    /// }
+    /// ```
+    ///
+    /// ```
+    /// # #[macro_use] extern crate polytype;
+    /// # extern crate programinduction;
+    /// # extern crate rand;
+    /// # use programinduction::trs::{GenerationLimit, parse_lexicon, Lexicon};
+    /// # use polytype::Context as TypeContext;
+    /// # use rand::{thread_rng};
+    /// let mut lex = parse_lexicon(
+    ///     "equal/0: t1. t1 -> t1 -> bool; >/0: int -> int -> bool; ./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+    ///     TypeContext::default())
+    ///     .expect("parsed lexicon");
+    /// let schema = ptp![0];
+    /// let atom_weights = (3.0, 3.0, 1.0, 3.0);
+    /// let limit = GenerationLimit::TermSize(1);
+    /// let invent = true;
+    /// let mut ctx = lex.context().clone();
+    /// let mut rng = thread_rng();
+    ///
+    /// let mut rules = vec![];
+    /// while rules.len() < 500 {
+    ///     if let Ok(rule) = lex.sample_rule(&schema, atom_weights, limit, invent, &mut ctx.clone(), &mut rng) {
+    ///         rules.push(rule.pretty(&lex.signature()));
+    ///         println!("{}", rule.pretty(&lex.signature()));
+    ///     }
+    /// }
+    /// assert!(rules.contains(&"> = equal".to_string()));
+    /// assert!(!rules.contains(&"equal = >".to_string()));
+    /// ```
     pub fn sample_rule<R: Rng>(
         &self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
-        max_size: usize,
+        limit: GenerationLimit,
         invent: bool,
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<Rule, SampleError> {
         self.0
-            .sample_rule(schema, atom_weights, max_size, invent, ctx, rng)
+            .sample_rule(schema, atom_weights, limit, invent, ctx, rng)
     }
     /// Sample a `Rule` conditioned on a `Context` rather than a `TypeSchema`.
     pub fn sample_rule_from_context<R: Rng>(
         &self,
         context: &RuleContext,
         atom_weights: (f64, f64, f64, f64),
-        max_size: usize,
-        env: &Environment,
+        limit: GenerationLimit,
+        invent: bool,
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<Rule, SampleError> {
         self.0
-            .sample_rule_from_context(context, atom_weights, max_size, env, ctx, rng)
+            .sample_rule_from_context(context, atom_weights, limit, invent, ctx, rng)
     }
     /// Give the log probability of sampling a `Term`.
     ///
@@ -744,7 +892,7 @@ impl<'a> Lexicon<'a> {
     /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
     /// let mut env = Environment::new(true);
     /// let lp = lex.logprior_term(&term, &schema, atom_weights, &mut env, &mut ctx).unwrap();
-    /// assert_eq!(lp, -5.0*3.0_f64.ln() - 4.0_f64.ln() - 5.0*5.0_f64.ln());
+    /// assert_eq!((lp*1e9_f64).round(), ((-5.0*3.0_f64.ln() - 4.0_f64.ln() - 5.0*5.0_f64.ln())*1e9_f64).round());
     /// ```
     pub fn logprior_term(
         &self,
@@ -830,7 +978,6 @@ impl std::clone::Clone for Lex {
 }
 impl fmt::Display for Lex {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "Signature:")?;
         for (op, schema) in self.signature.operators().iter().zip(&self.ops) {
             writeln!(
                 f,
@@ -905,7 +1052,7 @@ impl Lex {
     fn enumerate_rules(
         &self,
         schema: &TypeSchema,
-        n: EnumerationLimit,
+        n: GenerationLimit,
         invent: bool,
         ctx: &TypeContext,
     ) -> Vec<Rule> {
@@ -994,6 +1141,9 @@ impl Lex {
     ) -> Result<TypeSchema, TypeError> {
         let env = Environment::from_vars(&rule.variables(), ctx);
         let lhs_type = self.infer_term_internal(&rule.lhs, &mut vec![0], types, &env, ctx)?;
+        let var = ctx.new_variable().vars().pop().unwrap();
+        ctx.extend(var, lhs_type.clone());
+        let protected = ctx.known_variables();
         let rhs_types = rule
             .rhs
             .iter()
@@ -1003,9 +1153,9 @@ impl Lex {
                     .map(|_| types[&vec![i + 1]].clone())
             })
             .collect::<Result<Vec<Type>, _>>()?;
-        // unify to introduce rule-level constraints
+        // match LHS against RHS (order matters; RHS must be at least as general as LHS)
         for rhs_type in rhs_types {
-            ctx.unify(&lhs_type, &rhs_type)?;
+            ctx.unify_protect(&rhs_type, &lhs_type, &protected)?;
         }
         for (_, v) in types.iter_mut() {
             v.apply_mut_compress(ctx);
@@ -1063,10 +1213,10 @@ impl Lex {
                 if head_args.len() < args.len() {
                     return Err(TypeError::Malformed);
                 }
-                for (i, (a, h)) in args.iter().zip(head_args).enumerate() {
+                for (i, (arg, tp)) in args.iter().zip(head_args).enumerate() {
                     place.push(i);
-                    self.infer_context_internal(a, place, tps, &env, ctx)?;
-                    ctx.unify(h, &tps[place])?;
+                    self.infer_context_internal(arg, place, tps, &env, ctx)?;
+                    ctx.unify(tp, &tps[place])?;
                     place.pop();
                 }
                 let return_tp = if op.arity() > 0 {
@@ -1088,16 +1238,50 @@ impl Lex {
     ) -> Result<TypeSchema, TypeError> {
         let env = Environment::from_vars(&context.variables(), ctx);
         let lhs_type = self.infer_context_internal(&context.lhs, &mut vec![0], types, &env, ctx)?;
+        println!("lhs_type: {}", lhs_type);
+        println!("lhs_type applied: {}", lhs_type.apply_compress(ctx));
+        for (k, v) in types.iter() {
+            println!("{:?} |-> {} ({})", k, v, v.apply_compress(ctx));
+        }
+        let var = ctx.new_variable().vars().pop().unwrap();
+        ctx.extend(var, lhs_type.clone());
+        let hole_vars = context
+            .holes()
+            .into_iter()
+            .flat_map(|hole| {
+                if hole[0] == 0 {
+                    let mut vars = types[&hole].vars();
+                    vars.append(&mut types[&hole].apply_compress(ctx).vars());
+                    vars
+                } else {
+                    vec![]
+                }
+            })
+            .collect_vec();
+        // TODO: remove vars involved in prefixes of holes
+        println!("hole vars: {:?}", hole_vars);
+        // protected shouldn't prevent information from flowing into holes.
+        let protected = ctx
+            .known_variables()
+            .into_iter()
+            .filter(|v| !hole_vars.contains(&v))
+            .collect_vec();
+        println!("protected vars: {:?}", protected);
         let rhs_types = context
             .rhs
             .iter()
             .enumerate()
             .map(|(i, rhs)| self.infer_context_internal(&rhs, &mut vec![i + 1], types, &env, ctx))
             .collect::<Result<Vec<Type>, _>>()?;
-        // Unify to introduce rule-level constraints.
-        for rhs_type in rhs_types {
-            ctx.unify(&lhs_type, &rhs_type)?;
+        println!("computed rhs_types");
+        for tp in &rhs_types {
+            println!("- {}", tp);
         }
+        // match LHS against RHS (order matters; RHS must be at least as general as LHS)
+        for rhs_type in rhs_types {
+            ctx.unify_protect(&rhs_type, &lhs_type, &protected)?;
+        }
+        println!("everything unifies");
         for (_, v) in types.iter_mut() {
             v.apply_mut_compress(ctx);
         }
@@ -1111,18 +1295,20 @@ impl Lex {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn sample_atom<R: Rng>(
         &self,
         atom_weights: (f64, f64, f64, f64),
         variable: bool,
         tp: &Type,
+        protect: &[usize],
         env: &Environment,
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<SampleChoice, SampleError> {
         // List all the options.
         let mut options = self
-            .valid_atoms(tp, env, ctx)
+            .valid_atoms(tp, protect, env, ctx)
             .into_iter()
             .filter(|(atom, _, _, _)| match atom {
                 Atom::Variable(_) => variable,
@@ -1149,87 +1335,50 @@ impl Lex {
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<Term, SampleError> {
-        let partial = Context::Hole;
-        let mut arg_types = vec![schema.instantiate(ctx)];
-        self.sample_term_internal(
-            partial,
-            &mut arg_types,
-            atom_weights,
+        let params = SampleParams {
             variable,
-            max_size,
-            env,
-            ctx,
-            rng,
-        )
+            atom_weights,
+            limit: GenerationLimit::TotalSize(max_size),
+        };
+        let partial = Context::Hole;
+        let mut tp = schema.instantiate(ctx);
+        tp.apply_mut_compress(ctx);
+        let mut arg_types = vec![tp];
+        self.sample_term_internal(&partial, &mut arg_types, params, env, ctx, rng)
     }
-    fn sample_term_from_context<R: Rng>(
+    fn sample_term_internal<R: Rng>(
         &self,
         context: &Context,
+        arg_types: &mut Vec<Type>,
         params: SampleParams,
         env: &Environment,
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<Term, SampleError> {
-        let mut types = HashMap::new();
-        self.infer_context(context, &mut types, ctx)?;
-        let mut arg_types = context
-            .holes()
-            .iter()
-            .map(|place| types[place].clone())
-            .collect();
-        self.sample_term_internal(
-            context.clone(),
-            &mut arg_types,
-            params.atom_weights,
-            params.variable,
-            params.max_size,
-            env,
-            ctx,
-            rng,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn sample_term_internal<R: Rng>(
-        &self,
-        mut partial: Context,
-        arg_types: &mut Vec<Type>,
-        atom_weights: (f64, f64, f64, f64),
-        variable: bool,
-        max_size: usize,
-        env: &Environment,
-        ctx: &mut TypeContext,
-        rng: &mut R,
-    ) -> Result<Term, SampleError> {
+        let mut size = [context.size()];
+        if !params.limit.is_okay(&size) {
+            return Err(SampleError::SizeExceeded);
+        }
         let mut env = env.clone();
+        let mut partial = context.clone();
         loop {
-            match partial.size().cmp(&max_size) {
-                // Partial is too big.
-                Ordering::Greater => {
-                    return Err(SampleError::SizeExceeded(partial.size(), max_size))
-                }
-                // Partial is okay.
-                _ => {
-                    match Term::try_from(&partial) {
-                        Ok(term) => return Ok(term),
-                        Err(hole_place) => {
-                            // Find the options fitting the hole, and for each:
-                            let (atom, mut new_arg_types, new_env, new_ctx) = self.sample_atom(
-                                atom_weights,
-                                variable,
-                                &arg_types[0],
-                                &env,
-                                ctx,
-                                rng,
-                            )?;
-                            // Drop them into place.
-                            partial = partial
-                                .replace(&hole_place, Context::from(atom))
-                                .ok_or(SampleError::OptionsExhausted)?;
-                            new_arg_types.extend_from_slice(&arg_types[1..]);
-                            *arg_types = new_arg_types;
-                            *ctx = new_ctx;
-                            env = new_env
-                        }
+            match Term::try_from(&partial) {
+                Ok(term) => return Ok(term),
+                Err(hole_place) => {
+                    let tp = arg_types[0].apply_compress(ctx);
+                    let variable = params.variable;
+                    let (atom, mut new_arg_types, new_env, new_ctx) =
+                        self.sample_atom(params.atom_weights, variable, &tp, &[], &env, ctx, rng)?;
+                    let subcontext = Context::from(atom);
+                    size[0] += subcontext.size() - 1;
+                    if params.limit.is_okay(&size) {
+                        partial = partial.replace(&hole_place, subcontext).unwrap();
+                        new_arg_types.extend_from_slice(&arg_types[1..]);
+                        *arg_types = new_arg_types;
+                        *ctx = new_ctx;
+                        env = new_env;
+                    } else {
+                        return Err(SampleError::SizeExceeded);
                     }
                 }
             }
@@ -1239,44 +1388,105 @@ impl Lex {
         &self,
         schema: &TypeSchema,
         atom_weights: (f64, f64, f64, f64),
-        max_size: usize,
+        limit: GenerationLimit,
         invent: bool,
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<Rule, SampleError> {
+        let params = SampleParams {
+            variable: true,
+            atom_weights,
+            limit,
+        };
+        let partial = RuleContext::default();
+        let mut tp = schema.instantiate(ctx);
+        tp.apply_mut_compress(ctx);
+        let mut arg_types = vec![tp.clone(), tp];
         let env = Environment::new(invent);
-        let lhs = self.sample_term(schema, atom_weights, false, max_size - 1, &env, ctx, rng)?;
-        let rhs_size = max_size - lhs.size();
-        let mut rhs_env = Environment::from_vars(&lhs.variables(), ctx);
-        rhs_env.invent = false;
-        let rhs = self.sample_term(schema, atom_weights, true, rhs_size, &rhs_env, ctx, rng)?;
-        Rule::new(lhs, vec![rhs]).ok_or(SampleError::Subterm)
+        self.sample_rule_internal(&partial, &mut arg_types, params, &env, ctx, rng)
     }
     fn sample_rule_from_context<R: Rng>(
         &self,
-        context: &RuleContext,
+        partial: &RuleContext,
         atom_weights: (f64, f64, f64, f64),
-        max_size: usize,
+        limit: GenerationLimit,
+        invent: bool,
+        ctx: &mut TypeContext,
+        rng: &mut R,
+    ) -> Result<Rule, SampleError> {
+        let params = SampleParams {
+            variable: false,
+            atom_weights,
+            limit,
+        };
+        let mut types = HashMap::new();
+        self.infer_rulecontext(&partial, &mut types, ctx)?;
+        let env = Environment::from_rulecontext(&partial, &types, invent);
+        let mut arg_types = partial
+            .holes()
+            .iter()
+            .map(|h| types[h].apply_compress(ctx))
+            .collect_vec();
+        self.sample_rule_internal(&partial, &mut arg_types, params, &env, ctx, rng)
+    }
+    fn sample_rule_internal<R: Rng>(
+        &self,
+        context: &RuleContext,
+        arg_types: &mut Vec<Type>,
+        params: SampleParams,
         env: &Environment,
         ctx: &mut TypeContext,
         rng: &mut R,
     ) -> Result<Rule, SampleError> {
-        let mut params = SampleParams {
-            atom_weights,
-            max_size: max_size - 1,
-            variable: false,
-        };
-        let lhs = self.sample_term_from_context(&context.lhs, params, env, ctx, rng)?;
-        let mut rhs_env = Environment::from_vars(&lhs.variables(), ctx);
-        rhs_env.invent = false;
-        params.variable = true;
-        params.max_size = max_size - lhs.size();
-        let rhs = self.sample_term_from_context(&context.rhs[0], params, &rhs_env, ctx, rng)?;
-        Rule::new(lhs, vec![rhs]).ok_or(SampleError::Subterm)
+        let mut size = std::iter::once(context.lhs.size())
+            .chain(context.rhs.iter().map(|rhs| rhs.size()))
+            .collect_vec();
+        if !params.limit.is_okay(&size) {
+            return Err(SampleError::SizeExceeded);
+        }
+        let mut env = env.clone();
+        let invent = env.invent;
+        let mut partial = context.clone();
+        let mut unify = vec![];
+        loop {
+            match Rule::try_from(&partial) {
+                Ok(rule) => return Ok(rule),
+                Err(hole_place) => {
+                    let lhs_hole = hole_place[0] == 0;
+                    if !lhs_hole && unify.is_empty() {
+                        unify = ctx.known_variables();
+                    }
+                    env.invent = invent && lhs_hole && hole_place != [0];
+                    let tp = arg_types[0].apply_compress(ctx);
+                    let variable = hole_place != [0] && params.variable;
+                    let (atom, mut new_arg_types, new_env, new_ctx) = self.sample_atom(
+                        params.atom_weights,
+                        variable,
+                        &tp,
+                        &unify,
+                        &env,
+                        ctx,
+                        rng,
+                    )?;
+                    let subcontext = Context::from(atom);
+                    size[hole_place[0]] += subcontext.size() - 1;
+                    if params.limit.is_okay(&size) {
+                        partial = partial.replace(&hole_place, subcontext).unwrap();
+                        new_arg_types.extend_from_slice(&arg_types[1..]);
+                        *arg_types = new_arg_types;
+                        *ctx = new_ctx;
+                        env = new_env;
+                    } else {
+                        return Err(SampleError::SizeExceeded);
+                    }
+                }
+            }
+        }
     }
     fn valid_atoms(
         &self,
         tp: &Type,
+        unify: &[usize],
         env: &Environment,
         ctx: &mut TypeContext,
     ) -> Vec<SampleChoice> {
@@ -1287,8 +1497,9 @@ impl Lex {
             let mut new_ctxs = [ctx.clone(), ctx.clone()];
             for &op in ops {
                 let class = (op.arity() != 0) as usize;
+                println!("op: {}", op.display(&self.signature));
                 if results[class].is_none() {
-                    let fit = fit_schema(&tp, schema, class == 0, &mut new_ctxs[class]);
+                    let fit = fit_schema(&tp, schema, unify, class == 0, &mut new_ctxs[class]);
                     results[class] = Some(fit);
                 }
                 if let Some(Ok(ref arg_types)) = results[class] {
@@ -1298,16 +1509,21 @@ impl Lex {
             }
         }
         for (id, schema) in env.env.iter().enumerate() {
+            println!("var: v{}_", id);
             let mut new_ctx = ctx.clone();
-            if let Ok(arg_types) = fit_schema(&tp, schema, true, &mut new_ctx) {
+            if let Ok(arg_types) = fit_schema(&tp, schema, unify, true, &mut new_ctx) {
                 let atom = Atom::Variable(Variable { id });
                 atoms.push((atom, arg_types, env.clone(), new_ctx));
             }
         }
         let mut new_ctx = ctx.clone();
         let mut new_env = env.clone();
-        if let Some(new_var) = new_env.invent_variable(&tp, &mut new_ctx) {
-            atoms.push((Atom::Variable(new_var), Vec::new(), new_env, new_ctx));
+        if let Some(new_var) = new_env.invent_variable(&mut new_ctx) {
+            let schema = self.var_tp(new_var, &new_env).unwrap();
+            println!("new_var schema: {}:- {}", new_var.display(), schema);
+            let arg_types = fit_schema(&tp, schema, unify, true, &mut new_ctx).unwrap();
+            println!("new_var: {}", new_var.display());
+            atoms.push((Atom::Variable(new_var), arg_types, new_env, new_ctx));
         }
         atoms
     }
@@ -1315,11 +1531,15 @@ impl Lex {
         &self,
         atom_weights: (f64, f64, f64, f64),
         tp: &Type,
+        unify: &[usize],
         env: &Environment,
         ctx: &mut TypeContext,
         head: Atom,
     ) -> Option<(SampleChoice, f64, f64)> {
-        let mut options = self.valid_atoms(tp, env, ctx);
+        let mut options = self.valid_atoms(tp, unify, env, ctx);
+        for option in &options {
+            println!(" @ {}", option.0.display(&self.signature));
+        }
         let mut weights = compute_option_weights(&options, atom_weights, env);
         let z: f64 = weights.iter().sum();
         let idx = options.iter().position(|(atom, _, _, _)| *atom == head);
@@ -1333,39 +1553,56 @@ impl Lex {
         env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<f64, SampleError> {
-        self.logprior_term_internal(term, &mut schema.instantiate(ctx), atom_weights, env, ctx)
+        self.logprior_term_internal(
+            term,
+            &mut schema.instantiate(ctx),
+            atom_weights,
+            &[],
+            env,
+            ctx,
+        )
     }
     fn logprior_term_internal(
         &self,
         term: &Term,
-        tp: &mut Type,
+        tp: &Type,
         atom_weights: (f64, f64, f64, f64),
+        unify: &[usize],
         env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<f64, SampleError> {
-        // Update the type (useful both initially and during recursive calls).
-        tp.apply_mut_compress(ctx);
-        // Collect all options.
-        let option = self.compute_prior_weight(atom_weights, &tp, env, ctx, term.head());
-        // Compute the probability of the term.
-        match option {
-            None => Ok(NEG_INFINITY),
-            Some(((Atom::Variable(_), _, new_env, _), w, z)) => {
-                *env = new_env;
-                Ok(w.ln() - z.ln())
-            }
-            Some(((Atom::Operator(_), arg_types, _, _), w, z)) => {
-                let mut lp = w.ln() - z.ln();
-                for (subterm, mut arg_tp) in term.args().iter().zip(arg_types) {
-                    lp +=
-                        self.logprior_term_internal(subterm, &mut arg_tp, atom_weights, env, ctx)?;
-                    if lp == NEG_INFINITY {
-                        return Ok(lp);
-                    }
+        let mut stack = vec![(term.clone(), tp.clone())];
+        let mut lp = 0.0;
+        while let Some((term, mut tp)) = stack.pop() {
+            // Update the type.
+            tp.apply_mut_compress(ctx);
+            println!(">>> tp: {}", tp);
+            // Collect all options.
+            let option = self.compute_prior_weight(atom_weights, &tp, unify, env, ctx, term.head());
+            // Compute the probability of the term.
+            match option {
+                None => {
+                    println!(">>> no option (FAILED)");
+                    return Ok(NEG_INFINITY);
                 }
-                Ok(lp)
+                Some(((Atom::Variable(v), _, new_env, new_ctx), w, z)) => {
+                    println!(">>> option: {}", v.display());
+                    *env = new_env;
+                    *ctx = new_ctx;
+                    println!("{}/{}", w, z);
+                    lp += w.ln() - z.ln();
+                }
+                Some(((Atom::Operator(op), arg_types, new_env, new_ctx), w, z)) => {
+                    println!(">>> option: {}", op.display(&self.signature));
+                    *env = new_env;
+                    *ctx = new_ctx;
+                    println!("{}/{}", w, z);
+                    lp += w.ln() - z.ln();
+                    stack.extend(term.args().into_iter().zip(arg_types).rev());
+                }
             }
         }
+        Ok(lp)
     }
     fn logprior_rule(
         &self,
@@ -1378,12 +1615,22 @@ impl Lex {
         let mut tp = schema.instantiate(ctx);
         let mut env = Environment::new(invent);
         let lp_lhs =
-            self.logprior_term_internal(&rule.lhs, &mut tp, atom_weights, &mut env, ctx)?;
+            self.logprior_term_internal(&rule.lhs, &mut tp, atom_weights, &[], &mut env, ctx)?;
+        println!("%%% lp_lhs: {}", lp_lhs);
         let mut lp = 0.0;
         env.invent = false;
+        let unify = ctx.known_variables();
         for rhs in &rule.rhs {
-            lp +=
-                lp_lhs + self.logprior_term_internal(&rhs, &mut tp, atom_weights, &mut env, ctx)?;
+            lp += lp_lhs
+                + self.logprior_term_internal(
+                    &rhs,
+                    &mut tp,
+                    atom_weights,
+                    &unify,
+                    &mut env,
+                    ctx,
+                )?;
+            println!("%%% lp: {}", lp);
         }
         Ok(lp)
     }
@@ -1401,7 +1648,8 @@ impl Lex {
         let clauses = utrs.clauses();
         let mut p_clauses = 0.0;
         for clause in &clauses {
-            p_clauses += self.logprior_rule(clause, atom_weights, invent, ctx)?;
+            println!("** clause: {}", clause.pretty(&self.signature));
+            p_clauses += self.logprior_rule(clause, atom_weights, invent, &mut ctx.clone())?;
         }
         Ok(p_of_n_rules(clauses.len()) + p_clauses)
     }
@@ -1420,7 +1668,7 @@ impl Lex {
         let mut tp = schema.instantiate(ctx);
         let mut env = Environment::new(invent);
         let lp_lhs =
-            self.logprior_term_internal(&rule.lhs, &mut tp, atom_weights, &mut env, ctx)?;
+            self.logprior_term_internal(&rule.lhs, &mut tp, atom_weights, &[], &mut env, ctx)?;
         let mut lp = 0.0;
         for rhs in &rule.rhs {
             lp += lp_lhs
@@ -1459,11 +1707,11 @@ impl<'a, 'b, 'c> From<&'c TRSGP<'a, 'b>> for &'c Lexicon<'b> {
     }
 }
 
-impl EnumerationLimit {
-    pub fn is_okay(&self, (lhs_size, rhs_size): (usize, usize)) -> bool {
+impl GenerationLimit {
+    pub fn is_okay(&self, size: &[usize]) -> bool {
         match *self {
-            EnumerationLimit::TotalSize(n) => n >= lhs_size + rhs_size,
-            EnumerationLimit::SideSize(n) => n >= lhs_size && n >= rhs_size,
+            GenerationLimit::TotalSize(n) => n >= size.iter().sum(),
+            GenerationLimit::TermSize(n) => n >= *size.iter().max().unwrap(),
         }
     }
 }
@@ -1472,7 +1720,7 @@ impl<'a> RuleEnumeration<'a> {
     fn new(
         lex: &'a Lex,
         schema: &TypeSchema,
-        max_size: EnumerationLimit,
+        limit: GenerationLimit,
         invent: bool,
         ctx: &TypeContext,
     ) -> Self {
@@ -1482,12 +1730,13 @@ impl<'a> RuleEnumeration<'a> {
         RuleEnumeration {
             stack: vec![(
                 RuleContext::default(),
+                vec![],
                 (1, 1),
                 vec![tp.clone(), tp],
                 env,
                 ctx,
             )],
-            max_size,
+            limit,
             lex,
             invent,
         }
@@ -1496,14 +1745,33 @@ impl<'a> RuleEnumeration<'a> {
 impl<'a> Iterator for RuleEnumeration<'a> {
     type Item = Rule;
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((partial, (lsize, rsize), arg_types, mut env, mut ctx)) = self.stack.pop() {
+        while let Some((partial, mut unify, (lsize, rsize), arg_types, mut env, mut ctx)) =
+            self.stack.pop()
+        {
             match Rule::try_from(&partial) {
                 Ok(rule) => return Some(rule),
                 Err(hole_place) => {
+                    println!(
+                        "{} {:?} {}",
+                        partial.pretty(&self.lex.signature),
+                        hole_place,
+                        &arg_types[0].apply_compress(&mut ctx),
+                    );
+                    if ctx.is_empty() {
+                        println!("empty sub");
+                    } else {
+                        for (k, v) in ctx.substitution().iter() {
+                            println!("{} -> {}", k, v);
+                        }
+                    }
+                    println!("env: {:?}", env.env);
                     let lhs_hole = hole_place[0] == 0;
+                    if !lhs_hole && unify.is_empty() {
+                        unify = ctx.known_variables();
+                    }
                     env.invent = self.invent && lhs_hole && hole_place != [0];
                     for (atom, mut new_arg_types, new_env, new_ctx) in
-                        self.lex.valid_atoms(&arg_types[0], &env, &mut ctx)
+                        self.lex.valid_atoms(&arg_types[0], &unify, &env, &mut ctx)
                     {
                         let subcontext = Context::from(atom);
                         let new_size = if lhs_hole {
@@ -1511,11 +1779,13 @@ impl<'a> Iterator for RuleEnumeration<'a> {
                         } else {
                             (lsize, rsize + subcontext.size() - 1)
                         };
-                        if self.max_size.is_okay(new_size) {
+                        if self.limit.is_okay(&[new_size.0, new_size.1]) {
                             let new_context = partial.replace(&hole_place, subcontext).unwrap();
+                            println!("  -> {}", new_context.pretty(&self.lex.signature));
                             new_arg_types.extend_from_slice(&arg_types[1..]);
                             self.stack.push((
                                 new_context,
+                                unify.clone(),
                                 new_size,
                                 new_arg_types,
                                 new_env,
@@ -1540,9 +1810,10 @@ impl<'a> TermEnumeration<'a> {
     ) -> Self {
         let mut ctx = ctx.clone();
         let tp = schema.instantiate(&mut ctx);
+        let limit = GenerationLimit::TotalSize(max_size);
         TermEnumeration {
             stack: vec![(Context::Hole, 1, vec![tp], env.clone(), ctx)],
-            max_size,
+            limit,
             lex,
         }
     }
@@ -1556,11 +1827,11 @@ impl<'a> Iterator for TermEnumeration<'a> {
                 Err(hole_place) => {
                     // Find the options fitting the hole:
                     for (atom, mut new_arg_types, new_env, new_ctx) in
-                        self.lex.valid_atoms(&arg_types[0], &env, &mut ctx)
+                        self.lex.valid_atoms(&arg_types[0], &[], &env, &mut ctx)
                     {
                         let subcontext = Context::from(atom);
                         let new_size = size + subcontext.size() - 1;
-                        if new_size <= self.max_size {
+                        if self.limit.is_okay(&[new_size]) {
                             let new_context = partial.replace(&hole_place, subcontext).unwrap();
                             new_arg_types.extend_from_slice(&arg_types[1..]);
                             self.stack.push((

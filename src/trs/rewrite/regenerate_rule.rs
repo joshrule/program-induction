@@ -2,7 +2,7 @@ use super::{super::as_result, SampleError, TRS};
 use rand::Rng;
 use std::collections::HashMap;
 use term_rewriting::{Context, RuleContext};
-use trs::lexicon::Environment;
+use trs::GenerationLimit;
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Regenerate some portion of a rule
@@ -16,7 +16,6 @@ impl<'a, 'b> TRS<'a, 'b> {
         let mut types = HashMap::new();
         let mut ctx = self.lex.0.ctx.clone();
         self.lex.infer_rule(&clause, &mut types, &mut ctx)?;
-        let env = Environment::from_rule(&clause, &types, true);
         let rulecontext = RuleContext::from(clause.clone());
         let subcontexts = rulecontext.subcontexts();
         let mut trss = Vec::with_capacity(subcontexts.len());
@@ -25,11 +24,12 @@ impl<'a, 'b> TRS<'a, 'b> {
                 let template = rulecontext.replace(&place, Context::Hole).unwrap();
                 let mut trs = self.clone();
                 let mut ctx = trs.lex.0.to_mut().ctx.clone();
+                let limit = GenerationLimit::TotalSize(template.size() + max_size - 1);
                 let sample_result = trs.lex.sample_rule_from_context(
                     &template,
                     atom_weights,
-                    max_size,
-                    &env,
+                    limit,
+                    true,
                     &mut ctx,
                     rng,
                 );

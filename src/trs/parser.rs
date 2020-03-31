@@ -132,6 +132,52 @@ pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseErr
 /// Given a [`Lexicon`], parse and typecheck a [`RuleContext`]. The format of the
 /// [`RuleContext`] is as given in [`term_rewriting`].
 ///
+/// # Example
+///
+/// ```
+/// # #[macro_use] extern crate polytype;
+/// # extern crate programinduction;
+/// # use programinduction::trs::{parse_lexicon, parse_rulecontext};
+/// # use polytype::{Context as TypeContext};
+/// # use std::collections::HashMap;
+/// let mut lex = parse_lexicon(
+///    &[
+///        ">/0: nat -> nat -> bool;",
+///        "+/0: nat -> nat -> nat;",
+///        "equal/0: t1. t1 -> t1 -> bool;",
+///        "0/0: nat;",
+///        "true/0: bool;",
+///        "false/0: bool;",
+///        "empty/0: list;",
+///        "cons/0: nat -> list -> list;",
+///        "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+///    ]
+///        .join(" "),
+///    TypeContext::default(),
+///)
+///    .expect("parsed lexicon");
+///
+/// // Rules are also RuleContexts.
+/// assert!(parse_rulecontext("> = >", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal = equal", &mut lex).is_ok());
+/// assert!(parse_rulecontext("> = equal", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal = >", &mut lex).is_err());
+/// assert!(parse_rulecontext("equal 0 0 = true", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal v0_ v0_ = true", &mut lex).is_ok());
+///
+/// assert!(parse_rulecontext("[!] = >", &mut lex).is_ok());
+/// assert!(parse_rulecontext("> = [!]", &mut lex).is_ok());
+/// assert!(parse_rulecontext("[!] = equal", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal = [!]", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal 0 = > 0", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal [!] = > 0", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal 0 = > [!]", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal [!] = > [!]", &mut lex).is_ok());
+/// assert!(parse_rulecontext("equal [!] = + [!]", &mut lex).is_err());
+/// assert!(parse_rulecontext("[!] 0 0 = true", &mut lex).is_ok());
+/// assert!(parse_rulecontext("[!] (cons 0 (cons 0 (cons 0 (cons 0 empty)))) = cons 0 empty", &mut lex).is_ok());
+/// ```
+///
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`RuleContext`]: ../../../term_rewriting/struct.RuleContext.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
@@ -143,6 +189,40 @@ pub fn parse_rulecontext(input: &str, lex: &mut Lexicon) -> Result<RuleContext, 
 
 /// Given a [`Lexicon`], parse and typecheck a [`Rule`]. The format of the
 /// [`Rule`] is as given in [`term_rewriting`].
+///
+/// # Example
+///
+/// ```
+/// # #[macro_use] extern crate polytype;
+/// # extern crate programinduction;
+/// # use programinduction::trs::{parse_lexicon, parse_rule};
+/// # use polytype::{Context as TypeContext};
+/// # use std::collections::HashMap;
+/// let mut lex = parse_lexicon(
+///    &[
+///        ">/0: nat -> nat -> bool;",
+///        "equal/0: t1. t1 -> t1 -> bool;",
+///        "0/0: nat;",
+///        "true/0: bool;",
+///        "false/0: bool;",
+///        "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+///    ]
+///        .join(" "),
+///    TypeContext::default(),
+///)
+///    .expect("parsed lexicon");
+///
+/// assert!(parse_rule("> = >", &mut lex).is_ok());
+/// assert!(parse_rule("equal = equal", &mut lex).is_ok());
+/// assert!(parse_rule("> = equal", &mut lex).is_ok());
+/// assert!(parse_rule("equal = >", &mut lex).is_err());
+/// assert!(parse_rule("equal 0 0 = true", &mut lex).is_ok());
+/// assert!(parse_rule("equal v0_ v0_ = true", &mut lex).is_ok());
+/// assert!(parse_rule("v0_ v1_ = v0_", &mut lex).is_err());
+/// assert!(parse_rule("v0_ v1_ = v1_", &mut lex).is_err());
+/// assert!(parse_rule("v0_ v1_ = v0_ v1_", &mut lex).is_ok());
+/// assert!(parse_rule("v0_ v1_ = v1_ v0_", &mut lex).is_err());
+/// ```
 ///
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Rule`]: ../../../term_rewriting/struct.Rule.html
@@ -276,8 +356,7 @@ fn typed_rule<'a>(input: &'a str, lex: &mut Lexicon) -> nom::IResult<CompleteStr
     let result = parse_untyped_rule(&mut lex.0.to_mut().signature, input);
     if let Ok(rule) = result {
         let mut ctx = lex.0.ctx.clone();
-        let result = lex.infer_rule(&rule, &mut HashMap::new(), &mut ctx);
-        if result.is_ok() {
+        if lex.infer_rule(&rule, &mut HashMap::new(), &mut ctx).is_ok() {
             return Ok((CompleteStr(""), rule));
         }
     }
@@ -476,7 +555,7 @@ mod tests {
             .iter()
             .map(|rc| format!("{};", rc.display(sig)))
             .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(res_string, "PLUS(v0_ [!]) = ZERO;\n[!] = SUCC(ZERO);");
+            .join(" ");
+        assert_eq!(res_string, "PLUS(v0_ [!]) = ZERO; [!] = SUCC(ZERO);");
     }
 }
