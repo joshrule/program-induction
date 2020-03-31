@@ -259,6 +259,8 @@ pub enum SingleLikelihood {
     },
     // generative trace-based log-likelihood with string edit distance noise model: (1-p_edit(h,d))
     List {
+        alpha: f64,
+        atom_weights: (f64, f64, f64, f64),
         dist: PStringDist,
         t_max: usize,
         d_max: usize,

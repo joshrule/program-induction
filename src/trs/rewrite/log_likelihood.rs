@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::{convert::TryInto, f64::NEG_INFINITY};
 use term_rewriting::{trace::Trace, Rule, Term, TRS as UntypedTRS};
-use trs::{Likelihood, SingleLikelihood, TRS};
+use trs::{Environment, Likelihood, SingleLikelihood, TRS};
 use utils::logsumexp;
 
 impl<'a, 'b> TRS<'a, 'b> {
@@ -33,7 +34,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// Compute the log likelihood when all you have is a single input.
     pub(crate) fn partial_log_likelihood(&self, input: &Term, likelihood: Likelihood) -> f64 {
         match likelihood.single {
-            SingleLikelihood::List { .. } => {
+            SingleLikelihood::List { alpha, .. } => {
                 let utrs = self.full_utrs();
                 let sig = &self.lex.0.signature;
                 let mut trace = Trace::new(
@@ -55,9 +56,10 @@ impl<'a, 'b> TRS<'a, 'b> {
                         let rewrite = n.term();
                         if UntypedTRS::convert_list_to_string(&rewrite, &sig.deep_copy()).is_some()
                         {
-                            log_p
+                            // (1-a)*p + alpha
+                            logsumexp(&[(1.0 - alpha).ln() + log_p, alpha.ln()])
                         } else {
-                            NEG_INFINITY
+                            alpha.ln()
                         }
                     })
                     .collect::<Vec<_>>();
@@ -110,10 +112,26 @@ impl<'a, 'b> TRS<'a, 'b> {
                     })
                 }
                 // trace-sensitive ll with string edit distance noise model: (1-p_edit(h,d))
-                SingleLikelihood::List { dist, t_max, d_max } => {
-                    trace.rewrites_to(likelihood.max_steps, rhs, move |t1, t2| {
+                SingleLikelihood::List {
+                    alpha,
+                    atom_weights,
+                    dist,
+                    t_max,
+                    d_max,
+                } => {
+                    let mut ctx = self.lex.0.ctx.clone();
+                    let mut types = HashMap::new();
+                    self.lex.infer_term(&datum.lhs, &mut types, &mut ctx).ok();
+                    let mut env = Environment::from_term(&datum.lhs, &types, false);
+                    let schema = ptp!(list);
+                    let p_sample = self
+                        .lex
+                        .logprior_term(rhs, &schema, atom_weights, &mut env, &mut ctx)
+                        .unwrap_or_else(|_| NEG_INFINITY);
+                    let p_rewrite = trace.rewrites_to(likelihood.max_steps, rhs, move |t1, t2| {
                         UntypedTRS::p_list(t1, t2, dist, t_max, d_max, &sig)
-                    })
+                    });
+                    logsumexp(&[alpha.ln() + p_sample, (1.0 - alpha).ln() + p_rewrite])
                 }
             }
         } else {
