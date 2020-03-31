@@ -136,7 +136,7 @@ impl Move {
             Move::MemorizeOne => parents[0].memorize_one(obs),
             Move::DeleteRule => parents[0].delete_rule(),
             Move::Variablize => parents[0].variablize(),
-            Move::Generalize => parents[0].generalize(),
+            Move::Generalize => parents[0].generalize().map(|trs| vec![trs]),
             Move::Recurse(n) => parents[0].recurse(n),
             Move::DeleteRules(t) => parents[0].delete_rules(rng, t),
             Move::Combine(t) => TRS::combine(&parents[0], &parents[1], rng, t),
@@ -149,7 +149,7 @@ impl Move {
                 .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
             Move::GeneralizeDeep => parents[0]
                 .generalize()
-                .and_then(|trss| TRS::nest(&trss, task, gp, rng, params, gpparams)),
+                .and_then(|trs| TRS::nest(&[trs], task, gp, rng, params, gpparams)),
         }
     }
     pub fn get_parents<'a, 'b, 'c, R: Rng>(

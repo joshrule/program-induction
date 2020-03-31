@@ -6,7 +6,7 @@ use term_rewriting::{Atom, Context, Operator, Rule, Term, Variable};
 use trs::lexicon::{Environment, Lexicon};
 
 impl<'a, 'b> TRS<'a, 'b> {
-    pub fn generalize(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    pub fn generalize(&self) -> Result<TRS<'a, 'b>, SampleError> {
         let (lhs_context, clauses) = TRS::find_lhs_context(&self.utrs.rules)?;
         let (rhs_context, clauses) = TRS::find_rhs_context(&clauses)?;
         let mut trs = self.clone();
@@ -16,7 +16,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         trs.filter_background(&mut new_rules);
         trs.append_clauses(new_rules)?;
         let stop = trs.len();
-        Ok(vec![trs.smart_delete(start, stop)?])
+        Ok(trs.smart_delete(start, stop)?)
     }
     fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {
         TRS::find_shared_context(clauses, |c| c.lhs.clone(), 1)
@@ -496,7 +496,7 @@ mod tests {
             &[],
         )
         .expect("parsed trs");
-        let trs = trs.generalize().unwrap().pop().unwrap();
+        let trs = trs.generalize().unwrap();
         let sig = &trs.lex.0.signature;
         let trs_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
         let expected = [
@@ -529,7 +529,7 @@ mod tests {
             &[],
         )
             .expect("parsed trs");
-        let trs = trs.generalize().unwrap().pop().unwrap();
+        let trs = trs.generalize().unwrap();
         let sig = &trs.lex.0.signature;
         let trs_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
 
