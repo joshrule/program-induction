@@ -161,7 +161,7 @@ pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseErr
 /// assert!(parse_rulecontext("> = >", &mut lex).is_ok());
 /// assert!(parse_rulecontext("equal = equal", &mut lex).is_ok());
 /// assert!(parse_rulecontext("> = equal", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal = >", &mut lex).is_err());
+/// assert!(parse_rulecontext("equal = >", &mut lex).is_ok());
 /// assert!(parse_rulecontext("equal 0 0 = true", &mut lex).is_ok());
 /// assert!(parse_rulecontext("equal v0_ v0_ = true", &mut lex).is_ok());
 ///
@@ -215,11 +215,11 @@ pub fn parse_rulecontext(input: &str, lex: &mut Lexicon) -> Result<RuleContext, 
 /// assert!(parse_rule("> = >", &mut lex).is_ok());
 /// assert!(parse_rule("equal = equal", &mut lex).is_ok());
 /// assert!(parse_rule("> = equal", &mut lex).is_ok());
-/// assert!(parse_rule("equal = >", &mut lex).is_err());
+/// assert!(parse_rule("equal = >", &mut lex).is_ok());
 /// assert!(parse_rule("equal 0 0 = true", &mut lex).is_ok());
 /// assert!(parse_rule("equal v0_ v0_ = true", &mut lex).is_ok());
 /// assert!(parse_rule("v0_ v1_ = v0_", &mut lex).is_err());
-/// assert!(parse_rule("v0_ v1_ = v1_", &mut lex).is_err());
+/// assert!(parse_rule("v0_ v1_ = v1_", &mut lex).is_ok());
 /// assert!(parse_rule("v0_ v1_ = v0_ v1_", &mut lex).is_ok());
 /// assert!(parse_rule("v0_ v1_ = v1_ v0_", &mut lex).is_err());
 /// ```
