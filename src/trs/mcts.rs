@@ -809,7 +809,8 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         let handle = StateHandle::Terminal(self.terminals.len() - 1);
         MCTSState { handle }
     }
-    pub fn find_hypothesis(&mut self, trs: TRS<'a, 'b>) -> HypothesisHandle {
+    pub fn find_hypothesis(&mut self, mut trs: TRS<'a, 'b>) -> HypothesisHandle {
+        trs.utrs.canonicalize(&mut HashMap::new());
         match self
             .hypotheses
             .iter()
