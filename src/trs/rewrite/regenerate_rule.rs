@@ -1,8 +1,7 @@
-use super::{super::as_result, SampleError, TRS};
 use rand::Rng;
 use std::collections::HashMap;
 use term_rewriting::{Context, RuleContext};
-use trs::GenerationLimit;
+use trs::{as_result, Environment, GenerationLimit, SampleError, TRS};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Regenerate some portion of a rule
@@ -15,7 +14,9 @@ impl<'a, 'b> TRS<'a, 'b> {
         let (n, clause) = self.choose_clause(rng)?;
         let mut types = HashMap::new();
         let mut ctx = self.lex.0.ctx.clone();
-        self.lex.infer_rule(&clause, &mut types, &mut ctx)?;
+        let mut env = Environment::from_vars(&clause.variables(), &mut ctx);
+        self.lex
+            .infer_rule(&clause, &mut types, &mut env, &mut ctx)?;
         let rulecontext = RuleContext::from(clause.clone());
         let subcontexts = rulecontext.subcontexts();
         let mut trss = Vec::with_capacity(subcontexts.len());

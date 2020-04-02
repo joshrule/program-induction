@@ -147,8 +147,9 @@ impl<'a, 'b> TRS<'a, 'b> {
             TRS::fill_hole_with_variable(&lhs_context).ok_or(SampleError::Subterm)?;
         let mut types = HashMap::new();
         let mut ctx = self.lex.0.ctx.clone();
-        self.lex.infer_term(&lhs, &mut types, &mut ctx)?;
-        let env = Environment::from_term(&lhs, &types, false);
+        let mut env = Environment::from_vars(&lhs.variables(), &mut ctx);
+        self.lex.infer_term(&lhs, &mut types, &mut env, &mut ctx)?;
+        env.invent = false;
         // Fill the RHS context and create subproblem rules.
         let mut rhs = rhs_context.clone();
         let mut new_rules: Vec<Rule> = vec![];
@@ -208,7 +209,8 @@ impl<'a, 'b> TRS<'a, 'b> {
             let rhs_subterm = rhs.at(rhs_place).ok_or(SampleError::Subterm)?;
             let mut map = HashMap::new();
             let mut ctx = lex.0.ctx.clone();
-            lex.infer_term(&rhs, &mut map, &mut ctx)?;
+            let mut env = Environment::from_vars(&rhs.variables(), &mut ctx);
+            lex.infer_term(&rhs, &mut map, &mut env, &mut ctx)?;
             types.push(map[rhs_place].clone());
             let alpha = Term::pmatch(vec![(&lhs, &clause.lhs)]).ok_or(SampleError::Subterm)?;
             for &var in &rhs_subterm.variables() {
@@ -297,10 +299,7 @@ mod tests {
     use std::collections::HashMap;
     use term_rewriting::{Atom, Context, Variable};
     use trs::parser::{parse_context, parse_lexicon, parse_rule, parse_term, parse_trs};
-    use trs::{
-        lexicon::{Environment, Lexicon},
-        TRS,
-    };
+    use trs::{Environment, Lexicon, TRS};
 
     fn create_test_lexicon<'b>() -> Lexicon<'b> {
         parse_lexicon(
@@ -399,7 +398,9 @@ mod tests {
 
         let mut types = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        lex.infer_term(&term, &mut types, &mut ctx).unwrap();
+        let mut env = Environment::from_vars(&term.variables(), &mut ctx);
+        lex.infer_term(&term, &mut types, &mut env, &mut ctx)
+            .unwrap();
         let tp = &types[&place];
 
         assert_eq!("^ (+ v0_ v1_) 2", term.pretty(&lex.0.signature));
@@ -428,7 +429,10 @@ mod tests {
             TRS::new_operator(&mut lex, applicative, vars, &return_tp, &env, &mut ctx).unwrap();
         let context = Context::from(Atom::from(op));
         let mut map = HashMap::new();
-        let tp = lex.infer_context(&context, &mut map, &mut ctx).unwrap();
+        let mut env = Environment::from_vars(&context.variables(), &mut ctx);
+        let tp = lex
+            .infer_context(&context, &mut map, &mut env, &mut ctx)
+            .unwrap();
         assert_eq!(11, op.id());
         assert_eq!(0, op.arity());
         assert_eq!("INT → LIST → LIST", tp.to_string());

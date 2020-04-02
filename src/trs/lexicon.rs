@@ -69,7 +69,7 @@ pub(crate) struct Lex {
 
 #[derive(Clone, Debug)]
 pub struct Environment {
-    invent: bool,
+    pub invent: bool,
     env: Vec<TypeSchema>,
     free_vars: Vec<TypeVar>,
 }
@@ -287,13 +287,16 @@ impl<'a> PartialEq for Lexicon<'a> {
 }
 impl<'a> Lexicon<'a> {
     // TODO: this is a HACK. How can we get rid of it?
-    pub(crate) fn rulecontext_fillers(&self, context: &RuleContext, place: &[usize]) -> Vec<Atom> {
+    pub fn rulecontext_fillers(&self, context: &RuleContext, place: &[usize]) -> Vec<Atom> {
         if let Some(&Context::Hole) = context.at(place) {
             let mut types = HashMap::new();
             let mut ctx = self.0.ctx.clone();
-            self.0.infer_rulecontext(context, &mut types, &mut ctx).ok();
-            let invent = place[0] == 0;
-            let env = Environment::from_rulecontext(context, &types, invent);
+            let mut env = Environment::from_vars(&context.variables(), &mut ctx);
+            env.invent = true;
+            self.0
+                .infer_rulecontext(context, &mut types, &mut env, &mut ctx)
+                .ok();
+            env.invent = place[0] == 0;
             self.0
                 .valid_atoms(&types[place], &env, &mut ctx)
                 .into_iter()
@@ -626,12 +629,8 @@ impl<'a> Lexicon<'a> {
     ///
     /// [`TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`Atom`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Atom.html
-    pub fn infer_atom<'b>(
-        &'b self,
-        atom: &Atom,
-        env: &'b Environment,
-    ) -> Result<&'b TypeSchema, TypeError> {
-        self.0.infer_atom(atom, env)
+    pub fn infer_atom(&self, atom: &Atom, env: &Environment) -> Result<TypeSchema, TypeError> {
+        self.0.infer_atom(atom, env).map(|tp| tp.clone())
     }
     /// Infer the [`TypeSchema`] associated with a [`Term`].
     ///
@@ -641,9 +640,10 @@ impl<'a> Lexicon<'a> {
         &self,
         term: &Term,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        self.0.infer_term(term, types, ctx)
+        self.0.infer_term(term, types, env, ctx)
     }
     /// Infer the [`TypeSchema`] associated with a [`Rule`].
     ///
@@ -653,9 +653,10 @@ impl<'a> Lexicon<'a> {
         &self,
         rule: &Rule,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        self.0.infer_rule(rule, types, ctx)
+        self.0.infer_rule(rule, types, env, ctx)
     }
     /// Infer the [`TypeSchema`] associated with a slice of [`Rule`]s.
     ///
@@ -676,7 +677,7 @@ impl<'a> Lexicon<'a> {
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
     /// # extern crate term_rewriting;
-    /// # use programinduction::trs::{parse_lexicon, parse_context, Lexicon};
+    /// # use programinduction::trs::{parse_lexicon, parse_context, Environment, Lexicon};
     /// # use polytype::Context as TypeContext;
     /// # use std::collections::HashMap;
     /// let mut lex = parse_lexicon(
@@ -685,8 +686,9 @@ impl<'a> Lexicon<'a> {
     /// .expect("parsed lexicon");
     /// let context = parse_context("SUCC([!])", &mut lex).expect("parsed context");
     /// let mut ctx = lex.context().clone();
+    /// let mut env = Environment::from_vars(&context.variables(), &mut ctx);
     /// let mut types = HashMap::new();
-    /// let inferred_schema = lex.infer_context(&context, &mut types, &mut ctx).unwrap();
+    /// let inferred_schema = lex.infer_context(&context, &mut types, &mut env, &mut ctx).unwrap();
     ///
     /// assert_eq!("int", inferred_schema.to_string());
     /// ```
@@ -697,9 +699,10 @@ impl<'a> Lexicon<'a> {
         &self,
         context: &Context,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        self.0.infer_context(context, types, ctx)
+        self.0.infer_context(context, types, env, ctx)
     }
     /// Infer the [`TypeSchema`] associated with a [`RuleContext`].
     ///
@@ -709,9 +712,10 @@ impl<'a> Lexicon<'a> {
         &self,
         context: &RuleContext,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        self.0.infer_rulecontext(context, types, ctx)
+        self.0.infer_rulecontext(context, types, env, ctx)
     }
     /// Infer the [`TypeSchema`] associated with a [`TRS`].
     /// [`TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
@@ -1081,10 +1085,10 @@ impl Lex {
         &self,
         term: &Term,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
         let mut place = vec![];
-        let env = Environment::from_vars(&term.variables(), ctx);
         self.infer_term_internal(term, &mut place, types, &env, ctx)?;
         for (_, v) in types.iter_mut() {
             v.apply_mut_compress(ctx);
@@ -1126,9 +1130,9 @@ impl Lex {
         &self,
         rule: &Rule,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        let env = Environment::from_vars(&rule.variables(), ctx);
         let lhs_type = self.infer_term_internal(&rule.lhs, &mut vec![0], types, &env, ctx)?;
         let var = ctx.new_variable().vars().pop().unwrap();
         ctx.extend(var, lhs_type.clone());
@@ -1156,7 +1160,8 @@ impl Lex {
         let rule_tps = rules
             .iter()
             .map(|rule| {
-                self.infer_rule(rule, &mut HashMap::new(), ctx)
+                let mut env = Environment::from_vars(&rule.variables(), ctx);
+                self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)
                     .map(|rule_tp| rule_tp.instantiate(ctx))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -1171,9 +1176,9 @@ impl Lex {
         &self,
         context: &Context,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        let env = Environment::from_vars(&context.variables(), ctx);
         let tp = self.infer_context_internal(context, &mut vec![], types, &env, ctx)?;
         for (_, v) in types.iter_mut() {
             v.apply_mut_compress(ctx);
@@ -1222,9 +1227,9 @@ impl Lex {
         &self,
         context: &RuleContext,
         types: &mut HashMap<Place, Type>,
+        env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        let env = Environment::from_vars(&context.variables(), ctx);
         let lhs_type = self.infer_context_internal(&context.lhs, &mut vec![0], types, &env, ctx)?;
         println!("lhs_type: {}", lhs_type);
         println!("lhs_type applied: {}", lhs_type.apply_compress(ctx));
@@ -1257,7 +1262,8 @@ impl Lex {
     }
     fn infer_utrs(&self, utrs: &UntypedTRS, ctx: &mut TypeContext) -> Result<(), TypeError> {
         for rule in &utrs.rules {
-            self.infer_rule(rule, &mut HashMap::new(), ctx)?;
+            let mut env = Environment::from_vars(&rule.variables(), ctx);
+            self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)?;
         }
         Ok(())
     }
@@ -1380,13 +1386,14 @@ impl Lex {
         rng: &mut R,
     ) -> Result<Rule, SampleError> {
         let params = SampleParams {
-            variable: false,
+            variable: true,
             atom_weights,
             limit,
         };
         let mut types = HashMap::new();
-        self.infer_rulecontext(&partial, &mut types, ctx)?;
-        let env = Environment::from_rulecontext(&partial, &types, invent);
+        let mut env = Environment::from_vars(&partial.variables(), ctx);
+        env.invent = invent;
+        self.infer_rulecontext(&partial, &mut types, &mut env, ctx)?;
         let mut arg_types = partial
             .holes()
             .iter()
@@ -1555,7 +1562,8 @@ impl Lex {
         invent: bool,
         ctx: &mut TypeContext,
     ) -> Result<f64, SampleError> {
-        let schema = self.infer_rule(rule, &mut HashMap::new(), ctx)?;
+        let mut env = Environment::from_vars(&rule.variables(), ctx);
+        let schema = self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)?;
         let mut tp = schema.instantiate(ctx);
         let mut env = Environment::new(invent);
         let lp_lhs =
@@ -1600,7 +1608,8 @@ impl Lex {
         d_max: usize,
         ctx: &mut TypeContext,
     ) -> Result<f64, SampleError> {
-        let schema = self.infer_rule(rule, &mut HashMap::new(), ctx)?;
+        let mut env = Environment::from_vars(&rule.variables(), ctx);
+        let schema = self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)?;
         let mut tp = schema.instantiate(ctx);
         let mut env = Environment::new(invent);
         let lp_lhs =
@@ -1711,7 +1720,7 @@ impl<'a> Iterator for RuleEnumeration<'a> {
                         };
                         if self.limit.is_okay(&[new_size.0, new_size.1]) {
                             let new_context = partial.replace(&hole_place, subcontext).unwrap();
-                            println!("  -> {}", new_context.pretty(&self.lex.signature));
+                            // println!("  -> {}", new_context.pretty(&self.lex.signature));
                             new_arg_types.extend_from_slice(&arg_types[1..]);
                             self.stack.push((
                                 new_context,

@@ -1,8 +1,8 @@
-use super::{super::as_result, SampleError, TRS};
 use itertools::Itertools;
 use polytype::Type;
 use std::{collections::HashMap, convert::TryFrom};
 use term_rewriting::{Context, Place, Rule, RuleContext, Term, Variable};
+use trs::{as_result, Environment, SampleError, TRS};
 
 pub type Variablization = (usize, Type, Vec<Place>);
 type Types = HashMap<Rule, HashMap<Place, Type>>;
@@ -152,8 +152,9 @@ impl<'a, 'b> TRS<'a, 'b> {
             .filter_map(|(_, r)| {
                 let mut ctx = self.lex.0.ctx.clone();
                 let mut types = HashMap::new();
+                let mut env = Environment::from_vars(&r.variables(), &mut ctx);
                 self.lex
-                    .infer_rule(&r, &mut types, &mut ctx)
+                    .infer_rule(&r, &mut types, &mut env, &mut ctx)
                     .ok()
                     .map(|_| (r, types))
             })
@@ -274,7 +275,7 @@ mod tests {
     use polytype::Context as TypeContext;
     use std::collections::HashMap;
     use trs::parser::{parse_lexicon, parse_rule, parse_trs};
-    use trs::{Lexicon, TRS};
+    use trs::{Environment, Lexicon, TRS};
 
     fn create_test_lexicon<'b>() -> Lexicon<'b> {
         parse_lexicon(
@@ -304,7 +305,9 @@ mod tests {
         let mut types = HashMap::new();
         let mut types2 = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        lex.infer_rule(&rule, &mut types2, &mut ctx).unwrap();
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        lex.infer_rule(&rule, &mut types2, &mut env, &mut ctx)
+            .unwrap();
         types.insert(rule.clone(), types2);
         let opt = TRS::find_variablizations(0, &rule, &types);
         assert!(opt.is_some());
@@ -341,7 +344,9 @@ mod tests {
         let mut types = HashMap::new();
         let mut types2 = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        lex.infer_rule(&rule, &mut types2, &mut ctx).unwrap();
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        lex.infer_rule(&rule, &mut types2, &mut env, &mut ctx)
+            .unwrap();
         types.insert(rule.clone(), types2);
         let opt = TRS::find_variablizations(0, &rule, &types);
         assert!(opt.is_some());

@@ -2,7 +2,7 @@ use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term, Variable};
-use trs::{as_result, rewrite::FactoredSolution, SampleError, TRS};
+use trs::{as_result, rewrite::FactoredSolution, Environment, SampleError, TRS};
 
 pub type Composition = (Term, Place, Place, Type);
 
@@ -35,7 +35,12 @@ impl<'a, 'b> TRS<'a, 'b> {
         // Typecheck the rule.
         let mut ctx = self.lex.0.ctx.clone();
         let mut map = HashMap::new();
-        if self.lex.infer_rule(rule, &mut map, &mut ctx).is_err() {
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        if self
+            .lex
+            .infer_rule(rule, &mut map, &mut env, &mut ctx)
+            .is_err()
+        {
             return vec![];
         }
         // Find the symbols in the rule that might decompose.

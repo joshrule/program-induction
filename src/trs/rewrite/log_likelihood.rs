@@ -120,9 +120,12 @@ impl<'a, 'b> TRS<'a, 'b> {
                     d_max,
                 } => {
                     let mut ctx = self.lex.0.ctx.clone();
+                    let mut env = Environment::from_vars(&datum.lhs.variables(), &mut ctx);
                     let mut types = HashMap::new();
-                    self.lex.infer_term(&datum.lhs, &mut types, &mut ctx).ok();
-                    let mut env = Environment::from_term(&datum.lhs, &types, false);
+                    self.lex
+                        .infer_term(&datum.lhs, &mut types, &mut env, &mut ctx)
+                        .ok();
+                    env.invent = false;
                     let schema = ptp!(list);
                     let p_sample = self
                         .lex

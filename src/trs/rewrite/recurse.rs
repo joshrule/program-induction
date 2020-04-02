@@ -1,9 +1,8 @@
-use super::{super::as_result, Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type};
-// use rand::{prelude::SliceRandom, Rng};
 use std::collections::HashMap;
 use term_rewriting::{Context, Operator, Place, Rule, RuleContext, Term, Variable};
+use trs::{as_result, Environment, Lexicon, SampleError, TRS};
 use utils::weighted_permutation;
 
 pub type Recursion = (Term, Place, Place, Type);
@@ -126,7 +125,12 @@ impl<'a, 'b> TRS<'a, 'b> {
     fn find_recursions(&self, rule: &Rule) -> Vec<Recursion> {
         let mut map = HashMap::new();
         let mut ctx = self.lex.0.ctx.clone();
-        if self.lex.infer_rule(rule, &mut map, &mut ctx).is_err() {
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        if self
+            .lex
+            .infer_rule(rule, &mut map, &mut env, &mut ctx)
+            .is_err()
+        {
             return vec![];
         }
         let fs = TRS::collect_recursive_fns(&map, &self.lex, rule);
@@ -255,7 +259,8 @@ impl<'a, 'b> TRS<'a, 'b> {
         // 0. the rule typechecks;
         let mut ctx = lex.0.ctx.clone();
         let mut map = HashMap::new();
-        lex.infer_rule(rule, &mut map, &mut ctx)?;
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        lex.infer_rule(rule, &mut map, &mut env, &mut ctx)?;
         // 1. f is at the head of the LHS; and
         TRS::leftmost_symbol_matches(&rule, f, lex, &map)?;
         // 2. lhs_place and rhs_place exist and have the appropriate types.
@@ -317,10 +322,12 @@ impl<'a, 'b> TRS<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lexicon, TRS};
     use polytype::Context as TypeContext;
     use std::collections::HashMap;
-    use trs::parser::{parse_lexicon, parse_rule, parse_term, parse_trs};
+    use trs::{
+        parser::{parse_lexicon, parse_rule, parse_term, parse_trs},
+        Environment, Lexicon, TRS,
+    };
 
     fn create_test_lexicon<'b>() -> Lexicon<'b> {
         parse_lexicon(
@@ -351,7 +358,8 @@ mod tests {
             .expect("parsed rule");
         let mut map = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        lex.infer_rule(&rule, &mut map, &mut ctx).unwrap();
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        lex.infer_rule(&rule, &mut map, &mut env, &mut ctx).unwrap();
         let fs = TRS::collect_recursive_fns(&map, &lex, &rule);
         assert_eq!(fs.len(), 1);
         assert_eq!(
@@ -367,7 +375,8 @@ mod tests {
         let rule = parse_rule("C = C", &mut lex).expect("parsed rule");
         let mut map = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        lex.infer_rule(&rule, &mut map, &mut ctx).unwrap();
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        lex.infer_rule(&rule, &mut map, &mut env, &mut ctx).unwrap();
         let fs = TRS::collect_recursive_fns(&map, &lex, &rule);
         assert_eq!(fs.len(), 1);
         assert_eq!(
@@ -426,7 +435,8 @@ mod tests {
         let rhs_place = vec![1, 1];
         let mut map = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        lex.infer_rule(&rule, &mut map, &mut ctx).ok();
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        lex.infer_rule(&rule, &mut map, &mut env, &mut ctx).ok();
         let result = TRS::transform_inner(
             &f,
             &lhs_place,

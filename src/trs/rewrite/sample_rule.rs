@@ -1,7 +1,7 @@
 use polytype::TypeSchema;
 use rand::Rng;
 use std::collections::HashMap;
-use trs::{as_result, GenerationLimit, SampleError, TRS};
+use trs::{as_result, Environment, GenerationLimit, SampleError, TRS};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Sample a rule and add it to the rewrite system.
@@ -54,7 +54,9 @@ impl<'a, 'b> TRS<'a, 'b> {
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }
-        trs.lex.infer_rule(&rule, &mut HashMap::new(), &mut ctx)?;
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        trs.lex
+            .infer_rule(&rule, &mut HashMap::new(), &mut env, &mut ctx)?;
         let mut new_rules = vec![rule];
         trs.filter_background(&mut new_rules);
         // INVARIANT: there's at most one rule in new_rules

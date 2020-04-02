@@ -1,5 +1,3 @@
-use super::lexicon::Lexicon;
-use super::rewrite::TRS;
 use nom;
 use nom::types::CompleteStr;
 use nom::{digit, Context as Nomtext, Err};
@@ -12,6 +10,7 @@ use term_rewriting::{
     parse_rulecontext as parse_untyped_rulecontext, parse_term as parse_untyped_term, Atom,
     Context, Rule, RuleContext, Signature, Term,
 };
+use trs::{Environment, Lexicon, TRS};
 
 #[derive(Debug, PartialEq)]
 /// The error type for parsing operations.
@@ -176,6 +175,30 @@ pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseErr
 /// assert!(parse_rulecontext("equal [!] = + [!]", &mut lex).is_err());
 /// assert!(parse_rulecontext("[!] 0 0 = true", &mut lex).is_ok());
 /// assert!(parse_rulecontext("[!] (cons 0 (cons 0 (cons 0 (cons 0 empty)))) = cons 0 empty", &mut lex).is_ok());
+/// ```
+///
+/// ```
+/// # #[macro_use] extern crate polytype;
+/// # extern crate programinduction;
+/// # use programinduction::trs::{parse_lexicon, parse_context, parse_rulecontext};
+/// # use polytype::{Context as TypeContext};
+/// # use std::collections::HashMap;
+/// let mut lex = parse_lexicon(
+///    &[
+///        "T/0: some_type;",
+///        "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+///    ]
+///        .join(" "),
+///    TypeContext::default(),
+///)
+///    .expect("parsed lexicon");
+///
+/// assert!(parse_rulecontext("[!] [!] [!] = T", &mut lex).is_ok());
+/// assert!(parse_rulecontext("v0_ [!] [!] = T", &mut lex).is_ok());
+/// assert!(parse_rulecontext("v0_ v0_ [!] = T", &mut lex).is_err());
+/// assert!(parse_rulecontext("v0_ v1_ [!] = T", &mut lex).is_ok());
+/// assert!(parse_rulecontext("v0_ T [!] = T", &mut lex).is_ok());
+/// assert!(parse_rulecontext("v0_ ([!] [!]) [!] = T", &mut lex).is_ok());
 /// ```
 ///
 /// [`Lexicon`]: ../struct.Lexicon.html
@@ -356,7 +379,11 @@ fn typed_rule<'a>(input: &'a str, lex: &mut Lexicon) -> nom::IResult<CompleteStr
     let result = parse_untyped_rule(&mut lex.0.to_mut().signature, input);
     if let Ok(rule) = result {
         let mut ctx = lex.0.ctx.clone();
-        if lex.infer_rule(&rule, &mut HashMap::new(), &mut ctx).is_ok() {
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        if lex
+            .infer_rule(&rule, &mut HashMap::new(), &mut env, &mut ctx)
+            .is_ok()
+        {
             return Ok((CompleteStr(""), rule));
         }
     }
@@ -369,10 +396,15 @@ fn typed_term<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, Term> {
+    lex.0.to_mut().signature.clear_variables();
     let result = parse_untyped_term(&mut lex.0.to_mut().signature, *input);
     if let Ok(term) = result {
         let mut ctx = lex.0.ctx.clone();
-        if lex.infer_term(&term, &mut HashMap::new(), &mut ctx).is_ok() {
+        let mut env = Environment::from_vars(&term.variables(), &mut ctx);
+        if lex
+            .infer_term(&term, &mut HashMap::new(), &mut env, &mut ctx)
+            .is_ok()
+        {
             return Ok((CompleteStr(""), term));
         }
     }
@@ -382,11 +414,13 @@ fn typed_context<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, Context> {
+    lex.0.to_mut().signature.clear_variables();
     let result = parse_untyped_context(&mut lex.0.to_mut().signature, *input);
     if let Ok(context) = result {
         let mut ctx = lex.0.ctx.clone();
+        let mut env = Environment::from_vars(&context.variables(), &mut ctx);
         if lex
-            .infer_context(&context, &mut HashMap::new(), &mut ctx)
+            .infer_context(&context, &mut HashMap::new(), &mut env, &mut ctx)
             .is_ok()
         {
             return Ok((CompleteStr(""), context));
@@ -398,11 +432,13 @@ fn typed_rulecontext<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, RuleContext> {
+    lex.0.to_mut().signature.clear_variables();
     let result = parse_untyped_rulecontext(&mut lex.0.to_mut().signature, *input);
     if let Ok(rule) = result {
         let mut ctx = lex.0.ctx.clone();
+        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
         if lex
-            .infer_rulecontext(&rule, &mut HashMap::new(), &mut ctx)
+            .infer_rulecontext(&rule, &mut HashMap::new(), &mut env, &mut ctx)
             .is_ok()
         {
             return Ok((CompleteStr(""), rule));
