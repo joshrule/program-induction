@@ -82,18 +82,10 @@ fn fit_schema(
 ) -> Result<Vec<Type>, SampleError> {
     let query_tp = schema.instantiate(ctx);
     let result = if constant {
-        println!("query type: {}", query_tp);
-        println!("requested type: {}", tp);
         ctx.unify(&query_tp, &tp).map(|_| {
             Vec::new()
         })
     } else {
-        println!("query type: {}", query_tp);
-        println!(
-            "querying: {}",
-            query_tp.returns().ok_or(TypeError::Malformed)?
-        );
-        println!("requested type: {}", tp);
         ctx.unify(query_tp.returns().ok_or(TypeError::Malformed)?, tp)
             .map(|_| {
                 // println!("success");
@@ -1231,11 +1223,6 @@ impl Lex {
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
         let lhs_type = self.infer_context_internal(&context.lhs, &mut vec![0], types, &env, ctx)?;
-        println!("lhs_type: {}", lhs_type);
-        println!("lhs_type applied: {}", lhs_type.apply_compress(ctx));
-        for (k, v) in types.iter() {
-            println!("{:?} |-> {} ({})", k, v, v.apply_compress(ctx));
-        }
         let var = ctx.new_variable().vars().pop().unwrap();
         ctx.extend(var, lhs_type.clone());
         let rhs_types = context
@@ -1244,15 +1231,10 @@ impl Lex {
             .enumerate()
             .map(|(i, rhs)| self.infer_context_internal(&rhs, &mut vec![i + 1], types, &env, ctx))
             .collect::<Result<Vec<Type>, _>>()?;
-        println!("computed rhs_types");
-        for tp in &rhs_types {
-            println!("- {}", tp);
-        }
         // match LHS against RHS (order matters; RHS must be at least as general as LHS)
         for rhs_type in rhs_types {
             ctx.unify(&rhs_type, &lhs_type)?;
         }
-        println!("everything unifies");
         for (_, v) in types.iter_mut() {
             v.apply_mut_compress(ctx);
         }
@@ -1457,7 +1439,6 @@ impl Lex {
             let mut new_ctxs = [ctx.clone(), ctx.clone()];
             for &op in ops {
                 let class = (op.arity() != 0) as usize;
-                println!("op: {}", op.display(&self.signature));
                 if results[class].is_none() {
                     let fit = fit_schema(&tp, schema, class == 0, &mut new_ctxs[class]);
                     results[class] = Some(fit);
@@ -1469,7 +1450,6 @@ impl Lex {
             }
         }
         for (id, schema) in env.env.iter().enumerate() {
-            println!("var: v{}_", id);
             let mut new_ctx = ctx.clone();
             if let Ok(arg_types) = fit_schema(&tp, schema, true, &mut new_ctx) {
                 let atom = Atom::Variable(Variable { id });
@@ -1480,8 +1460,6 @@ impl Lex {
         let mut new_env = env.clone();
         if let Some(new_var) = new_env.invent_variable(&mut new_ctx) {
             let schema = self.var_tp(new_var, &new_env).unwrap();
-            println!("new_var schema: {}:- {}", new_var.display(), schema);
-            println!("new_var: {}", new_var.display());
             let arg_types = fit_schema(&tp, schema, true, &mut new_ctx).unwrap();
             atoms.push((Atom::Variable(new_var), arg_types, new_env, new_ctx));
         }
@@ -1495,9 +1473,6 @@ impl Lex {
         ctx: &mut TypeContext,
         head: Atom,
     ) -> Option<(SampleChoice, f64, f64)> {
-        for option in &options {
-            println!(" @ {}", option.0.display(&self.signature));
-        }
         let mut options = self.valid_atoms(tp, env, ctx);
         let mut weights = compute_option_weights(&options, atom_weights, env);
         let z: f64 = weights.iter().sum();
@@ -1527,27 +1502,21 @@ impl Lex {
         while let Some((term, mut tp)) = stack.pop() {
             // Update the type.
             tp.apply_mut_compress(ctx);
-            println!(">>> tp: {}", tp);
             // Collect all options.
             let option = self.compute_prior_weight(atom_weights, &tp, env, ctx, term.head());
             // Compute the probability of the term.
             match option {
                 None => {
-                    println!(">>> no option (FAILED)");
                     return Ok(NEG_INFINITY);
                 }
-                    println!(">>> option: {}", v.display());
                 Some(((Atom::Variable(_), _, new_env, new_ctx), w, z)) => {
                     *env = new_env;
                     *ctx = new_ctx;
-                    println!("{}/{}", w, z);
                     lp += w.ln() - z.ln();
                 }
-                    println!(">>> option: {}", op.display(&self.signature));
                 Some(((Atom::Operator(_), arg_types, new_env, new_ctx), w, z)) => {
                     *env = new_env;
                     *ctx = new_ctx;
-                    println!("{}/{}", w, z);
                     lp += w.ln() - z.ln();
                     stack.extend(term.args().into_iter().zip(arg_types).rev());
                 }
@@ -1567,12 +1536,10 @@ impl Lex {
         let mut tp = schema.instantiate(ctx);
         let mut env = Environment::new(invent);
         let lp_lhs =
-        println!("%%% lp_lhs: {}", lp_lhs);
             self.logprior_term_internal(&rule.lhs, &mut tp, atom_weights, &mut env, ctx)?;
         let mut lp = 0.0;
         env.invent = false;
         for rhs in &rule.rhs {
-            println!("%%% lp: {}", lp);
             lp +=
                 lp_lhs + self.logprior_term_internal(&rhs, &mut tp, atom_weights, &mut env, ctx)?;
         }
@@ -1592,7 +1559,6 @@ impl Lex {
         let clauses = utrs.clauses();
         let mut p_clauses = 0.0;
         for clause in &clauses {
-            println!("** clause: {}", clause.pretty(&self.signature));
             p_clauses += self.logprior_rule(clause, atom_weights, invent, &mut ctx.clone())?;
         }
         Ok(p_of_n_rules(clauses.len()) + p_clauses)
@@ -1693,20 +1659,6 @@ impl<'a> Iterator for RuleEnumeration<'a> {
             match Rule::try_from(&partial) {
                 Ok(rule) => return Some(rule),
                 Err(hole_place) => {
-                    println!(
-                        "{} {:?} {}",
-                        partial.pretty(&self.lex.signature),
-                        hole_place,
-                        &arg_types[0].apply_compress(&mut ctx),
-                    );
-                    if ctx.is_empty() {
-                        println!("empty sub");
-                    } else {
-                        for (k, v) in ctx.substitution().iter() {
-                            println!("{} -> {}", k, v);
-                        }
-                    }
-                    println!("env: {:?}", env.env);
                     let lhs_hole = hole_place[0] == 0;
                     env.invent = self.invent && lhs_hole && hole_place != [0];
                     for (atom, mut new_arg_types, new_env, new_ctx) in
