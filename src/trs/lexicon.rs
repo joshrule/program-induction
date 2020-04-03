@@ -82,15 +82,10 @@ fn fit_schema(
 ) -> Result<Vec<Type>, SampleError> {
     let query_tp = schema.instantiate(ctx);
     let result = if constant {
-        ctx.unify(&query_tp, &tp).map(|_| {
-            Vec::new()
-        })
+        ctx.unify(&query_tp, &tp).map(|_| Vec::new())
     } else {
         ctx.unify(query_tp.returns().ok_or(TypeError::Malformed)?, tp)
-            .map(|_| {
-                // println!("success");
-                query_tp.args_destruct().unwrap_or_else(Vec::new)
-            })
+            .map(|_| query_tp.args_destruct().unwrap_or_else(Vec::new))
     };
     result.map_err(SampleError::from)
 }
@@ -900,6 +895,74 @@ impl<'a> Lexicon<'a> {
         self.0.logprior_rule(rule, atom_weights, invent, ctx)
     }
     /// Give the log probability of sampling a TRS.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate polytype;
+    /// # extern crate programinduction;
+    /// # use programinduction::trs::{parse_lexicon, parse_trs, Environment, Lexicon};
+    /// # use polytype::{TypeSchema, Context as TypeContext};
+    /// let mut lex = parse_lexicon(
+    ///     &[
+    ///         "C/0: list -> list;",
+    ///         "CONS/0: nat -> list -> list;",
+    ///         "NIL/0: list;",
+    ///         "HEAD/0: list -> nat;",
+    ///         "TAIL/0: list -> list;",
+    ///         "ISEMPTY/0: list -> bool;",
+    ///         "ISEQUAL/0: t1. t1 -> t1 -> bool;",
+    ///         "IF/0: t1. bool -> t1 -> t1 -> t1;",
+    ///         "TRUE/0: bool;",
+    ///         "FALSE/0: bool;",
+    ///         "DIGIT/0: int -> nat;",
+    ///         "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+    ///         "0/0: int; 1/0: int; 2/0: int;",
+    ///         "3/0: int; 4/0: int; 5/0: int;",
+    ///         "6/0: int; 7/0: int; 8/0: int;",
+    ///         "9/0: int;",
+    ///     ]
+    ///         .join(" "),
+    ///     TypeContext::default(),
+    /// )
+    ///     .expect("parsed lexicon");
+    /// let p_of_n_rules = |k| 0.5_f64.ln() * (k as f64) + 0.5_f64.ln();
+    /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
+    /// let invent = true;
+    ///
+    /// let strings = [
+    ///     ".(C .(v0_ .(v1_ .(v2_ v3_)))) = .(v2_ NIL);",
+    ///     // CONS after CONS DIGIT
+    ///     ".(C .(v0_ .(.(CONS .(DIGIT v1_)) .(.(CONS v2_) v3_)))) = .(.(CONS v2_) NIL);",
+    ///     ".(C .(.(CONS .(DIGIT v0_)) .(v1_ .(.(CONS v2_) v3_)))) = .(.(CONS v2_) NIL);",
+    ///     ".(C .(.(CONS .(DIGIT v0_)) .(.(CONS v1_) .(v2_ v3_)))) = .(v2_ NIL);",
+    ///     // CONS before CONS DIGIT
+    ///     ".(C .(v0_ .(.(CONS v1_) .(.(CONS .(DIGIT v2_)) v3_)))) = .(.(CONS .(DIGIT v2_)) NIL);",
+    ///     ".(C .(.(CONS v0_) .(v1_ .(.(CONS .(DIGIT v2_)) v3_)))) = .(.(CONS .(DIGIT v2_)) NIL);",
+    ///     ".(C .(.(CONS v0_) .(.(CONS .(DIGIT v1_)) .(v2_ v3_)))) = .(v2_ NIL);",
+    ///     // 3 CONS
+    ///     ".(C .(.(CONS v0_) .(.(CONS v1_) .(.(CONS v2_) v3_)))) = .(.(CONS v2_) NIL);",
+    ///     // 2 CONS, 1 CONS DIGIT
+    ///     ".(C .(.(CONS v0_) .(.(CONS v1_) .(.(CONS .(DIGIT v2_)) v3_)))) = .(.(CONS .(DIGIT v2_)) NIL);",
+    ///     ".(C .(.(CONS v0_) .(.(CONS .(DIGIT v1_)) .(.(CONS v2_) v3_)))) = .(.(CONS v2_) NIL);",
+    ///     ".(C .(.(CONS .(DIGIT v0_)) .(.(CONS v1_) .(.(CONS v2_) v3_)))) = .(.(CONS v2_) NIL);",
+    ///     // 1 CONS, 2 CONS DIGIT
+    ///     ".(C .(.(CONS v0_) .(.(CONS .(DIGIT v1_)) .(.(CONS .(DIGIT v2_)) v3_)))) = .(.(CONS .(DIGIT v2_)) NIL);",
+    ///     ".(C .(.(CONS .(DIGIT v0_)) .(.(CONS v1_) .(.(CONS .(DIGIT v2_)) v3_)))) = .(.(CONS .(DIGIT v2_)) NIL);",
+    ///     ".(C .(.(CONS .(DIGIT v0_)) .(.(CONS .(DIGIT v1_)) .(.(CONS v2_) v3_)))) = .(.(CONS v2_) NIL);",
+    ///     // 3 CONS DIGIT
+    ///     ".(C .(.(CONS .(DIGIT v0_)) .(.(CONS .(DIGIT v1_)) .(.(CONS .(DIGIT v2_)) v3_)))) = .(.(CONS .(DIGIT v2_)) NIL);",
+    /// ];
+    /// let mut results = Vec::with_capacity(strings.len());
+    /// for string in &strings {
+    ///     let trs = parse_trs(string, &mut lex, true, &[]).expect("parsed trs");
+    ///     let mut ctx = lex.context().clone();
+    ///     let lp = lex.logprior_utrs(&trs.utrs(), p_of_n_rules, atom_weights, invent, &mut ctx).unwrap();
+    ///     results.push((string, lp));
+    /// }
+    /// results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    /// results.iter().for_each(|(s,p)| println!("{}: {}", p, s));
+    /// ```
     pub fn logprior_utrs<F>(
         &self,
         utrs: &UntypedTRS,
@@ -1672,7 +1735,6 @@ impl<'a> Iterator for RuleEnumeration<'a> {
                         };
                         if self.limit.is_okay(&[new_size.0, new_size.1]) {
                             let new_context = partial.replace(&hole_place, subcontext).unwrap();
-                            // println!("  -> {}", new_context.pretty(&self.lex.signature));
                             new_arg_types.extend_from_slice(&arg_types[1..]);
                             self.stack.push((
                                 new_context,
