@@ -266,11 +266,18 @@ impl<'a, 'b> TRS<'a, 'b> {
         // 2. lhs_place and rhs_place exist and have the appropriate types.
         let lhs_structure = TRS::check_place(rule, lhs_place, var_type, &mut ctx, &map)?;
         let rhs_structure = TRS::check_place(rule, rhs_place, var_type, &mut ctx, &map)?;
-        // TODO: incorrect
+        // 3. Check that we can perform replacement without invalidating rule.
         let mut context = RuleContext::from(rule.clone());
+        context.canonicalize(&mut HashMap::new());
         context = context
             .replace(&lhs_place, Context::Hole)
             .ok_or(SampleError::Subterm)?;
+        context = context
+            .replace(&rhs_place, Context::Hole)
+            .ok_or(SampleError::Subterm)?;
+        if !RuleContext::is_valid(&context.lhs, &context.rhs) {
+            return Err(SampleError::Subterm);
+        }
         let id = context.variables().len();
         let new_var = Variable { id };
         // Swap lhs_structure for: new_var.
