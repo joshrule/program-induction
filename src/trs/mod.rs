@@ -39,7 +39,7 @@ pub use self::rewrite::{Composition, Recursion, Variablization, TRS};
 use Task;
 
 use polytype;
-use std::fmt;
+use std::{collections::HashMap, fmt};
 use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError, Term};
 
 #[derive(Debug, Clone)]
@@ -153,6 +153,7 @@ pub struct Hypothesis<'a, 'b> {
     pub lprior: f64,
     pub llikelihood: f64,
     pub lposterior: f64,
+    evals: HashMap<Rule, f64>,
     temperature: f64,
     params: ModelParams,
 }
@@ -166,7 +167,8 @@ impl<'a, 'b> Hypothesis<'a, 'b> {
         params: ModelParams,
     ) -> Hypothesis<'a, 'b> {
         let lprior = trs.log_prior(params.prior);
-        let llikelihood = trs.log_likelihood(data, input, params.likelihood);
+        let mut evals = HashMap::with_capacity(data.len());
+        let llikelihood = trs.log_likelihood(data, input, &mut evals, params.likelihood);
         let temperature = params.schedule.temperature(t);
         let lposterior = (params.p_temp * lprior + params.l_temp * llikelihood) / temperature;
         Hypothesis {
@@ -176,10 +178,13 @@ impl<'a, 'b> Hypothesis<'a, 'b> {
             lposterior,
             temperature,
             params,
+            evals,
         }
     }
     pub fn change_data(&mut self, data: &[Rule], input: Option<&Term>) {
-        self.llikelihood = self.trs.log_likelihood(data, input, self.params.likelihood);
+        self.llikelihood =
+            self.trs
+                .log_likelihood(data, input, &mut self.evals, self.params.likelihood);
         self.lposterior = (self.params.p_temp * self.lprior
             + self.params.l_temp * self.llikelihood)
             / self.temperature;
@@ -286,7 +291,9 @@ pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
     observation: O,
 ) -> Result<Task<'a, Lexicon<'c>, TRS<'b, 'c>, O>, TypeError> {
     Ok(Task {
-        oracle: Box::new(move |_s: &Lexicon, h: &TRS| -h.log_posterior(data, input, t, params)),
+        oracle: Box::new(move |_s: &Lexicon, h: &TRS| {
+            -h.log_posterior(data, input, &mut HashMap::new(), t, params)
+        }),
         // assuming the data have no variables, we can use the Lexicon's ctx.
         tp: lex.infer_rules(data, &mut lex.0.ctx.clone())?,
         observation,

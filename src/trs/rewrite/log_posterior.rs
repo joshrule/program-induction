@@ -1,4 +1,4 @@
-use std::f64::NEG_INFINITY;
+use std::{collections::HashMap, f64::NEG_INFINITY};
 use term_rewriting::{Rule, Term};
 
 use trs::{rewrite::TRS, ModelParams};
@@ -13,6 +13,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         &self,
         data: &[Rule],
         input: Option<&Term>,
+        evals: &mut HashMap<Rule, f64>,
         t: f64,
         params: ModelParams,
     ) -> f64 {
@@ -20,9 +21,10 @@ impl<'a, 'b> TRS<'a, 'b> {
         if prior == NEG_INFINITY {
             NEG_INFINITY
         } else {
-            let ll = self.log_likelihood(data, input, params.likelihood);
+            let ll = self.log_likelihood(data, input, evals, params.likelihood);
             let temperature = params.schedule.temperature(t);
-            (params.p_temp * prior + params.l_temp * ll) / temperature
+            let posterior = (params.p_temp * prior + params.l_temp * ll) / temperature;
+            posterior
         }
     }
 }

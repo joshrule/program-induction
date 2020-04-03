@@ -13,6 +13,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         &self,
         data: &[Rule],
         input: Option<&Term>,
+        evals: &mut HashMap<Rule, f64>,
         likelihood: Likelihood,
     ) -> f64 {
         let n_data = data.len() + input.is_some() as usize;
@@ -23,16 +24,23 @@ impl<'a, 'b> TRS<'a, 'b> {
                 let weight = likelihood
                     .decay
                     .powi(n_data.saturating_sub(i + 1).try_into().unwrap());
-                weight.ln() + self.single_log_likelihood(datum, likelihood)
+                let ll = evals
+                    .entry(datum.clone())
+                    .or_insert_with(|| self.single_log_likelihood(datum, likelihood));
+                weight.ln() + *ll
             })
             .sum();
         input
-            .map(|term| ll + self.partial_log_likelihood(term, likelihood))
+            .map(|term| ll + self.partial_single_log_likelihood(term, likelihood))
             .unwrap_or(ll)
     }
 
     /// Compute the log likelihood when all you have is a single input.
-    pub(crate) fn partial_log_likelihood(&self, input: &Term, likelihood: Likelihood) -> f64 {
+    pub(crate) fn partial_single_log_likelihood(
+        &self,
+        input: &Term,
+        likelihood: Likelihood,
+    ) -> f64 {
         match likelihood.single {
             SingleLikelihood::List { alpha, .. } => {
                 let utrs = self.full_utrs();
@@ -52,14 +60,14 @@ impl<'a, 'b> TRS<'a, 'b> {
                     .root()
                     .iter()
                     .map(|n| {
-                        let log_p = n.log_p();
-                        let rewrite = n.term();
-                        if UntypedTRS::convert_list_to_string(&rewrite, &sig.deep_copy()).is_some()
+                        if UntypedTRS::convert_list_to_string(&n.term(), &sig.deep_copy()).is_some()
                         {
-                            // (1-a)*p + alpha
-                            logsumexp(&[(1.0 - alpha).ln() + log_p, alpha.ln()])
+                            // (1-a)p
+                            // TODO: would be nice to have a generative story here
+                            n.log_p() + (1.0 - alpha).ln()
                         } else {
-                            alpha.ln()
+                            // ap
+                            n.log_p() + alpha.ln()
                         }
                     })
                     .collect::<Vec<_>>();
