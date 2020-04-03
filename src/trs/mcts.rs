@@ -182,7 +182,6 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 if let Some(new_context) = rulecontext.replace(&place, Context::Hole) {
                     if RuleContext::is_valid(&new_context.lhs, &new_context.rhs) {
                         context = new_context;
-                        context.canonicalize(&mut HashMap::new());
                         break;
                     } else {
                         println!(
@@ -195,6 +194,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
             if context == rulecontext {
                 return "fail".to_string();
             }
+            context.canonicalize(&mut HashMap::new());
             println!(
                 "#         regenerating: {}",
                 context.pretty(&trs.lex.signature())
@@ -401,8 +401,7 @@ impl Revision {
                 }
             }
             Some(MCTSMoveState::Variablize) => {
-                let ruless = trs.try_all_variablizations();
-                for (m, rules) in ruless.into_iter().enumerate() {
+                for (m, rules) in trs.try_all_variablizations().into_iter().enumerate() {
                     for rule in rules {
                         moves.push(MCTSMove::Variablize(Some((m, rule))))
                     }
@@ -449,7 +448,9 @@ impl Revision {
                     let rulecontext = RuleContext::from(rule.clone());
                     for (_, place) in rulecontext.subcontexts() {
                         let context = rulecontext.replace(&place, Context::Hole).unwrap();
-                        moves.push(MCTSMove::RegenerateThisRule(i, context));
+                        if RuleContext::is_valid(&context.lhs, &context.rhs) {
+                            moves.push(MCTSMove::RegenerateThisRule(i, context));
+                        }
                     }
                 }
             }
@@ -519,13 +520,9 @@ impl Revision {
                 trs.utrs.remove_idx(n).ok()?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
-                if n == 0 {
-                    Some(StateKind::new(hh, self.n, mcts))
-                } else {
-                    let spec = Some(MCTSMoveState::DeleteRules(Some(n - 1)));
-                    let state = Revision::new(hh, spec, self.n);
-                    Some(StateKind::Revision(state))
-                }
+                let spec = Some(MCTSMoveState::DeleteRules(Some(n)));
+                let state = Revision::new(hh, spec, self.n);
+                Some(StateKind::Revision(state))
             }
             MCTSMove::MemorizeData => {
                 let spec = Some(MCTSMoveState::MemorizeData(None));
@@ -534,18 +531,13 @@ impl Revision {
             }
             MCTSMove::MemorizeDatum(None) => Some(StateKind::new(self.trs, self.n, mcts)),
             MCTSMove::MemorizeDatum(Some(n)) => {
-                // You're actively memorizing or finished not by choice: rules and state change.
                 let mut trs = trs.clone();
                 trs.append_clauses(vec![mcts.data[n].clone()]).ok()?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
-                if n + 1 == mcts.data.len() {
-                    Some(StateKind::new(hh, self.n, mcts))
-                } else {
-                    let spec = Some(MCTSMoveState::MemorizeData(Some(n + 1)));
-                    let state = Revision::new(hh, spec, self.n);
-                    Some(StateKind::Revision(state))
-                }
+                let spec = Some(MCTSMoveState::MemorizeData(Some(n + 1)));
+                let state = Revision::new(hh, spec, self.n);
+                Some(StateKind::Revision(state))
             }
             MCTSMove::SampleRule => {
                 let spec = Some(MCTSMoveState::SampleRule(RuleContext::default()));
@@ -682,7 +674,7 @@ impl Revision {
                 println!("#        success");
             }
             Some(MCTSMoveState::RegenerateRule(progress)) => {
-                let (n, context) = progress.clone().unwrap_or_else(|| {
+                let (n, mut context) = progress.clone().unwrap_or_else(|| {
                     let idx = (0..trs.len()).choose(rng).unwrap();
                     let rulecontext = RuleContext::from(trs.utrs.rules[idx].clone());
                     let mut context = rulecontext.clone();
@@ -696,13 +688,13 @@ impl Revision {
                         if let Some(new_context) = rulecontext.replace(&place, Context::Hole) {
                             if RuleContext::is_valid(&new_context.lhs, &new_context.rhs) {
                                 context = new_context;
-                                context.canonicalize(&mut HashMap::new());
                                 break;
                             }
                         }
                     }
                     (idx, context)
                 });
+                context.canonicalize(&mut HashMap::new());
                 println!(
                     "#         finishing regeneration with: {}",
                     context.pretty(&trs.lex.signature())
