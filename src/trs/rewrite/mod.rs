@@ -426,4 +426,26 @@ mod tests {
         assert!(!TRS::is_alpha(&trs1, &trs2));
         assert!(!TRS::same_shape(&trs1, &trs2));
     }
+
+    #[test]
+    pub fn same_shape_test() {
+        let mut lex = create_test_lexicon();
+        let bg = vec![
+            parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
+            parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
+            parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
+            parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
+            parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
+            parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
+            parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
+            parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
+            parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
+        ];
+        let trs1 = parse_trs("C = C;", &mut lex, true, &bg[..]).expect("parsed trs");
+        let trs2 = parse_trs(".(C .(.(CONS .(DIGIT 9)) .(.(CONS .(DIGIT 5)) .(.(CONS .(DIGIT 9)) EMPTY)))) = .(.(CONS .(DIGIT 9)) EMPTY);", &mut lex, true, &bg[..]).expect("parsed trs");
+        assert!(!TRS::same_shape(&trs1, &trs2));
+        let trs1 = parse_trs("4 = 5;", &mut lex, true, &bg[..]).expect("parsed trs");
+        let trs2 = parse_trs("5 = 4;", &mut lex, true, &bg[..]).expect("parsed trs");
+        assert!(TRS::same_shape(&trs1, &trs2));
+    }
 }
