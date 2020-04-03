@@ -403,6 +403,21 @@ mod tests {
     }
 
     #[test]
+    fn try_all_variablizations_test() {
+        let mut lex = create_test_lexicon();
+        let trs = parse_trs("(C (CONS (DIGIT 2) (CONS (DIGIT 1) (CONS (DIGIT 5) (CONS (DIGIT 4) NIL))))) = (CONS (DIGIT 5) NIL);", &mut lex, true, &[])
+            .expect("parsed trs");
+        let ruless = trs.try_all_variablizations();
+        for (i, rules) in ruless.iter().enumerate() {
+            println!("{}", i);
+            for rule in rules {
+                println!("- {}", rule.pretty(lex.signature()));
+            }
+        }
+        assert!(false);
+    }
+
+    #[test]
     fn apply_variablization_test() {
         let mut lex = create_test_lexicon();
         let trs = parse_trs(".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL; .(C .(.(CONS .(v0_ v1_)) v2_)) = .(.(CONS .(v0_ v1_)) .(C v2_));", &mut lex, true, &[])
