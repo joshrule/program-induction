@@ -98,6 +98,30 @@ pub enum MCTSMove {
     Stop,
 }
 
+impl std::fmt::Display for MCTSMove {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match *self {
+            MCTSMove::MemorizeData => write!(f, "MemorizeData"),
+            MCTSMove::MemorizeDatum(n) => write!(f, "MemorizeDatum({:?})", n),
+            MCTSMove::SampleRule => write!(f, "SampleRule"),
+            MCTSMove::SampleAtom(atom) => write!(f, "SampleAtom({:?})", atom),
+            MCTSMove::RegenerateRule => write!(f, "RegenerateRule"),
+            MCTSMove::RegenerateThisRule(n, _) => write!(f, "RegenerateThisRule({}, context)", n),
+            MCTSMove::DeleteRules => write!(f, "DeleteRules"),
+            MCTSMove::DeleteRule(n) => write!(f, "DeleteRule({:?})", n),
+            MCTSMove::Generalize => write!(f, "Generalize"),
+            MCTSMove::AntiUnify => write!(f, "AntiUnify"),
+            MCTSMove::Variablize(None) => write!(f, "Variablize"),
+            MCTSMove::Variablize(Some((n, _))) => write!(f, "Variablize(Some({}, rule))", n),
+            MCTSMove::Compose(None) => write!(f, "Compose"),
+            MCTSMove::Recurse(None) => write!(f, "Recurse"),
+            MCTSMove::Compose(_) => write!(f, "Compose(_)"),
+            MCTSMove::Recurse(_) => write!(f, "Recurse(_)"),
+            MCTSMove::Stop => write!(f, "Stop"),
+        }
+    }
+}
+
 struct MoveDist(WeightedIndex<u8>);
 
 pub fn take_mcts_step<'a, 'b, R: Rng>(
@@ -433,15 +457,19 @@ impl Revision {
     }
     pub fn make_move(&self, mv: &MCTSMove, mcts: &mut TRSMCTS) -> Option<StateKind> {
         let trs = &mcts.hypotheses[self.trs].trs;
+        println!("#   move is {}", mv);
+        println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
         match *mv {
             MCTSMove::Stop => Some(StateKind::Terminal(Terminal::new(self.trs))),
             MCTSMove::Generalize => {
                 let trs = trs.generalize().ok()?;
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 Some(StateKind::new(hh, self.n, mcts))
             }
             MCTSMove::AntiUnify => {
                 let trs = trs.lgg().ok()?;
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 Some(StateKind::new(hh, self.n, mcts))
             }
@@ -452,6 +480,7 @@ impl Revision {
             }
             MCTSMove::Compose(Some(ref composition)) => {
                 let trs = trs.compose_by(composition)?;
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 Some(StateKind::new(hh, self.n, mcts))
             }
@@ -462,17 +491,20 @@ impl Revision {
             }
             MCTSMove::Recurse(Some(ref recursion)) => {
                 let trs = trs.recurse_by(recursion)?;
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 Some(StateKind::new(hh, self.n, mcts))
             }
             MCTSMove::Variablize(None) => {
                 let spec = Some(MCTSMoveState::Variablize);
                 let state = Revision::new(self.trs, spec, self.n);
+                println!("variablize(none) -- doop da doop");
                 Some(StateKind::Revision(state))
             }
             MCTSMove::Variablize(Some((m, ref rule))) => {
                 let mut trs = trs.clone();
                 trs.utrs.rules[m] = rule.clone();
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 Some(StateKind::new(hh, self.n, mcts))
             }
@@ -485,6 +517,7 @@ impl Revision {
             MCTSMove::DeleteRule(Some(n)) => {
                 let mut trs = trs.clone();
                 trs.utrs.remove_idx(n).ok()?;
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 if n == 0 {
                     Some(StateKind::new(hh, self.n, mcts))
@@ -504,6 +537,7 @@ impl Revision {
                 // You're actively memorizing or finished not by choice: rules and state change.
                 let mut trs = trs.clone();
                 trs.append_clauses(vec![mcts.data[n].clone()]).ok()?;
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 if n + 1 == mcts.data.len() {
                     Some(StateKind::new(hh, self.n, mcts))
@@ -852,7 +886,11 @@ impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
         let (childful, mut childless): (Vec<_>, Vec<_>) = moves.partition(|mv| mv.child.is_some());
         // Take the first childless move, or perform UCT on childed moves.
         if let Some(mv) = childless.pop() {
-            println!("#   There are childless. We chose: {:?}.", mv.mov);
+            println!(
+                "#   There are {} childless. We chose: {}.",
+                childless.len() + 1,
+                mv.mov
+            );
             Some(mv)
         } else {
             childful
@@ -862,14 +900,17 @@ impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
                     let node = tree.node(nh);
                     let child = tree.node(ch);
                     println!(
-                        "#     UCT: {}'s q/n: {:.3} / {:.3} + sqrt(ln({:.3}) / {:.3})",
+                        "#     UCT ({}): {:.3} * {:.3} / {:.3} + sqrt(ln({:.3}) / {:.3}) - {}",
                         ch,
-                        child.q.exp(),
+                        (child.q - node.q).exp(),
+                        node.n,
                         child.n,
                         node.n,
-                        child.n
+                        child.n,
+                        mv.mov,
                     );
-                    let score = child.q.exp() / child.n + (node.n.ln() / child.n).sqrt();
+                    let score = (child.q - node.q).exp() * node.n / child.n
+                        + (node.n.ln() / child.n).sqrt();
                     (mv, score)
                 })
                 .max_by(|x, y| x.1.partial_cmp(&y.1).expect("There a NaN on the loose!"))
@@ -916,11 +957,25 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         println!("#     evaluating");
         match state.handle {
             StateHandle::Terminal(th) => {
-                println!("#       node is terminal");
+                println!(
+                    "#       node is terminal: {}",
+                    mcts.hypotheses[mcts.terminals[th].trs]
+                        .trs
+                        .to_string()
+                        .lines()
+                        .join(" ")
+                );
                 mcts.hypotheses[mcts.terminals[th].trs].lposterior
             }
             StateHandle::Revision(rh) => {
-                println!("#       playing out");
+                println!(
+                    "#       playing out {}",
+                    mcts.hypotheses[mcts.revisions[rh].trs]
+                        .trs
+                        .to_string()
+                        .lines()
+                        .join(" ")
+                );
                 let trs = mcts.revisions[rh].playout(mcts, rng);
                 println!(
                     "#         simulated: \"{}\"",

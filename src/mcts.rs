@@ -14,7 +14,7 @@ pub type NodeHandle = usize;
 pub type MoveHandle = usize;
 
 pub trait State<M: MCTS<State = Self>>: std::hash::Hash + Eq + Sized + Sync {
-    type Move: Clone + Sync + Send;
+    type Move: std::fmt::Display + Clone + Sync + Send;
     type MoveList: IntoIterator<Item = Self::Move>;
     fn available_moves(&self, mcts: &mut M) -> Self::MoveList;
     fn make_move<R: Rng>(&self, mov: &Self::Move, mcts: &mut M, rng: &mut R) -> Option<Self>;
@@ -109,18 +109,23 @@ impl std::error::Error for MCTSError {}
 
 impl<M: MCTS> Node<M> {
     fn show(&self) {
-        println!("incoming: {:?}", self.incoming);
-        println!("outgoing: {:?}", self.outgoing);
-        println!("q/n: {:.4}/{:.4}", self.q, self.n);
-        println!("maximum_valid_depth: {}", self.maximum_valid_depth);
+        println!("  incoming: {:?}", self.incoming);
+        println!("  outgoing: {:?}", self.outgoing);
+        println!("  q/n: {:.4}/{:.4}", self.q, self.n);
+        println!("  maximum_valid_depth: {}", self.maximum_valid_depth);
+        println!("  soft_pruned: {}", self.soft_pruned);
+    }
+    pub fn state(&self) -> &M::State {
+        &self.state
     }
 }
 
 impl<M: MCTS> MoveInfo<M> {
     fn show(&self) {
-        println!("handle: {}", self.handle);
-        println!("parent: {}", self.parent);
-        println!("child: {:?}", self.child);
+        println!("  handle: {}", self.handle);
+        println!("  parent: {}", self.parent);
+        println!("  child: {:?}", self.child);
+        println!("  move: {}", self.mov);
     }
 }
 
@@ -141,9 +146,11 @@ impl<M: MCTS> MCTSManager<M> {
         while !predicate(&self.tree.mcts) {
             match self.tree.step(rng) {
                 Ok(nh) => {
+                    println!("# step reached {}", nh);
                     steps += 1;
                 }
                 Err(e) => {
+                    println!("# {}", e);
                     match e {
                         MCTSError::TreeInconsistent
                         | MCTSError::TreeExhausted
@@ -154,7 +161,7 @@ impl<M: MCTS> MCTSManager<M> {
                 }
             }
         }
-        println!("steps: {}", steps);
+        println!("# ended after steps: {}", steps);
     }
     // Take a single search step.
     pub fn step<R: Rng>(&mut self, rng: &mut R) -> Result<NodeHandle, MCTSError> {
@@ -213,11 +220,13 @@ impl<M: MCTS> SearchTree<M> {
     pub fn show(&self) {
         println!("SearchTree");
         println!("root: {}", self.root);
+        println!();
         println!("nodes: {}", self.nodes.len());
         for (i, node) in self.nodes.iter().enumerate() {
             println!("{}", i);
             node.show()
         }
+        println!();
         println!("moves: {}", self.moves.len());
         for (i, mov) in self.moves.iter().enumerate() {
             println!("{}", i);
@@ -242,10 +251,6 @@ impl<M: MCTS> SearchTree<M> {
         println!("#       reevaluating nodes");
         for node in self.nodes.iter_mut() {
             node.evaluation = self.state_eval.reread(&node.state, &mut self.mcts);
-            println!(
-                "#         new evaluation: {:.4}",
-                node.evaluation.clone().into()
-            );
         }
         println!("#       updating qs");
         self.recompute_qs();
@@ -307,7 +312,9 @@ impl<M: MCTS> SearchTree<M> {
         }
         // Backpropagate any changes in soft pruning.
         while let Some(nh) = unpruned.pop() {
-            println!("#     unpruning {}", nh);
+            if self.nodes[nh].soft_pruned {
+                println!("#       unpruning {}", nh);
+            }
             self.nodes[nh].soft_pruned = false;
             for &mh in &self.nodes[nh].incoming {
                 let parent = self.moves[mh].parent;
@@ -468,6 +475,7 @@ impl<M: MCTS> SearchTree<M> {
                 let incoming = vec![];
                 let mut outgoing = vec![];
                 for mov in s.available_moves(&mut self.mcts) {
+                    println!("#     pushing move: {}", mov);
                     let handle = self.moves.len();
                     let new_move = MoveInfo {
                         handle,
