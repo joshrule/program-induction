@@ -82,11 +82,15 @@ impl<'a, 'b> TRS<'a, 'b> {
         // Identify atoms, including two new operators F and G.
         let op = lex.has_op(Some("."), 2)?;
         let tp = Type::arrow(t.3.clone(), t.3.clone());
+        let mut headmost = t.0.clone();
+        headmost.canonicalize(&mut HashMap::new());
         let f = lex.invent_operator(None, 0, &tp);
         let g = lex.invent_operator(None, 0, &tp);
-        let x = Variable { id: 0 };
+        let x = Variable {
+            id: headmost.variables().len(),
+        };
         // Add the rule T x = F (G x).
-        let master = vec![TRS::make_txfgx_rule(t.0.clone(), f, g, x, op)?];
+        let master = vec![TRS::make_txfgx_rule(headmost, f, g, x, op)?];
         // Process the existing rules into subproblems.
         let mut old_rules = vec![];
         let mut f_subproblem = vec![];
