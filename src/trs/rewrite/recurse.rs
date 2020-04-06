@@ -111,9 +111,10 @@ impl<'a, 'b> TRS<'a, 'b> {
             .partition(|x| x[0] == 0)
     }
     pub fn find_all_recursions(&self) -> Vec<Recursion> {
-        self.clauses()
+        self.utrs
+            .clauses()
             .iter()
-            .flat_map(|(_, c)| self.find_recursions(c))
+            .flat_map(|c| self.find_recursions(c))
             .unique()
             .collect_vec()
     }
@@ -148,6 +149,21 @@ impl<'a, 'b> TRS<'a, 'b> {
                         let inner_snapshot = ctx.len();
                         if ctx.unify(&tp, &map[rhs_place]).is_ok() {
                             let tp = tp.apply(&ctx);
+                            let mut context = RuleContext::from(rule);
+                            let lhs_term = context.at(lhs_place).unwrap().clone();
+                            context = context.replace(&lhs_place, Context::Hole).unwrap();
+                            let context_vars = context.lhs.variables();
+                            if !lhs_term
+                                .variables()
+                                .iter()
+                                .all(|v| context_vars.contains(v))
+                            {
+                                continue;
+                            }
+                            context = context.replace(&rhs_place, Context::Hole).unwrap();
+                            if !RuleContext::is_valid(&context.lhs, &context.rhs) {
+                                continue;
+                            }
                             transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone(), tp));
                         }
                         ctx.rollback(inner_snapshot);
@@ -281,7 +297,9 @@ impl<'a, 'b> TRS<'a, 'b> {
         let id = context.variables().len();
         let new_var = Variable { id };
         // Swap lhs_structure for: new_var.
-        let mut rec = rule
+        let mut rec = rule.clone();
+        rec.canonicalize(&mut HashMap::new());
+        rec = rec
             .replace(lhs_place, Term::Variable(new_var))
             .ok_or(SampleError::Subterm)?;
         // Swap rhs_structure for: f new_var.
@@ -584,5 +602,87 @@ mod tests {
         }
 
         assert_eq!(20, trss.len());
+    }
+    #[test]
+    fn recurse_test_4() {
+        let mut lex = parse_lexicon(
+            &[
+                "C/0: list -> list;",
+                "CONS/0: nat -> list -> list;",
+                "NIL/0: list;",
+                "HEAD/0: list -> nat;",
+                "TAIL/0: list -> list;",
+                "NIL/0: list -> bool;",
+                "EQUAL/0: t1. t1 -> t1 -> bool;",
+                "IF/0: t1. bool -> t1 -> t1 -> t1;",
+                ">/0: nat -> nat -> bool;",
+                "+/0: nat -> nat -> nat;",
+                "-/0: nat -> nat -> nat;",
+                "TRUE/0: bool;",
+                "FALSE/0: bool;",
+                "DIGIT/0: int -> nat;",
+                "DECC/0: nat -> int -> nat;",
+                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+                "NAN/0: nat;",
+                "0/0: int; 1/0: int; 2/0: int;",
+                "3/0: int; 4/0: int; 5/0: int;",
+                "6/0: int; 7/0: int; 8/0: int;",
+                "9/0: int;",
+            ]
+            .join(" "),
+            TypeContext::default(),
+        )
+        .expect("parsed lexicon");
+        let trs = parse_trs("C (v0_ (DIGIT 3) (CONS (DIGIT 0) (CONS (DIGIT 4) NIL))) = CONS (DIGIT 2) (CONS (DIGIT 3) NIL);", &mut lex, true, &[]).expect("parsed TRS");
+        println!("{}", trs);
+        println!("{}", trs.find_all_recursions().len());
+        let result = trs.recurse(20);
+        assert!(result.is_ok());
+        let trss = result.unwrap();
+
+        for trs in &trss {
+            println!("\n{}\n", trs);
+        }
+
+        assert_eq!(9, trss.len());
+    }
+    #[test]
+    fn recurse_test_5() {
+        let mut lex = parse_lexicon(
+            &[
+                "C/0: list -> list;",
+                "CONS/0: nat -> list -> list;",
+                "NIL/0: list;",
+                "HEAD/0: list -> nat;",
+                "TAIL/0: list -> list;",
+                "NIL/0: list -> bool;",
+                "EQUAL/0: t1. t1 -> t1 -> bool;",
+                "IF/0: t1. bool -> t1 -> t1 -> t1;",
+                ">/0: nat -> nat -> bool;",
+                "+/0: nat -> nat -> nat;",
+                "-/0: nat -> nat -> nat;",
+                "TRUE/0: bool;",
+                "FALSE/0: bool;",
+                "DIGIT/0: int -> nat;",
+                "DECC/0: nat -> int -> nat;",
+                "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+                "NAN/0: nat;",
+                "0/0: int; 1/0: int; 2/0: int;",
+                "3/0: int; 4/0: int; 5/0: int;",
+                "6/0: int; 7/0: int; 8/0: int;",
+                "9/0: int;",
+            ]
+            .join(" "),
+            TypeContext::default(),
+        )
+        .expect("parsed lexicon");
+        let trs = parse_trs(
+            "+ (HEAD (v0_ IF)) = IF TRUE - - (HEAD NIL);",
+            &mut lex,
+            true,
+            &[],
+        )
+        .expect("parsed TRS");
+        assert!(trs.recurse(20).is_err());
     }
 }

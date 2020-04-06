@@ -130,6 +130,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
     mcts: &TRSMCTS<'a, 'b>,
     rng: &mut R,
 ) -> String {
+    trs.utrs.canonicalize(&mut HashMap::new());
     let move_dist = MoveDist::new(trs, &mcts.data);
     match move_dist.sample(rng) {
         MCTSMove::MemorizeData => {
@@ -606,6 +607,7 @@ impl Revision {
         mcts: &TRSMCTS,
         rng: &mut R,
     ) {
+        trs.utrs.canonicalize(&mut HashMap::new());
         match &self.spec {
             None => (),
             Some(MCTSMoveState::Compose) => {
