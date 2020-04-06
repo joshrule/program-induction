@@ -414,7 +414,8 @@ mod tests {
                 println!("- {}", rule.pretty(lex.signature()));
             }
         }
-        assert!(false);
+        assert_eq!(ruless.len(), 1);
+        assert_eq!(ruless[0].len(), 20);
     }
 
     #[test]
