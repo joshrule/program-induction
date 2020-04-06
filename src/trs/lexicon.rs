@@ -1550,7 +1550,7 @@ impl Lex {
         env: &mut Environment,
         ctx: &mut TypeContext,
     ) -> Result<f64, SampleError> {
-        self.logprior_term_internal(term, &mut schema.instantiate(ctx), atom_weights, env, ctx)
+        self.logprior_term_internal(term, &schema.instantiate(ctx), atom_weights, env, ctx)
     }
     fn logprior_term_internal(
         &self,
@@ -1596,15 +1596,13 @@ impl Lex {
     ) -> Result<f64, SampleError> {
         let mut env = Environment::from_vars(&rule.variables(), ctx);
         let schema = self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)?;
-        let mut tp = schema.instantiate(ctx);
+        let tp = schema.instantiate(ctx);
         let mut env = Environment::new(invent);
-        let lp_lhs =
-            self.logprior_term_internal(&rule.lhs, &mut tp, atom_weights, &mut env, ctx)?;
+        let lp_lhs = self.logprior_term_internal(&rule.lhs, &tp, atom_weights, &mut env, ctx)?;
         let mut lp = 0.0;
         env.invent = false;
         for rhs in &rule.rhs {
-            lp +=
-                lp_lhs + self.logprior_term_internal(&rhs, &mut tp, atom_weights, &mut env, ctx)?;
+            lp += lp_lhs + self.logprior_term_internal(&rhs, &tp, atom_weights, &mut env, ctx)?;
         }
         Ok(lp)
     }
@@ -1639,10 +1637,9 @@ impl Lex {
     ) -> Result<f64, SampleError> {
         let mut env = Environment::from_vars(&rule.variables(), ctx);
         let schema = self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)?;
-        let mut tp = schema.instantiate(ctx);
+        let tp = schema.instantiate(ctx);
         let mut env = Environment::new(invent);
-        let lp_lhs =
-            self.logprior_term_internal(&rule.lhs, &mut tp, atom_weights, &mut env, ctx)?;
+        let lp_lhs = self.logprior_term_internal(&rule.lhs, &tp, atom_weights, &mut env, ctx)?;
         let mut lp = 0.0;
         for rhs in &rule.rhs {
             lp += lp_lhs

@@ -23,8 +23,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         } else {
             let ll = self.log_likelihood(data, input, evals, params.likelihood);
             let temperature = params.schedule.temperature(t);
-            let posterior = (params.p_temp * prior + params.l_temp * ll) / temperature;
-            posterior
+            (params.p_temp * prior + params.l_temp * ll) / temperature
         }
     }
 }
