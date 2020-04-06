@@ -581,7 +581,7 @@ impl<'a> Lexicon<'a> {
     /// for rule in &rules {
     ///     println!("{}", rule.pretty(lex.signature()));
     /// }
-    /// assert_eq!(rules.len(), 20);
+    /// assert_eq!(rules.len(), 18);
     /// ```
     ///
     /// [`Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html

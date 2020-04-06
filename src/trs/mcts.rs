@@ -150,7 +150,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
         MCTSMove::SampleRule => {
             let schema = TypeSchema::Monotype(trs.lex.0.to_mut().ctx.new_variable());
             println!("#         sampling a rule");
-            loop {
+            for _ in 0..100 {
                 println!("#           looping");
                 let mut ctx = trs.lex.0.ctx.clone();
                 if let Ok(rule) = trs.lex.sample_rule(
@@ -163,11 +163,12 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 ) {
                     println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
                     trs.append_clauses(vec![rule]).ok();
-                    break;
+                    *steps_remaining = steps_remaining.saturating_sub(1);
+                    return "sample".to_string();
                 }
             }
-            *steps_remaining = steps_remaining.saturating_sub(1);
-            "sample".to_string()
+            println!("*** failed to sample after 100 tries");
+            "fail".to_string()
         }
         MCTSMove::RegenerateRule => {
             let idx = (0..trs.len()).choose(rng).unwrap();
@@ -200,7 +201,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 "#         regenerating: {}",
                 context.pretty(&trs.lex.signature())
             );
-            loop {
+            for _ in 0..100 {
                 println!("#           looping");
                 if let Ok(rule) = trs.lex.sample_rule_from_context(
                     &context,
@@ -213,11 +214,15 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
                     trs.utrs.remove_idx(idx).ok();
                     trs.utrs.insert_idx(idx, rule).ok();
-                    break;
+                    *steps_remaining = steps_remaining.saturating_sub(1);
+                    return "regenerate".to_string();
                 }
             }
-            *steps_remaining = steps_remaining.saturating_sub(1);
-            "regenerate".to_string()
+            println!(
+                "*** failed to regenerate after 100 tries: {}",
+                context.display(trs.lex.signature())
+            );
+            "fail".to_string()
         }
         MCTSMove::DeleteRules => {
             println!("#         deleting rules");
@@ -699,14 +704,14 @@ impl Revision {
                 context.canonicalize(&mut HashMap::new());
                 println!(
                     "#         finishing regeneration with: {}",
-                    context.pretty(&trs.lex.signature())
+                    context.pretty(trs.lex.signature())
                 );
-                loop {
+                for _ in 0..100 {
                     println!("#           looping");
                     if let Ok(rule) = trs.lex.sample_rule_from_context(
                         &context,
                         mcts.params.atom_weights,
-                        GenerationLimit::TermSize(mcts.params.max_size),
+                        GenerationLimit::TotalSize(context.size() + mcts.params.max_size - 1),
                         mcts.params.invent,
                         &mut trs.lex.0.ctx.clone(),
                         rng,
@@ -714,18 +719,22 @@ impl Revision {
                         println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
                         trs.append_clauses(vec![rule]).ok();
                         trs.utrs.rules.swap_remove(n);
-                        break;
+                        *steps_remaining = steps_remaining.saturating_sub(1);
+                        println!("#        success");
+                        return;
                     }
                 }
-                *steps_remaining = steps_remaining.saturating_sub(1);
-                println!("#        success");
+                panic!(
+                    "*** failed to regenerate after 100 tries: {}",
+                    context.display(trs.lex.signature())
+                );
             }
             Some(MCTSMoveState::SampleRule(ref context)) => {
                 println!(
                     "#         finishing sample: {}",
                     context.pretty(&trs.lex.signature())
                 );
-                loop {
+                for _ in 0..100 {
                     println!("#           looping");
                     if let Ok(rule) = trs.lex.sample_rule_from_context(
                         context,
@@ -737,11 +746,15 @@ impl Revision {
                     ) {
                         println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
                         trs.append_clauses(vec![rule]).ok();
-                        break;
+                        *steps_remaining = steps_remaining.saturating_sub(1);
+                        println!("#        success");
+                        return;
                     }
                 }
-                *steps_remaining = steps_remaining.saturating_sub(1);
-                println!("#        success");
+                panic!(
+                    "*** failed to sample after 100 tries: {}",
+                    context.display(trs.lex.signature())
+                );
             }
         }
     }
