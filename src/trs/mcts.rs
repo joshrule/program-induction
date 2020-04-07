@@ -30,7 +30,7 @@ pub struct Revision {
     n: usize,
     trs: HypothesisHandle,
     spec: Option<MCTSMoveState>,
-    playout: Vec<Option<HypothesisHandle>>,
+    playout: Option<Option<HypothesisHandle>>,
 }
 
 pub struct Terminal {
@@ -369,7 +369,7 @@ impl Revision {
             trs,
             spec,
             n,
-            playout: vec![],
+            playout: None,
         }
     }
     pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>, _rh: RevisionHandle) {
@@ -866,7 +866,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             trs: self.find_hypothesis(trs),
             spec: None,
             n: 0,
-            playout: vec![],
+            playout: None,
         };
         self.add_revision(state)
     }
@@ -944,17 +944,11 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
     ) -> Self::StateEvaluation {
         match state.handle {
             StateHandle::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
-            StateHandle::Revision(rh) => {
-                let scores = mcts.revisions[rh]
-                    .playout
-                    .iter()
-                    .map(|hh| {
-                        hh.map(|h| mcts.hypotheses[h].lposterior)
-                            .unwrap_or(std::f64::NEG_INFINITY)
-                    })
-                    .collect_vec();
-                logsumexp(&scores)
-            }
+            StateHandle::Revision(rh) => match mcts.revisions[rh].playout {
+                None => panic!("shouldn't reread empty state"),
+                Some(None) => std::f64::NEG_INFINITY,
+                Some(Some(hh)) => mcts.hypotheses[hh].lposterior,
+            },
         }
     }
     fn evaluate<R: Rng>(
@@ -976,28 +970,31 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                 );
                 mcts.hypotheses[mcts.terminals[th].trs].lposterior
             }
-            StateHandle::Revision(rh) => {
-                println!(
-                    "#       playing out {}",
-                    mcts.hypotheses[mcts.revisions[rh].trs]
-                        .trs
-                        .to_string()
-                        .lines()
-                        .join(" ")
-                );
-                if let Some(trs) = mcts.revisions[rh].playout(mcts, rng) {
+            StateHandle::Revision(rh) => match mcts.revisions[rh].playout {
+                Some(_) => panic!("should only evaluate a state once"),
+                None => {
                     println!(
-                        "#         simulated: \"{}\"",
-                        trs.to_string().lines().join(" ")
+                        "#       playing out {}",
+                        mcts.hypotheses[mcts.revisions[rh].trs]
+                            .trs
+                            .to_string()
+                            .lines()
+                            .join(" ")
                     );
-                    let hh = mcts.find_hypothesis(trs);
-                    mcts.revisions[rh].playout.push(Some(hh));
-                    mcts.hypotheses[hh].lposterior
-                } else {
-                    mcts.revisions[rh].playout.push(None);
-                    std::f64::NEG_INFINITY
+                    if let Some(trs) = mcts.revisions[rh].playout(mcts, rng) {
+                        println!(
+                            "#         simulated: \"{}\"",
+                            trs.to_string().lines().join(" ")
+                        );
+                        let hh = mcts.find_hypothesis(trs);
+                        mcts.revisions[rh].playout.replace(Some(hh));
+                        mcts.hypotheses[hh].lposterior
+                    } else {
+                        mcts.revisions[rh].playout.replace(None);
+                        std::f64::NEG_INFINITY
+                    }
                 }
-            }
+            },
         }
     }
 }
