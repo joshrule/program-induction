@@ -445,7 +445,8 @@ impl Revision {
                 for (i, rule) in trs.utrs.rules.iter().enumerate() {
                     let rulecontext = RuleContext::from(rule.clone());
                     for (_, place) in rulecontext.subcontexts() {
-                        let context = rulecontext.replace(&place, Context::Hole).unwrap();
+                        let mut context = rulecontext.replace(&place, Context::Hole).unwrap();
+                        context.canonicalize(&mut HashMap::new());
                         if RuleContext::is_valid(&context.lhs, &context.rhs) {
                             moves.push(MCTSMove::RegenerateThisRule(i, context));
                         }
