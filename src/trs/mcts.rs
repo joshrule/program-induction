@@ -363,6 +363,12 @@ impl Revision {
             playout: None,
         }
     }
+    pub fn show(&self) {
+        println!("n: {}", self.n);
+        println!("trs: {}", self.trs);
+        println!("playout: {:?}", self.playout);
+        println!("spec: {:?}", self.spec);
+    }
     pub fn available_moves(&self, mcts: &TRSMCTS, moves: &mut Vec<MCTSMove>, _rh: RevisionHandle) {
         let trs = &mcts.hypotheses[self.trs].trs;
         match self.spec {
