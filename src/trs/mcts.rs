@@ -30,7 +30,7 @@ pub struct Revision {
     n: usize,
     trs: HypothesisHandle,
     spec: Option<MCTSMoveState>,
-    playout: Vec<HypothesisHandle>,
+    playout: Vec<Option<HypothesisHandle>>,
 }
 
 pub struct Terminal {
@@ -125,13 +125,14 @@ impl std::fmt::Display for MCTSMove {
 struct MoveDist(WeightedIndex<u8>);
 
 pub fn take_mcts_step<'a, 'b, R: Rng>(
-    trs: &mut TRS<'a, 'b>,
+    mut maybe_trs: Option<TRS<'a, 'b>>,
     steps_remaining: &mut usize,
     mcts: &TRSMCTS<'a, 'b>,
     rng: &mut R,
-) -> String {
+) -> Option<TRS<'a, 'b>> {
+    let mut trs = maybe_trs.take()?;
     trs.utrs.canonicalize(&mut HashMap::new());
-    let move_dist = MoveDist::new(trs, &mcts.data);
+    let move_dist = MoveDist::new(&trs, &mcts.data);
     match move_dist.sample(rng) {
         MCTSMove::MemorizeData => {
             println!("#         adding data");
@@ -143,9 +144,9 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     }
                 }
                 *steps_remaining = steps_remaining.saturating_sub(1);
-                return "memorize".to_string();
+                return Some(trs);
             }
-            "fail".to_string()
+            None
         }
         MCTSMove::SampleRule => {
             let schema = TypeSchema::Monotype(trs.lex.0.to_mut().ctx.new_variable());
@@ -164,11 +165,10 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
                     trs.append_clauses(vec![rule]).ok();
                     *steps_remaining = steps_remaining.saturating_sub(1);
-                    return "sample".to_string();
+                    return Some(trs);
                 }
             }
-            println!("*** failed to sample after 100 tries");
-            "fail".to_string()
+            None
         }
         MCTSMove::RegenerateRule => {
             let idx = (0..trs.len()).choose(rng).unwrap();
@@ -194,7 +194,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 }
             }
             if context == rulecontext {
-                return "fail".to_string();
+                return None;
             }
             context.canonicalize(&mut HashMap::new());
             println!(
@@ -215,14 +215,10 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     trs.utrs.remove_idx(idx).ok();
                     trs.utrs.insert_idx(idx, rule).ok();
                     *steps_remaining = steps_remaining.saturating_sub(1);
-                    return "regenerate".to_string();
+                    return Some(trs);
                 }
             }
-            println!(
-                "*** failed to regenerate after 100 tries: {}",
-                context.display(trs.lex.signature())
-            );
-            "fail".to_string()
+            None
         }
         MCTSMove::DeleteRules => {
             println!("#         deleting rules");
@@ -232,7 +228,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 }
             }
             *steps_remaining = steps_remaining.saturating_sub(1);
-            "delete".to_string()
+            Some(trs)
         }
         MCTSMove::Variablize(None) => {
             println!("#         variablizing");
@@ -241,19 +237,18 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 if let Some(n) = (0..ruless[m].len()).choose(rng) {
                     trs.utrs.rules[m] = ruless[m][n].clone();
                     *steps_remaining = steps_remaining.saturating_sub(1);
-                    return "variablize".to_string();
+                    return Some(trs);
                 }
             }
-            "fail".to_string()
+            None
         }
         MCTSMove::Generalize => {
             println!("#         generalizing");
             if let Ok(new_trs) = trs.generalize() {
-                *trs = new_trs;
                 *steps_remaining = steps_remaining.saturating_sub(1);
-                "generalize".to_string()
+                Some(new_trs)
             } else {
-                "fail".to_string()
+                None
             }
         }
         MCTSMove::Compose(None) => {
@@ -264,11 +259,10 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 .choose(rng)
                 .and_then(|composition| trs.compose_by(&composition))
             {
-                *trs = new_trs;
                 *steps_remaining = steps_remaining.saturating_sub(1);
-                "compose".to_string()
+                Some(new_trs)
             } else {
-                "fail".to_string()
+                None
             }
         }
         MCTSMove::Recurse(None) => {
@@ -279,29 +273,27 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 .choose(rng)
                 .and_then(|recursion| trs.recurse_by(&recursion))
             {
-                *trs = new_trs;
                 *steps_remaining = steps_remaining.saturating_sub(1);
-                "recurse".to_string()
+                Some(new_trs)
             } else {
-                "fail".to_string()
+                None
             }
         }
         MCTSMove::AntiUnify => {
             println!("#         anti-unifying");
             if let Ok(new_trs) = trs.lgg() {
-                *trs = new_trs;
                 *steps_remaining = steps_remaining.saturating_sub(1);
-                "anti-unify".to_string()
+                Some(new_trs)
             } else {
-                "fail".to_string()
+                None
             }
         }
         MCTSMove::Stop => {
             println!("#         stopping");
             *steps_remaining = 0;
-            "stop".to_string()
+            Some(trs)
         }
-        _ => "invalid".to_string(),
+        _ => None,
     }
 }
 
@@ -596,22 +588,27 @@ impl Revision {
             },
         }
     }
-    pub fn playout<'a, 'b, R: Rng>(&self, mcts: &TRSMCTS<'a, 'b>, rng: &mut R) -> TRS<'a, 'b> {
-        let mut trs = mcts.hypotheses[self.trs].trs.clone();
-        let mut steps_remaining = mcts.params.max_revisions.saturating_sub(self.n);
-        self.finish_step_in_progress(&mut trs, &mut steps_remaining, mcts, rng);
-        while steps_remaining > 0 {
-            take_mcts_step(&mut trs, &mut steps_remaining, mcts, rng);
-        }
-        trs
-    }
-    fn finish_step_in_progress<R: Rng>(
+    pub fn playout<'a, 'b, R: Rng>(
         &self,
-        trs: &mut TRS,
+        mcts: &TRSMCTS<'a, 'b>,
+        rng: &mut R,
+    ) -> Option<TRS<'a, 'b>> {
+        let mut steps_remaining = mcts.params.max_revisions.saturating_sub(self.n);
+        let mut trs = mcts.hypotheses[self.trs].trs.clone();
+        trs = self.finish_step_in_progress(Some(trs), &mut steps_remaining, mcts, rng)?;
+        while steps_remaining > 0 {
+            trs = take_mcts_step(Some(trs), &mut steps_remaining, mcts, rng)?;
+        }
+        Some(trs)
+    }
+    fn finish_step_in_progress<'a, 'b, R: Rng>(
+        &self,
+        mut maybe_trs: Option<TRS<'a, 'b>>,
         steps_remaining: &mut usize,
         mcts: &TRSMCTS,
         rng: &mut R,
-    ) {
+    ) -> Option<TRS<'a, 'b>> {
+        let mut trs = maybe_trs.take()?;
         trs.utrs.canonicalize(&mut HashMap::new());
         match &self.spec {
             None => (),
@@ -619,9 +616,9 @@ impl Revision {
                 println!("#        finishing composition");
                 if let Some(composition) = trs.find_all_compositions().into_iter().choose(rng) {
                     if let Some(new_trs) = trs.compose_by(&composition) {
-                        *trs = new_trs;
-                        *steps_remaining = steps_remaining.saturating_sub(1);
                         println!("#        success");
+                        *steps_remaining = steps_remaining.saturating_sub(1);
+                        return Some(new_trs);
                     }
                 }
             }
@@ -629,9 +626,9 @@ impl Revision {
                 println!("#        finishing recursion");
                 if let Some(recursion) = trs.find_all_recursions().into_iter().choose(rng) {
                     if let Some(new_trs) = trs.recurse_by(&recursion) {
-                        *trs = new_trs;
-                        *steps_remaining = steps_remaining.saturating_sub(1);
                         println!("#        success");
+                        *steps_remaining = steps_remaining.saturating_sub(1);
+                        return Some(new_trs);
                     }
                 }
             }
@@ -649,17 +646,19 @@ impl Revision {
                         trs.utrs.remove_idx(idx).ok();
                     }
                 }
-                *steps_remaining = steps_remaining.saturating_sub(1);
                 println!("#        success");
+                *steps_remaining = steps_remaining.saturating_sub(1);
+                return Some(trs);
             }
             Some(MCTSMoveState::Variablize) => {
                 println!("#        finishing variablization");
                 let ruless = trs.try_all_variablizations();
                 if let Some(m) = (0..ruless.len()).choose(rng) {
                     if let Some(n) = (0..ruless[m].len()).choose(rng) {
+                        println!("#        success");
                         trs.utrs.rules[m] = ruless[m][n].clone();
                         *steps_remaining = steps_remaining.saturating_sub(1);
-                        println!("#        success");
+                        return Some(trs);
                     }
                 }
             }
@@ -677,8 +676,9 @@ impl Revision {
                         trs.append_clauses(vec![rule.clone()]).ok();
                     }
                 }
-                *steps_remaining = steps_remaining.saturating_sub(1);
                 println!("#        success");
+                *steps_remaining = steps_remaining.saturating_sub(1);
+                return Some(trs);
             }
             Some(MCTSMoveState::RegenerateRule(progress)) => {
                 let (n, mut context) = progress.clone().unwrap_or_else(|| {
@@ -719,15 +719,11 @@ impl Revision {
                         println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
                         trs.append_clauses(vec![rule]).ok();
                         trs.utrs.rules.swap_remove(n);
-                        *steps_remaining = steps_remaining.saturating_sub(1);
                         println!("#        success");
-                        return;
+                        *steps_remaining = steps_remaining.saturating_sub(1);
+                        return Some(trs);
                     }
                 }
-                panic!(
-                    "*** failed to regenerate after 100 tries: {}",
-                    context.display(trs.lex.signature())
-                );
             }
             Some(MCTSMoveState::SampleRule(ref context)) => {
                 println!(
@@ -746,17 +742,14 @@ impl Revision {
                     ) {
                         println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
                         trs.append_clauses(vec![rule]).ok();
-                        *steps_remaining = steps_remaining.saturating_sub(1);
                         println!("#        success");
-                        return;
+                        *steps_remaining = steps_remaining.saturating_sub(1);
+                        return Some(trs);
                     }
                 }
-                panic!(
-                    "*** failed to sample after 100 tries: {}",
-                    context.display(trs.lex.signature())
-                );
             }
         }
+        None
     }
 }
 
@@ -916,8 +909,13 @@ impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
                         child.n,
                         mv.mov,
                     );
-                    let score = (child.q - node.q).exp() * node.n / child.n
-                        + (node.n.ln() / child.n).sqrt();
+                    let q = if child.q == std::f64::NEG_INFINITY && node.q == std::f64::NEG_INFINITY
+                    {
+                        0.0
+                    } else {
+                        child.q - node.q
+                    };
+                    let score = q.exp() * node.n / child.n + (node.n.ln() / child.n).sqrt();
                     (mv, score)
                 })
                 .max_by(|x, y| x.1.partial_cmp(&y.1).expect("There a NaN on the loose!"))
@@ -949,7 +947,10 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                 let scores = mcts.revisions[rh]
                     .playout
                     .iter()
-                    .map(|hh| mcts.hypotheses[*hh].lposterior)
+                    .map(|hh| {
+                        hh.map(|h| mcts.hypotheses[h].lposterior)
+                            .unwrap_or(std::f64::NEG_INFINITY)
+                    })
                     .collect_vec();
                 logsumexp(&scores)
             }
@@ -983,14 +984,18 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                         .lines()
                         .join(" ")
                 );
-                let trs = mcts.revisions[rh].playout(mcts, rng);
-                println!(
-                    "#         simulated: \"{}\"",
-                    trs.to_string().lines().join(" ")
-                );
-                let hh = mcts.find_hypothesis(trs);
-                mcts.revisions[rh].playout.push(hh);
-                mcts.hypotheses[hh].lposterior
+                if let Some(trs) = mcts.revisions[rh].playout(mcts, rng) {
+                    println!(
+                        "#         simulated: \"{}\"",
+                        trs.to_string().lines().join(" ")
+                    );
+                    let hh = mcts.find_hypothesis(trs);
+                    mcts.revisions[rh].playout.push(Some(hh));
+                    mcts.hypotheses[hh].lposterior
+                } else {
+                    mcts.revisions[rh].playout.push(None);
+                    std::f64::NEG_INFINITY
+                }
             }
         }
     }
