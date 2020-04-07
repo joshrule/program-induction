@@ -25,7 +25,7 @@ pub struct MCTSState {
     handle: StateHandle,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone)]
 pub struct Revision {
     n: usize,
     trs: HypothesisHandle,
@@ -33,6 +33,7 @@ pub struct Revision {
     playout: Option<Option<HypothesisHandle>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Terminal {
     trs: HypothesisHandle,
 }
@@ -347,16 +348,6 @@ impl Distribution<MCTSMove> for MoveDist {
     }
 }
 
-impl StateKind {
-    pub fn new(trs: HypothesisHandle, n: usize, mcts: &TRSMCTS) -> Self {
-        if n + 1 >= mcts.params.max_revisions {
-            StateKind::Terminal(Terminal::new(trs))
-        } else {
-            StateKind::Revision(Revision::new(trs, None, n + 1))
-        }
-    }
-}
-
 impl Terminal {
     pub fn new(trs: HypothesisHandle) -> Self {
         Terminal { trs }
@@ -376,26 +367,29 @@ impl Revision {
         let trs = &mcts.hypotheses[self.trs].trs;
         match self.spec {
             None => {
-                // Search can always stop or sample a new rule.
-                moves.push(MCTSMove::SampleRule);
+                // Search can always stop.
                 moves.push(MCTSMove::Stop);
-                // A TRS must have a rule in order to regenerate or generalize.
-                if !trs.is_empty() {
-                    moves.push(MCTSMove::RegenerateRule);
-                    moves.push(MCTSMove::Generalize);
-                    moves.push(MCTSMove::Compose(None));
-                    moves.push(MCTSMove::Recurse(None));
-                    moves.push(MCTSMove::Variablize(None));
-                }
-                // A TRS must have >1 rule to delete without creating cycles.
-                // Anti-unification relies on having two rules to unify.
-                if trs.len() > 1 {
-                    moves.push(MCTSMove::DeleteRules);
-                    moves.push(MCTSMove::AntiUnify);
-                }
-                // We can only add data if there's data to add.
-                if !mcts.data.is_empty() {
-                    moves.push(MCTSMove::MemorizeData);
+                if self.n < mcts.params.max_revisions {
+                    // Search can always sample a new rule.
+                    moves.push(MCTSMove::SampleRule);
+                    // A TRS must have a rule in order to regenerate or generalize.
+                    if !trs.is_empty() {
+                        moves.push(MCTSMove::RegenerateRule);
+                        moves.push(MCTSMove::Generalize);
+                        moves.push(MCTSMove::Compose(None));
+                        moves.push(MCTSMove::Recurse(None));
+                        moves.push(MCTSMove::Variablize(None));
+                    }
+                    // A TRS must have >1 rule to delete without creating cycles.
+                    // Anti-unification relies on having two rules to unify.
+                    if trs.len() > 1 {
+                        moves.push(MCTSMove::DeleteRules);
+                        moves.push(MCTSMove::AntiUnify);
+                    }
+                    // We can only add data if there's data to add.
+                    if !mcts.data.is_empty() {
+                        moves.push(MCTSMove::MemorizeData);
+                    }
                 }
             }
             Some(MCTSMoveState::Variablize) => {
@@ -465,93 +459,93 @@ impl Revision {
                 let trs = trs.generalize().ok()?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
-                Some(StateKind::new(hh, self.n, mcts))
+                Some(StateKind::Revision(Revision::new(hh, None, self.n + 1)))
             }
             MCTSMove::AntiUnify => {
                 let trs = trs.lgg().ok()?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
-                Some(StateKind::new(hh, self.n, mcts))
+                Some(StateKind::Revision(Revision::new(hh, None, self.n + 1)))
             }
-            MCTSMove::Compose(None) => {
-                let spec = Some(MCTSMoveState::Compose);
-                let state = Revision::new(self.trs, spec, self.n);
-                Some(StateKind::Revision(state))
-            }
+            MCTSMove::Compose(None) => Some(StateKind::Revision(Revision::new(
+                self.trs,
+                Some(MCTSMoveState::Compose),
+                self.n,
+            ))),
             MCTSMove::Compose(Some(ref composition)) => {
                 let trs = trs.compose_by(composition)?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
-                Some(StateKind::new(hh, self.n, mcts))
+                Some(StateKind::Revision(Revision::new(hh, None, self.n + 1)))
             }
-            MCTSMove::Recurse(None) => {
-                let spec = Some(MCTSMoveState::Recurse);
-                let state = Revision::new(self.trs, spec, self.n);
-                Some(StateKind::Revision(state))
-            }
+            MCTSMove::Recurse(None) => Some(StateKind::Revision(Revision::new(
+                self.trs,
+                Some(MCTSMoveState::Recurse),
+                self.n,
+            ))),
             MCTSMove::Recurse(Some(ref recursion)) => {
                 let trs = trs.recurse_by(recursion)?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
-                Some(StateKind::new(hh, self.n, mcts))
+                Some(StateKind::Revision(Revision::new(hh, None, self.n + 1)))
             }
             MCTSMove::Variablize(None) => {
                 let spec = Some(MCTSMoveState::Variablize);
-                let state = Revision::new(self.trs, spec, self.n);
-                println!("variablize(none) -- doop da doop");
-                Some(StateKind::Revision(state))
+                Some(StateKind::Revision(Revision::new(self.trs, spec, self.n)))
             }
             MCTSMove::Variablize(Some((m, ref rule))) => {
                 let mut trs = trs.clone();
                 trs.utrs.rules[m] = rule.clone();
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
-                Some(StateKind::new(hh, self.n, mcts))
+                Some(StateKind::Revision(Revision::new(hh, None, self.n + 1)))
             }
             MCTSMove::DeleteRules => {
                 let spec = Some(MCTSMoveState::DeleteRules(None));
                 let state = Revision::new(self.trs, spec, self.n);
                 Some(StateKind::Revision(state))
             }
-            MCTSMove::DeleteRule(None) => Some(StateKind::new(self.trs, self.n, mcts)),
+            MCTSMove::DeleteRule(None) => Some(StateKind::Revision(Revision::new(
+                self.trs,
+                None,
+                self.n + 1,
+            ))),
             MCTSMove::DeleteRule(Some(n)) => {
                 let mut trs = trs.clone();
                 trs.utrs.remove_idx(n).ok()?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 let spec = Some(MCTSMoveState::DeleteRules(Some(n)));
-                let state = Revision::new(hh, spec, self.n);
-                Some(StateKind::Revision(state))
+                Some(StateKind::Revision(Revision::new(hh, spec, self.n)))
             }
             MCTSMove::MemorizeData => {
                 let spec = Some(MCTSMoveState::MemorizeData(None));
-                let state = Revision::new(self.trs, spec, self.n);
-                Some(StateKind::Revision(state))
+                Some(StateKind::Revision(Revision::new(self.trs, spec, self.n)))
             }
-            MCTSMove::MemorizeDatum(None) => Some(StateKind::new(self.trs, self.n, mcts)),
+            MCTSMove::MemorizeDatum(None) => Some(StateKind::Revision(Revision::new(
+                self.trs,
+                None,
+                self.n + 1,
+            ))),
             MCTSMove::MemorizeDatum(Some(n)) => {
                 let mut trs = trs.clone();
                 trs.append_clauses(vec![mcts.data[n].clone()]).ok()?;
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let hh = mcts.find_hypothesis(trs);
                 let spec = Some(MCTSMoveState::MemorizeData(Some(n + 1)));
-                let state = Revision::new(hh, spec, self.n);
-                Some(StateKind::Revision(state))
+                Some(StateKind::Revision(Revision::new(hh, spec, self.n)))
             }
             MCTSMove::SampleRule => {
                 let spec = Some(MCTSMoveState::SampleRule(RuleContext::default()));
-                let state = Revision::new(self.trs, spec, self.n);
-                Some(StateKind::Revision(state))
+                Some(StateKind::Revision(Revision::new(self.trs, spec, self.n)))
             }
             MCTSMove::RegenerateRule => {
                 let spec = Some(MCTSMoveState::RegenerateRule(None));
-                let state = Revision::new(self.trs, spec, self.n);
-                Some(StateKind::Revision(state))
+                Some(StateKind::Revision(Revision::new(self.trs, spec, self.n)))
             }
             MCTSMove::RegenerateThisRule(n, ref context) => {
                 let spec = Some(MCTSMoveState::RegenerateRule(Some((n, context.clone()))));
-                let state = Revision::new(self.trs, spec, self.n);
-                Some(StateKind::Revision(state))
+                Some(StateKind::Revision(Revision::new(self.trs, spec, self.n)))
             }
             MCTSMove::SampleAtom(atom) => match self.spec {
                 Some(MCTSMoveState::SampleRule(ref context)) => {
@@ -562,11 +556,10 @@ impl Revision {
                         trs.append_clauses(vec![rule]).ok()?;
                         println!("#   \"{}\"", trs.to_string().lines().join(" "));
                         let hh = mcts.find_hypothesis(trs);
-                        Some(StateKind::new(hh, self.n, mcts))
+                        Some(StateKind::Revision(Revision::new(hh, None, self.n)))
                     } else {
                         let spec = Some(MCTSMoveState::SampleRule(new_context));
-                        let state = Revision::new(self.trs, spec, self.n);
-                        Some(StateKind::Revision(state))
+                        Some(StateKind::Revision(Revision::new(self.trs, spec, self.n)))
                     }
                 }
                 Some(MCTSMoveState::RegenerateRule(Some((n, ref context)))) => {
@@ -578,11 +571,10 @@ impl Revision {
                         trs.utrs.insert_idx(n, rule).ok()?;
                         println!("#   \"{}\"", trs.to_string().lines().join(" "));
                         let hh = mcts.find_hypothesis(trs);
-                        Some(StateKind::new(hh, self.n, mcts))
+                        Some(StateKind::Revision(Revision::new(hh, None, self.n)))
                     } else {
                         let spec = Some(MCTSMoveState::RegenerateRule(Some((n, new_context))));
-                        let state = Revision::new(self.trs, spec, self.n);
-                        Some(StateKind::Revision(state))
+                        Some(StateKind::Revision(Revision::new(self.trs, spec, self.n)))
                     }
                 }
                 _ => panic!("MCTSMoveState doesn't match MCTSMove"),
@@ -753,6 +745,12 @@ impl Revision {
         None
     }
 }
+impl Eq for Revision {}
+impl PartialEq for Revision {
+    fn eq(&self, other: &Self) -> bool {
+        self.trs == other.trs && self.spec == other.spec
+    }
+}
 
 impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
     type Move = MCTSMove;
@@ -772,7 +770,7 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
         _rng: &mut R,
     ) -> Option<Self> {
         let state = match self.handle {
-            StateHandle::Terminal(..) => panic!("inconsistent state: no move from terminal"),
+            StateHandle::Terminal(..) => panic!("cannot move from terminal"),
             StateHandle::Revision(rh) => mcts.make_move(mv, rh),
         }?;
         Some(mcts.add_state(state))
@@ -838,10 +836,27 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         self.revisions.push(state);
         let handle = StateHandle::Revision(self.revisions.len() - 1);
         MCTSState { handle }
+        // Only create a new revision if you can't find this one already.
+        let state_depth = state.n;
+        let rh = match self.revisions.iter().position(|r| *r == state) {
+            Some(rh) => rh,
+            None => {
+                self.revisions.push(state);
+                self.revisions.len() - 1
+            }
+        };
+        let handle = StateHandle::Revision(rh);
+        MCTSState { handle }
     }
     pub fn add_terminal(&mut self, state: Terminal) -> MCTSState {
-        self.terminals.push(state);
-        let handle = StateHandle::Terminal(self.terminals.len() - 1);
+        let th = match self.terminals.iter().position(|t| *t == state) {
+            Some(th) => th,
+            None => {
+                self.terminals.push(state);
+                self.terminals.len() - 1
+            }
+        };
+        let handle = StateHandle::Terminal(th);
         MCTSState { handle }
     }
     pub fn find_hypothesis(&mut self, mut trs: TRS<'a, 'b>) -> HypothesisHandle {
