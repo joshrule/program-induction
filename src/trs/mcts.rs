@@ -755,6 +755,7 @@ impl PartialEq for Revision {
 impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
     type Move = MCTSMove;
     type MoveList = Vec<Self::Move>;
+    type AbstractDepthAdjustment = usize;
     fn available_moves(&self, mcts: &mut TRSMCTS) -> Self::MoveList {
         let mut moves = vec![];
         match self.handle {
@@ -768,7 +769,7 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
         mv: &Self::Move,
         mcts: &mut TRSMCTS<'a, 'b>,
         _rng: &mut R,
-    ) -> Option<Self> {
+    ) -> Option<(Self, Option<Self::AbstractDepthAdjustment>)> {
         let state = match self.handle {
             StateHandle::Terminal(..) => panic!("cannot move from terminal"),
             StateHandle::Revision(rh) => mcts.make_move(mv, rh),
@@ -780,6 +781,16 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
             .into_iter()
             .filter(|m| !moves.contains(&m))
             .collect()
+    }
+    fn adjust_abstract_depth(
+        &self,
+        adjustment: &Self::AbstractDepthAdjustment,
+        mcts: &mut TRSMCTS,
+    ) {
+        match self.handle {
+            StateHandle::Terminal(..) => (),
+            StateHandle::Revision(rh) => mcts.revisions[rh].n -= *adjustment,
+        }
     }
 }
 
@@ -826,16 +837,13 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         let revision = self.revisions[rh].clone();
         revision.make_move(mv, self)
     }
-    pub fn add_state(&mut self, state: StateKind) -> MCTSState {
+    pub fn add_state(&mut self, state: StateKind) -> (MCTSState, Option<usize>) {
         match state {
-            StateKind::Terminal(h) => self.add_terminal(h),
+            StateKind::Terminal(h) => (self.add_terminal(h), None),
             StateKind::Revision(r) => self.add_revision(r),
         }
     }
-    pub fn add_revision(&mut self, state: Revision) -> MCTSState {
-        self.revisions.push(state);
-        let handle = StateHandle::Revision(self.revisions.len() - 1);
-        MCTSState { handle }
+    pub fn add_revision(&mut self, state: Revision) -> (MCTSState, Option<usize>) {
         // Only create a new revision if you can't find this one already.
         let state_depth = state.n;
         let rh = match self.revisions.iter().position(|r| *r == state) {
@@ -845,8 +853,13 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
                 self.revisions.len() - 1
             }
         };
+        let adjustment = if state_depth < self.revisions[rh].n {
+            Some(self.revisions[rh].n - state_depth)
+        } else {
+            None
+        };
         let handle = StateHandle::Revision(rh);
-        MCTSState { handle }
+        (MCTSState { handle }, adjustment)
     }
     pub fn add_terminal(&mut self, state: Terminal) -> MCTSState {
         let th = match self.terminals.iter().position(|t| *t == state) {
@@ -883,7 +896,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             n: 0,
             playout: None,
         };
-        self.add_revision(state)
+        self.add_revision(state).0
     }
 }
 

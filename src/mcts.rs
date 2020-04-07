@@ -8,6 +8,7 @@
 // - Create a recycling pool for moves & nodes.
 use rand::Rng;
 
+type Adjust<M> = <<M as MCTS>::State as State<M>>::AbstractDepthAdjustment;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
 type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEvaluation;
 pub type NodeHandle = usize;
@@ -16,9 +17,16 @@ pub type MoveHandle = usize;
 pub trait State<M: MCTS<State = Self>>: std::hash::Hash + Eq + Sized + Sync {
     type Move: std::fmt::Display + Clone + Sync + Send;
     type MoveList: IntoIterator<Item = Self::Move>;
+    type AbstractDepthAdjustment;
     fn available_moves(&self, mcts: &mut M) -> Self::MoveList;
-    fn make_move<R: Rng>(&self, mov: &Self::Move, mcts: &mut M, rng: &mut R) -> Option<Self>;
+    fn make_move<R: Rng>(
+        &self,
+        mov: &Self::Move,
+        mcts: &mut M,
+        rng: &mut R,
+    ) -> Option<(Self, Option<Self::AbstractDepthAdjustment>)>;
     fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut M) -> Self::MoveList;
+    fn adjust_abstract_depth(&self, adjustment: &Self::AbstractDepthAdjustment, mcts: &mut M);
 }
 
 pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
@@ -394,7 +402,7 @@ impl<M: MCTS> SearchTree<M> {
     }
     fn update_tree<R: Rng>(
         &mut self,
-        move_result: Option<<M>::State>,
+        move_result: Option<(<M>::State, Option<Adjust<M>>)>,
         mov: MoveHandle,
         rng: &mut R,
     ) -> Result<NodeHandle, MCTSError> {
@@ -403,7 +411,7 @@ impl<M: MCTS> SearchTree<M> {
                 self.hard_prune(mov);
                 Err(MCTSError::MoveFailed)
             }
-            Some(child_state) => {
+            Some((child_state, adjustment)) => {
                 // Identify the parent handle and child handle.
                 let ph = self.moves[mov].parent;
                 let ch = self.find_or_make_node(child_state, rng);
@@ -423,6 +431,7 @@ impl<M: MCTS> SearchTree<M> {
                     if !self.nodes[ch].incoming.contains(&mov) {
                         self.nodes[ch].incoming.push(mov);
                     }
+                    self.adjust_abstract_depth(ch, &adjustment);
                     Ok(ch)
                 }
             }
@@ -553,6 +562,21 @@ impl<M: MCTS> SearchTree<M> {
             }
         }
     }
+    fn adjust_abstract_depth(&mut self, nh: NodeHandle, adjustment: &Option<Adjust<M>>) {
+        match *adjustment {
+            None => (),
+            Some(ref adjustment) => {
+                self.nodes[nh]
+                    .state
+                    .adjust_abstract_depth(adjustment, &mut self.mcts);
+                for dh in self.descendants(nh) {
+                    self.nodes[dh]
+                        .state
+                        .adjust_abstract_depth(adjustment, &mut self.mcts);
+                }
+            }
+        }
+    }
     fn ancestors(&self, node: NodeHandle) -> Vec<NodeHandle> {
         let mut stack = vec![node];
         let mut ancestors = vec![];
@@ -566,5 +590,20 @@ impl<M: MCTS> SearchTree<M> {
             }
         }
         ancestors
+    }
+    fn descendants(&self, node: NodeHandle) -> Vec<NodeHandle> {
+        let mut stack = vec![node];
+        let mut descendants = vec![];
+        while let Some(node) = stack.pop() {
+            for &mh in &self.nodes[node].outgoing {
+                if let Some(ch) = self.moves[mh].child {
+                    if !descendants.contains(&ch) {
+                        descendants.push(ch);
+                        stack.push(ch);
+                    }
+                }
+            }
+        }
+        descendants
     }
 }
