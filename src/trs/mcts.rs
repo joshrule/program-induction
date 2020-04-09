@@ -99,6 +99,49 @@ pub enum MCTSMove {
     Stop,
 }
 
+impl MCTSMove {
+    fn pretty(&self, lex: &Lexicon, data: &[Rule]) -> String {
+        match *self {
+            MCTSMove::MemorizeDatum(Some(n)) => {
+                format!("MemorizeDatum({} = {})", n, data[n].pretty(lex.signature()))
+            }
+            MCTSMove::SampleAtom(atom) => format!("SampleAtom({})", atom.display(lex.signature())),
+            MCTSMove::RegenerateThisRule(n, ref c) => {
+                format!("RegenerateThisRule({}, {})", n, c.pretty(lex.signature()))
+            }
+            MCTSMove::DeleteRule(Some(n)) => format!("DeleteRule({})", n),
+            MCTSMove::Variablize(Some((n, ref r))) => {
+                format!("Variablize(Some({}, {}))", n, r.pretty(lex.signature()))
+            }
+            MCTSMove::Compose(Some((ref t, ref p1, ref p2, ref tp))) => format!(
+                "Compose({}, {:?}, {:?}, {})",
+                t.pretty(lex.signature()),
+                p1,
+                p2,
+                tp
+            ),
+            MCTSMove::Recurse(Some((ref t, ref p1, ref p2, ref tp))) => format!(
+                "Recurse({}, {:?}, {:?}, {})",
+                t.pretty(lex.signature()),
+                p1,
+                p2,
+                tp
+            ),
+            MCTSMove::MemorizeDatum(None) => format!("MemorizeDatum(Stop)"),
+            MCTSMove::DeleteRule(None) => format!("DeleteRule(Stop)"),
+            MCTSMove::MemorizeData => format!("MemorizeData"),
+            MCTSMove::SampleRule => format!("SampleRule"),
+            MCTSMove::RegenerateRule => format!("RegenerateRule"),
+            MCTSMove::DeleteRules => format!("DeleteRules"),
+            MCTSMove::Generalize => format!("Generalize"),
+            MCTSMove::AntiUnify => format!("AntiUnify"),
+            MCTSMove::Variablize(None) => format!("Variablize"),
+            MCTSMove::Compose(None) => format!("Compose"),
+            MCTSMove::Recurse(None) => format!("Recurse"),
+            MCTSMove::Stop => format!("Stop"),
+        }
+    }
+}
 impl std::fmt::Display for MCTSMove {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
@@ -796,6 +839,45 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
         match self.handle {
             StateHandle::Terminal(..) => (),
             StateHandle::Revision(rh) => mcts.revisions[rh].n -= *adjustment,
+        }
+    }
+    fn describe(&self, mv: &Option<Self::Move>, mcts: &TRSMCTS) -> HashMap<String, String> {
+        match self.handle {
+            StateHandle::Terminal(th) => {
+                let mut map = HashMap::new();
+                let hh = mcts.terminals[th].trs;
+                let trs = &mcts.hypotheses[hh].trs;
+                let trs_string = trs.utrs.pretty(trs.lex.signature());
+                map.insert("trs".to_string(), trs_string);
+                if let Some(mv) = mv {
+                    map.insert("via".to_string(), mv.pretty(&trs.lex, &mcts.data));
+                }
+                map
+            }
+            StateHandle::Revision(rh) => {
+                let mut map = HashMap::new();
+                let hh = mcts.revisions[rh].trs;
+                let trs = &mcts.hypotheses[hh].trs;
+                let trs_string = trs.utrs.pretty(trs.lex.signature());
+                map.insert("trs".to_string(), trs_string);
+                if let Some(mv) = mv {
+                    map.insert("via".to_string(), mv.pretty(&trs.lex, &mcts.data));
+                }
+                match mcts.revisions[rh].playout {
+                    Some(Some(hh)) => {
+                        let playout = &mcts.hypotheses[hh].trs;
+                        let playout_string = playout.utrs.pretty(playout.lex.signature());
+                        map.insert("playout".to_string(), playout_string);
+                    }
+                    Some(None) => {
+                        map.insert("playout".to_string(), "failed".to_string());
+                    }
+                    None => {
+                        map.insert("playout".to_string(), "never tried".to_string());
+                    }
+                }
+                map
+            }
         }
     }
 }
