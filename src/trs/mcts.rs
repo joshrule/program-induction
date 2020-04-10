@@ -113,11 +113,9 @@ pub enum PlayoutState<T: std::fmt::Debug + Copy> {
 }
 
 impl MCTSMove {
-    fn pretty(&self, lex: &Lexicon, data: &[Rule]) -> String {
+    fn pretty(&self, lex: &Lexicon, _data: &[Rule]) -> String {
         match *self {
-            MCTSMove::MemorizeDatum(Some(n)) => {
-                format!("MemorizeDatum({} = {})", n, data[n].pretty(lex.signature()))
-            }
+            MCTSMove::MemorizeDatum(Some(n)) => format!("MemorizeDatum({})", n),
             MCTSMove::SampleAtom(atom) => format!("SampleAtom({})", atom.display(lex.signature())),
             MCTSMove::RegenerateThisRule(n, ref c) => {
                 format!("RegenerateThisRule({}, {})", n, c.pretty(lex.signature()))
@@ -200,6 +198,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     }
                 }
                 *steps_remaining = steps_remaining.saturating_sub(1);
+                println!("#           success");
                 return Some(trs);
             }
             None
@@ -218,12 +217,13 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     &mut ctx,
                     rng,
                 ) {
-                    println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
+                    println!("#           success: {}", rule.pretty(&trs.lex.signature()));
                     trs.append_clauses(vec![rule]).ok();
                     *steps_remaining = steps_remaining.saturating_sub(1);
                     return Some(trs);
                 }
             }
+            println!("#           failed");
             None
         }
         MCTSMove::RegenerateRule => {
@@ -267,7 +267,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     &mut trs.lex.0.ctx.clone(),
                     rng,
                 ) {
-                    println!("#           sampled: {}", rule.pretty(&trs.lex.signature()));
+                    println!("#           success: {}", rule.pretty(&trs.lex.signature()));
                     trs.utrs.remove_idx(idx).ok();
                     trs.utrs.insert_idx(idx, rule).ok();
                     *steps_remaining = steps_remaining.saturating_sub(1);
@@ -283,6 +283,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                     trs.utrs.remove_idx(idx).ok();
                 }
             }
+            println!("#           success");
             *steps_remaining = steps_remaining.saturating_sub(1);
             Some(trs)
         }
@@ -301,12 +302,14 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 }
             }
             let new_trs = trs.adopt_solution(&mut clauses)?;
+            println!("#           success");
             *steps_remaining = steps_remaining.saturating_sub(1);
             Some(new_trs)
         }
         MCTSMove::Generalize => {
             println!("#         generalizing");
             if let Ok(new_trs) = trs.generalize() {
+                println!("#           success");
                 *steps_remaining = steps_remaining.saturating_sub(1);
                 Some(new_trs)
             } else {
@@ -321,6 +324,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 .choose(rng)
                 .and_then(|composition| trs.compose_by(&composition))
             {
+                println!("#           success");
                 *steps_remaining = steps_remaining.saturating_sub(1);
                 Some(new_trs)
             } else {
@@ -335,6 +339,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
                 .choose(rng)
                 .and_then(|recursion| trs.recurse_by(&recursion))
             {
+                println!("#           success");
                 *steps_remaining = steps_remaining.saturating_sub(1);
                 Some(new_trs)
             } else {
@@ -344,6 +349,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
         MCTSMove::AntiUnify => {
             println!("#         anti-unifying");
             if let Ok(new_trs) = trs.lgg() {
+                println!("#           success");
                 *steps_remaining = steps_remaining.saturating_sub(1);
                 Some(new_trs)
             } else {
@@ -352,6 +358,7 @@ pub fn take_mcts_step<'a, 'b, R: Rng>(
         }
         MCTSMove::Stop => {
             println!("#         stopping");
+            println!("#           success");
             *steps_remaining = 0;
             Some(trs)
         }
