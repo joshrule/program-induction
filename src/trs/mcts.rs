@@ -714,7 +714,11 @@ impl Revision {
         let mut trs = mcts.hypotheses[self.trs].trs.clone();
         trs = self.finish_step_in_progress(Some(trs), &mut steps_remaining, mcts, rng)?;
         while steps_remaining > 0 {
-            trs = take_mcts_step(Some(trs), &mut steps_remaining, mcts, rng)?;
+            if let Some(new_trs) =
+                take_mcts_step(Some(trs.clone()), &mut steps_remaining, mcts, rng)
+            {
+                trs = new_trs;
+            }
         }
         Some(trs)
     }
@@ -728,7 +732,7 @@ impl Revision {
         let mut trs = maybe_trs.take()?;
         trs.utrs.canonicalize(&mut HashMap::new());
         match &self.spec {
-            None => (),
+            None => return Some(trs),
             Some(MCTSMoveState::Compose) => {
                 println!("#        finishing composition");
                 if let Some(composition) = trs.find_all_compositions().into_iter().choose(rng) {
