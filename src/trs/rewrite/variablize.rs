@@ -5,7 +5,7 @@ use term_rewriting::{Context, Place, Rule, RuleContext, Term, Variable};
 use trs::{as_result, Environment, SampleError, TRS};
 
 pub type Variablization = (usize, Type, Vec<Place>);
-type Types = HashMap<Rule, HashMap<Place, Type>>;
+pub type Types = HashMap<Rule, HashMap<Place, Type>>;
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Replace subterms of [`term_rewriting::Rule`]s with [`term_rewriting::Variable`]s.
@@ -178,13 +178,18 @@ impl<'a, 'b> TRS<'a, 'b> {
             .collect_vec()
     }
     pub fn find_all_variablizations(&self, types: &Types) -> Vec<Variablization> {
-        self.utrs
-            .clauses()
+        let clauses = self.utrs.clauses();
+        let self_len = clauses.len();
+        clauses
             .iter()
             .enumerate()
             .filter_map(|(i, rule)| TRS::find_variablizations(i, rule, types))
             .flatten()
             .unique()
+            .sorted_by_key(|(rule, _, places)| {
+                let best_place = places.iter().filter(|place| place[0] == 0).max().unwrap();
+                (self_len - *rule, best_place.clone())
+            })
             .collect_vec()
     }
     fn find_variablizations(n: usize, rule: &Rule, types: &Types) -> Option<Vec<Variablization>> {
@@ -203,7 +208,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             .collect_vec();
         Some(map)
     }
-    fn apply_variablization(
+    pub(crate) fn apply_variablization(
         &self,
         tp: &Type,
         places: &[Place],
@@ -240,7 +245,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                 }
             })
     }
-    fn adopt_solution(&self, rules: &mut Vec<Rule>) -> Option<TRS<'a, 'b>> {
+    pub(crate) fn adopt_solution(&self, rules: &mut Vec<Rule>) -> Option<TRS<'a, 'b>> {
         self.filter_background(rules);
 
         let mut i = 0;
@@ -250,13 +255,12 @@ impl<'a, 'b> TRS<'a, 'b> {
                 .any(|other| Rule::alpha(&other, &rules[i]).is_some())
             {
                 rules.remove(i);
-            } else if self.is_deterministic() {
-                if rules[..i]
+            } else if self.is_deterministic()
+                && rules[..i]
                     .iter()
                     .any(|other| Term::alpha(vec![(&other.lhs, &rules[i].lhs)]).is_some())
-                {
-                    return None;
-                }
+            {
+                return None;
             } else {
                 i += 1;
             }

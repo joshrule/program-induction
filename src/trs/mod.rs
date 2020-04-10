@@ -35,7 +35,7 @@ pub use self::parser::{
     parse_context, parse_lexicon, parse_rule, parse_rulecontext, parse_rulecontexts, parse_rules,
     parse_term, parse_trs,
 };
-pub use self::rewrite::{Composition, Recursion, Variablization, TRS};
+pub use self::rewrite::{Composition, Recursion, Types, Variablization, TRS};
 use Task;
 
 use polytype;

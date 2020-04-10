@@ -25,7 +25,7 @@ mod variablize;
 
 pub use self::compose::Composition;
 pub use self::recurse::Recursion;
-pub use self::variablize::Variablization;
+pub use self::variablize::{Types, Variablization};
 use itertools::Itertools;
 use rand::{seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};
