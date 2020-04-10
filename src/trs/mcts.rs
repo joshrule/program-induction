@@ -33,7 +33,7 @@ pub struct Revision {
     n: usize,
     trs: HypothesisHandle,
     spec: Option<MCTSMoveState>,
-    playout: Option<Option<HypothesisHandle>>,
+    playout: PlayoutState<HypothesisHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +102,13 @@ pub enum MCTSMove {
     Compose(Option<Composition>),
     Recurse(Option<Recursion>),
     Stop,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PlayoutState<T: std::fmt::Debug + Copy> {
+    Untried,
+    Failed,
+    Success(T),
 }
 
 impl MCTSMove {
@@ -413,7 +420,7 @@ impl Revision {
             trs,
             spec,
             n,
-            playout: None,
+            playout: PlayoutState::Untried,
         }
     }
     pub fn show(&self) {
@@ -1071,7 +1078,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             trs: self.find_hypothesis(trs),
             spec: None,
             n: 0,
-            playout: None,
+            playout: PlayoutState::Untried,
         };
         self.add_revision(state).0
     }
@@ -1150,9 +1157,9 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         match state.handle {
             StateHandle::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
             StateHandle::Revision(rh) => match mcts.revisions[rh].playout {
-                None => panic!("shouldn't reread empty state"),
-                Some(None) => std::f64::NEG_INFINITY,
-                Some(Some(hh)) => mcts.hypotheses[hh].lposterior,
+                PlayoutState::Untried => panic!("shouldn't reread empty state"),
+                PlayoutState::Failed => std::f64::NEG_INFINITY,
+                PlayoutState::Success(hh) => mcts.hypotheses[hh].lposterior,
             },
         }
     }
@@ -1176,8 +1183,7 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                 mcts.hypotheses[mcts.terminals[th].trs].lposterior
             }
             StateHandle::Revision(rh) => match mcts.revisions[rh].playout {
-                Some(_) => panic!("should only evaluate a state once"),
-                None => {
+                PlayoutState::Untried => {
                     println!(
                         "#       playing out {}",
                         mcts.hypotheses[mcts.revisions[rh].trs]
@@ -1192,13 +1198,14 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                             trs.to_string().lines().join(" ")
                         );
                         let hh = mcts.find_hypothesis(trs);
-                        mcts.revisions[rh].playout.replace(Some(hh));
+                        mcts.revisions[rh].playout = PlayoutState::Success(hh);
                         mcts.hypotheses[hh].lposterior
                     } else {
-                        mcts.revisions[rh].playout.replace(None);
+                        mcts.revisions[rh].playout = PlayoutState::Failed;
                         std::f64::NEG_INFINITY
                     }
                 }
+                _ => panic!("should only evaluate a state once"),
             },
         }
     }
