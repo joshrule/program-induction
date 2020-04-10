@@ -8,7 +8,6 @@
 // - Create a recycling pool for moves & nodes.
 use rand::Rng;
 use serde_json::Value;
-use std::collections::HashMap;
 
 type Adjust<M> = <<M as MCTS>::State as State<M>>::AbstractDepthAdjustment;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
@@ -29,7 +28,8 @@ pub trait State<M: MCTS<State = Self>>: std::hash::Hash + Eq + Sized + Sync {
     ) -> Option<(Self, Option<Self::AbstractDepthAdjustment>)>;
     fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut M) -> Self::MoveList;
     fn adjust_abstract_depth(&self, adjustment: &Self::AbstractDepthAdjustment, mcts: &mut M);
-    fn describe(&self, mv: &Option<Self::Move>, mcts: &M) -> HashMap<String, String>;
+    fn describe_self(&self, mcts: &M) -> Value;
+    fn describe_move(&self, mv: &Self::Move, mcts: &M) -> Value;
 }
 
 pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
@@ -244,66 +244,46 @@ impl<M: MCTS> SearchTree<M> {
             mov.show()
         }
     }
-    pub fn to_record(&self, data_file: &str) -> std::io::Result<()> {
-        let mut stack: Vec<(NodeHandle, Option<MoveHandle>, Vec<Value>)> =
-            vec![(self.root, None, vec![])];
-        let mut finished = None;
-        while let Some((nh, mh, mut args)) = stack.pop() {
-            println!("{} {}", nh, args.len());
-            if args.len() == self.nodes[nh].outgoing.len() {
-                let mut json = json!({
-                    "handle": nh,
-                    "type": "visited",
-                    "children": args,
-                    "q": self.nodes[nh].q,
-                    "n": self.nodes[nh].n,
-                    "score": self.nodes[nh].evaluation.clone().into(),
-                    "pruned": self.nodes[nh].soft_pruned,
-                });
-                if let Some(mh) = mh {
-                    if let Some(obj) = json.as_object_mut() {
-                        for (k, v) in self.nodes[nh]
-                            .state
-                            .describe(&Some(self.moves[mh].mov.clone()), &self.mcts)
-                        {
-                            obj.insert(k, Value::String(v));
-                        }
-                    }
-                }
-                finished.replace(json);
-            } else {
-                match finished.take() {
-                    // There's an argument waiting for us.
-                    Some(arg) => {
-                        args.push(arg);
-                        stack.push((nh, mh, args));
-                    }
-                    // We have work to do.
-                    None => {
-                        // Look for the next thing and put it on stack.
-                        let cmh = self.nodes[nh].outgoing[args.len()];
-                        match self.moves[cmh].child {
-                            None => {
-                                let children: Vec<Value> = vec![];
-                                finished.replace(json!({
-                                    "handle": "NA",
-                                    "type": "unvisited",
-                                    "children": children}));
-                                stack.push((nh, mh, args));
-                            }
-                            Some(ch) => {
-                                stack.push((nh, mh, args));
-                                stack.push((ch, Some(cmh), vec![]));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(root) = finished.take() {
-            let out_file = std::fs::File::create(data_file)?;
-            serde_json::to_writer(out_file, &root)?;
-        }
+    pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {
+        let moves = self
+            .moves
+            .iter()
+            .enumerate()
+            .map(|(i, mv)| {
+                json!({
+                    "handle": i,
+                    "parent": mv.parent,
+                    "child": mv.child,
+                    "move": self.nodes[mv.parent].state.describe_move(&mv.mov, &self.mcts),
+                })
+            })
+            .collect::<Vec<_>>();
+        let nodes = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                json!({
+                    "handle": i,
+                    "state": n.state.describe_self(&self.mcts),
+                    "in": n.incoming,
+                    "out": n.outgoing,
+                    "score": n.evaluation.clone().into(),
+                    "q": n.q,
+                    "n": n.n,
+                    "mvd": n.maximum_valid_depth,
+                    "pruned": n.soft_pruned,
+                })
+            })
+            .collect::<Vec<_>>();
+        let tree = json!({
+            "root": self.root,
+            "moves": moves,
+            "nodes": nodes,
+        });
+
+        let out_file = std::fs::File::create(data_file)?;
+        serde_json::to_writer(out_file, &tree)?;
         Ok(())
     }
     pub fn mcts(&self) -> &M {

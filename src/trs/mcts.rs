@@ -5,6 +5,7 @@ use rand::{
     distributions::WeightedIndex,
     prelude::{Distribution, IteratorRandom, Rng, SliceRandom},
 };
+use serde_json::Value;
 use std::{collections::HashMap, convert::TryFrom};
 use term_rewriting::{Atom, Context, Rule, RuleContext, Term};
 use trs::{
@@ -937,42 +938,45 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
             StateHandle::Revision(rh) => mcts.revisions[rh].n -= *adjustment,
         }
     }
-    fn describe(&self, mv: &Option<Self::Move>, mcts: &TRSMCTS) -> HashMap<String, String> {
+    fn describe_move(&self, mv: &Self::Move, mcts: &TRSMCTS) -> Value {
+        match self.handle {
+            StateHandle::Terminal(_) => Value::Null,
+            StateHandle::Revision(rh) => {
+                let hh = mcts.revisions[rh].trs;
+                let trs = &mcts.hypotheses[hh].trs;
+                Value::String(mv.pretty(&trs.lex, &mcts.data))
+            }
+        }
+    }
+    fn describe_self(&self, mcts: &TRSMCTS) -> Value {
         match self.handle {
             StateHandle::Terminal(th) => {
-                let mut map = HashMap::new();
                 let hh = mcts.terminals[th].trs;
                 let trs = &mcts.hypotheses[hh].trs;
                 let trs_string = trs.utrs.pretty(trs.lex.signature());
-                map.insert("trs".to_string(), trs_string);
-                if let Some(mv) = mv {
-                    map.insert("via".to_string(), mv.pretty(&trs.lex, &mcts.data));
-                }
-                map
+                json!({
+                    "type": "terminal",
+                    "trs": trs_string,
+                })
             }
             StateHandle::Revision(rh) => {
-                let mut map = HashMap::new();
                 let hh = mcts.revisions[rh].trs;
                 let trs = &mcts.hypotheses[hh].trs;
                 let trs_string = trs.utrs.pretty(trs.lex.signature());
-                map.insert("trs".to_string(), trs_string);
-                if let Some(mv) = mv {
-                    map.insert("via".to_string(), mv.pretty(&trs.lex, &mcts.data));
-                }
-                match mcts.revisions[rh].playout {
-                    Some(Some(hh)) => {
+                let playout_string = match mcts.revisions[rh].playout {
+                    PlayoutState::Failed => "failed".to_string(),
+                    PlayoutState::Untried => "untried".to_string(),
+                    PlayoutState::Success(hh) => {
                         let playout = &mcts.hypotheses[hh].trs;
-                        let playout_string = playout.utrs.pretty(playout.lex.signature());
-                        map.insert("playout".to_string(), playout_string);
+                        playout.utrs.pretty(playout.lex.signature())
                     }
-                    Some(None) => {
-                        map.insert("playout".to_string(), "failed".to_string());
-                    }
-                    None => {
-                        map.insert("playout".to_string(), "never tried".to_string());
-                    }
-                }
-                map
+                };
+                json!({
+                    "type": "revision",
+                    "n": mcts.revisions[rh].n,
+                    "trs": trs_string,
+                    "playout": playout_string,
+                })
             }
         }
     }
