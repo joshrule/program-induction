@@ -83,6 +83,7 @@ pub struct Node<M: MCTS> {
     evaluation: StateEvaluation<M>,
     maximum_valid_depth: usize,
     soft_pruned: bool,
+    hard_pruned: Vec<MoveHandle>,
     pub q: f64,
     pub n: f64,
 }
@@ -215,6 +216,7 @@ impl<M: MCTS> SearchTree<M> {
             evaluation,
             maximum_valid_depth: mcts.max_depth() - (moves.is_empty() as usize),
             soft_pruned: moves.is_empty(),
+            hard_pruned: vec![],
         };
         SearchTree {
             mcts,
@@ -268,6 +270,7 @@ impl<M: MCTS> SearchTree<M> {
                     "state": n.state.describe_self(&self.mcts),
                     "in": n.incoming,
                     "out": n.outgoing,
+                    "failed": n.hard_pruned,
                     "score": n.evaluation.clone().into(),
                     "q": n.q,
                     "n": n.n,
@@ -341,9 +344,10 @@ impl<M: MCTS> SearchTree<M> {
         let mut unpruned = Vec::with_capacity(self.nodes.len());
         // Add moves as appropriate.
         for nh in 0..self.nodes.len() {
-            let old_moves = self.nodes[nh]
-                .outgoing
-                .iter()
+            let curr_edges = self.nodes[nh].outgoing.iter();
+            let pruned_edges = self.nodes[nh].hard_pruned.iter();
+            let old_moves = curr_edges
+                .chain(pruned_edges)
                 .map(|&m| &self.moves[m].mov)
                 .cloned()
                 .collect::<Vec<_>>();
@@ -492,6 +496,7 @@ impl<M: MCTS> SearchTree<M> {
             .filter(|omh| **omh != mh)
             .copied()
             .collect();
+        self.nodes[parent].hard_pruned.push(mh);
         // Keep the tree consistent.
         self.soft_prune(parent);
         self.update_maximum_valid_depths(parent);
@@ -545,6 +550,7 @@ impl<M: MCTS> SearchTree<M> {
                     n: 0.0, // fixed during backprop
                     maximum_valid_depth: self.mcts.max_depth() - (outgoing.is_empty() as usize),
                     soft_pruned: outgoing.is_empty(),
+                    hard_pruned: vec![],
                     q: self.state_eval.zero(),
                     evaluation,
                     incoming,
