@@ -29,7 +29,7 @@ pub use self::variablize::{Types, Variablization};
 use itertools::Itertools;
 use rand::{seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};
-use term_rewriting::{MergeStrategy, Operator, Rule, Term, Variable, TRS as UntypedTRS};
+use term_rewriting::{MergeStrategy, Operator, Rule, Term, TRS as UntypedTRS};
 use trs::{Lexicon, Prior, SampleError, TypeError};
 
 pub(crate) type Rules = Vec<Rule>;
@@ -42,7 +42,6 @@ pub struct TRS<'a, 'b> {
     // INVARIANT: utrs never contains background information
     pub(crate) background: &'a [Rule],
     pub(crate) bg_ops: HashMap<Operator, Operator>,
-    pub(crate) bg_vars: HashMap<Variable, Variable>,
     pub(crate) utrs: UntypedTRS,
 }
 impl<'a, 'b> TRS<'a, 'b> {
@@ -105,25 +104,23 @@ impl<'a, 'b> TRS<'a, 'b> {
             utrs.make_deterministic();
         }
         let lex = lexicon.clone();
-        let bg_ops: HashMap<Operator, Operator> = background
-            .iter()
-            .flat_map(Rule::operators)
-            .unique()
-            .map(|o| (o, o))
-            .collect();
-        let bg_vars: HashMap<Variable, Variable> = background
-            .iter()
-            .flat_map(Rule::variables)
-            .unique()
-            .map(|v| (v, v))
-            .collect();
+        let bg_ops: HashMap<Operator, Operator> = HashMap::new();
         TRS {
             lex,
             background,
             bg_ops,
-            bg_vars,
             utrs,
         }
+    }
+
+    pub fn identify_symbols(&mut self) {
+        self.bg_ops = self
+            .lex
+            .signature()
+            .operators()
+            .iter()
+            .map(|o| (*o, *o))
+            .collect()
     }
 
     pub fn lexicon(&self) -> Lexicon {
@@ -228,7 +225,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                 &trs1.utrs,
                 &trs2.utrs,
                 &mut trs1.bg_ops.clone(),
-                &mut trs1.bg_vars.clone(),
+                &mut HashMap::new(),
             )
     }
 
