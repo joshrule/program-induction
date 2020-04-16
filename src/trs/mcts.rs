@@ -1,5 +1,7 @@
 use itertools::Itertools;
-use mcts::{MoveEvaluator, MoveInfo, NodeHandle, SearchTree, State, StateEvaluator, MCTS};
+use mcts::{
+    MoveEvaluator, MoveInfo, NodeHandle, NodeStatistic, SearchTree, State, StateEvaluator, MCTS,
+};
 use polytype::TypeSchema;
 use rand::{
     distributions::WeightedIndex,
@@ -58,6 +60,7 @@ pub struct TRSMCTS<'a, 'b> {
     pub terminals: Vec<Terminal>,
     pub model: ModelParams,
     pub params: MCTSParams,
+    pub best: f64,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -68,6 +71,43 @@ pub struct MCTSParams {
     pub max_size: usize,
     pub atom_weights: (f64, f64, f64, f64),
     pub invent: bool,
+    pub selection: Selection,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub struct QN {
+    pub q: f64,
+    pub n: f64,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum Selection {
+    RelativeMassUCT,
+    BestSoFarUCT,
+}
+
+pub fn relative_mass_uct(parent: &QN, child: &QN) -> f64 {
+    let q = if child.q == std::f64::NEG_INFINITY && parent.q == std::f64::NEG_INFINITY {
+        0.0
+    } else {
+        child.q - parent.q
+    };
+    q.exp() * parent.n / child.n + (parent.n.ln() / child.n).sqrt()
+}
+
+pub fn rescaled_by_best_uct(parent: &QN, child: &QN, best: f64) -> f64 {
+    (child.q - best).exp() / child.n + (parent.n.ln() / child.n).sqrt()
+}
+
+pub fn best_so_far_uct(parent: &QN, child: &QN, best: f64) -> f64 {
+    let exploit = (child.q - best).exp();
+    let explore = (parent.n.ln() / child.n).sqrt();
+    let score = exploit + explore;
+    println!(
+        "{} + {} = {} ({} {})",
+        exploit, explore, score, child.q, best,
+    );
+    score
 }
 
 pub struct MCTSMoveEvaluator;
@@ -110,6 +150,34 @@ pub enum PlayoutState<T: std::fmt::Debug + Copy> {
     Untried,
     Failed,
     Success(T),
+}
+
+impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QN {
+    fn new() -> Self {
+        QN {
+            q: std::f64::NEG_INFINITY,
+            n: 0.0,
+        }
+    }
+    fn update(&mut self, evaluation: f64) {
+        self.q += evaluation;
+        self.n += 1.0;
+    }
+    fn combine(&mut self, other: &Self) {
+        self.q = logsumexp(&[self.q, other.q]);
+    }
+}
+
+impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for Vec<f64> {
+    fn new() -> Self {
+        Vec::new()
+    }
+    fn update(&mut self, evaluation: f64) {
+        self.push(evaluation);
+    }
+    fn combine(&mut self, other: &Self) {
+        self.extend_from_slice(other)
+    }
 }
 
 impl MCTSMove {
@@ -1120,9 +1188,6 @@ impl<'a, 'b> MCTS for TRSMCTS<'a, 'b> {
     fn max_states(&self) -> usize {
         self.params.max_states
     }
-    fn combine_qs(&self, q1: f64, q2: f64) -> f64 {
-        logsumexp(&[q1, q2])
-    }
 }
 
 impl<'a, 'b> TRSMCTS<'a, 'b> {
@@ -1146,6 +1211,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             hypotheses: vec![],
             terminals: vec![],
             revisions: vec![],
+            best: std::f64::NEG_INFINITY,
         }
     }
     fn make_move(&mut self, mv: &MCTSMove, rh: RevisionHandle) -> Option<StateKind> {
@@ -1218,7 +1284,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
 }
 
 impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
-    type MoveEvaluation = f64;
+    type NodeStatistics = QN;
     fn choose<'c, MoveIter>(
         &self,
         moves: MoveIter,
@@ -1243,25 +1309,17 @@ impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
                 .into_iter()
                 .map(|mv| {
                     let ch = mv.child.expect("INVARIANT: partition failed us");
-                    let node = tree.node(nh);
+                    let parent = tree.node(nh);
                     let child = tree.node(ch);
-                    println!(
-                        "#     UCT ({}): {:.3} * {:.3} / {:.3} + sqrt(ln({:.3}) / {:.3}) - {}",
-                        ch,
-                        (child.q - node.q).exp(),
-                        node.n,
-                        child.n,
-                        node.n,
-                        child.n,
-                        mv.mov,
-                    );
-                    let q = if child.q == std::f64::NEG_INFINITY && node.q == std::f64::NEG_INFINITY
-                    {
-                        0.0
-                    } else {
-                        child.q - node.q
+                    let score = match tree.mcts().params.selection {
+                        Selection::RelativeMassUCT => {
+                            relative_mass_uct(&parent.stats, &child.stats)
+                        }
+                        Selection::BestSoFarUCT => {
+                            best_so_far_uct(&parent.stats, &child.stats, tree.mcts().best)
+                        }
                     };
-                    let score = q.exp() * node.n / child.n + (node.n.ln() / child.n).sqrt();
+                    println!("#     UCT ({}): {:.4} - {}", ch, score, mv.mov,);
                     (mv, score)
                 })
                 .max_by(|x, y| x.1.partial_cmp(&y.1).expect("There a NaN on the loose!"))
@@ -1279,9 +1337,6 @@ impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
 
 impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
     type StateEvaluation = f64;
-    fn zero(&self) -> f64 {
-        std::f64::NEG_INFINITY
-    }
     fn reread(
         &self,
         state: &<TRSMCTS<'a, 'b> as MCTS>::State,
@@ -1303,7 +1358,7 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         rng: &mut R,
     ) -> Self::StateEvaluation {
         println!("#     evaluating");
-        match state.handle {
+        let score = match state.handle {
             StateHandle::Terminal(th) => {
                 println!(
                     "#       node is terminal: {}",
@@ -1340,6 +1395,10 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                 }
                 _ => panic!("should only evaluate a state once"),
             },
+        };
+        if score > mcts.best {
+            mcts.best = score;
         }
+        score
     }
 }

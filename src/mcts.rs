@@ -7,8 +7,10 @@
 // - ask for moves & states to be Debug for easier debugging.
 // - Create a recycling pool for moves & nodes.
 use rand::Rng;
+use serde::Serialize;
 use serde_json::Value;
 
+type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
 type Adjust<M> = <<M as MCTS>::State as State<M>>::AbstractDepthAdjustment;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
 type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEvaluation;
@@ -32,20 +34,33 @@ pub trait State<M: MCTS<State = Self>>: std::hash::Hash + Eq + Sized + Sync {
     fn describe_move(&self, mv: &Self::Move, mcts: &M) -> Value;
 }
 
+pub trait NodeStatistic<M: MCTS> {
+    fn new() -> Self;
+    fn update(&mut self, evaluation: StateEvaluation<M>);
+    fn combine(&mut self, other: &Self);
+}
+
 pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
-    type MoveEvaluation: Clone + Sync + Send;
-    fn choose<'a, MoveIter>(&self, MoveIter, NodeHandle, &SearchTree<M>) -> Option<&'a MoveInfo<M>>
+    type NodeStatistics: std::fmt::Debug + Serialize + NodeStatistic<M> + Clone + Sync + Sized;
+    fn choose<'a, MoveIter>(
+        &self,
+        moves: MoveIter,
+        node: NodeHandle,
+        tree: &SearchTree<M>,
+    ) -> Option<&'a MoveInfo<M>>
     where
         MoveIter: Iterator<Item = &'a MoveInfo<M>>;
 }
 
 pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized + Sync {
-    type StateEvaluation: Clone + Sync + Send + Into<f64>;
-    fn evaluate<R: Rng>(&self, &M::State, &mut M, &mut R) -> Self::StateEvaluation;
-    fn reread(&self, &M::State, &mut M) -> Self::StateEvaluation;
-    fn zero(&self) -> f64 {
-        0.0
-    }
+    type StateEvaluation: Copy + Sync + Send + Into<f64>;
+    fn evaluate<R: Rng>(
+        &self,
+        state: &M::State,
+        mcts: &mut M,
+        rng: &mut R,
+    ) -> Self::StateEvaluation;
+    fn reread(&self, state: &M::State, mcts: &mut M) -> Self::StateEvaluation;
 }
 
 pub trait MCTS: Sized + Sync {
@@ -57,9 +72,6 @@ pub trait MCTS: Sized + Sync {
     }
     fn max_states(&self) -> usize {
         std::usize::MAX
-    }
-    fn combine_qs(&self, q1: f64, q2: f64) -> f64 {
-        q1 + q2
     }
 }
 
@@ -84,8 +96,7 @@ pub struct Node<M: MCTS> {
     maximum_valid_depth: usize,
     soft_pruned: bool,
     hard_pruned: Vec<MoveHandle>,
-    pub q: f64,
-    pub n: f64,
+    pub stats: Stats<M>,
 }
 
 pub struct MoveInfo<M: MCTS> {
@@ -123,7 +134,7 @@ impl<M: MCTS> Node<M> {
     fn show(&self) {
         println!("  incoming: {:?}", self.incoming);
         println!("  outgoing: {:?}", self.outgoing);
-        println!("  q/n: {:.4}/{:.4}", self.q, self.n);
+        println!("  stats: {:?}", self.stats);
         println!("  maximum_valid_depth: {}", self.maximum_valid_depth);
         println!("  soft_pruned: {}", self.soft_pruned);
     }
@@ -207,12 +218,13 @@ impl<M: MCTS> SearchTree<M> {
                 child: None,
             })
             .collect();
+        let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
+        stats.update(evaluation);
         let root_node = Node {
             state: root,
             incoming: vec![],
             outgoing: (0..moves.len()).collect(),
-            q: evaluation.clone().into(),
-            n: 1.0,
+            stats,
             evaluation,
             maximum_valid_depth: mcts.max_depth() - (moves.is_empty() as usize),
             soft_pruned: moves.is_empty(),
@@ -272,8 +284,7 @@ impl<M: MCTS> SearchTree<M> {
                     "out": n.outgoing,
                     "failed": n.hard_pruned,
                     "score": n.evaluation.clone().into(),
-                    "q": n.q,
-                    "n": n.n,
+                    "stats": n.stats,
                     "mvd": n.maximum_valid_depth,
                     "pruned": n.soft_pruned,
                 })
@@ -323,13 +334,14 @@ impl<M: MCTS> SearchTree<M> {
                     Some(nh) => finished.contains(&nh),
                 });
             if ready {
-                let mut new_q = self.nodes[node].evaluation.clone().into();
+                let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
+                stats.update(self.nodes[node].evaluation);
                 for &mh in &self.nodes[node].outgoing {
                     if let Some(child) = self.moves[mh].child {
-                        new_q = self.mcts.combine_qs(new_q, self.nodes[child].q);
+                        stats.combine(&self.nodes[child].stats);
                     }
                 }
-                self.nodes[node].q = new_q;
+                self.nodes[node].stats = stats;
                 finished.push(stack.pop().expect("INVARIANT: stack has last element"));
             } else {
                 for &mh in &self.nodes[node].outgoing {
@@ -547,11 +559,10 @@ impl<M: MCTS> SearchTree<M> {
                 }
                 let node = Node {
                     state: s,
-                    n: 0.0, // fixed during backprop
                     maximum_valid_depth: self.mcts.max_depth() - (outgoing.is_empty() as usize),
                     soft_pruned: outgoing.is_empty(),
                     hard_pruned: vec![],
-                    q: self.state_eval.zero(),
+                    stats: <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new(),
                     evaluation,
                     incoming,
                     outgoing,
@@ -569,14 +580,12 @@ impl<M: MCTS> SearchTree<M> {
     // Bubble search statistics and pruning information back to the root.
     fn backpropagate(&mut self, new_node: NodeHandle) {
         println!("#   backpropagating from {}.", new_node);
-        let evaluation = self.nodes[new_node].evaluation.clone().into();
         let mut stack = vec![new_node];
         while let Some(nh) = stack.pop() {
             println!("#     dealing with node {}.", nh);
-            // Update q.
-            self.nodes[nh].q = self.mcts.combine_qs(self.nodes[nh].q, evaluation);
-            // Update n.
-            self.nodes[nh].n += 1.0;
+            // Update stats.
+            let evaluation = self.nodes[new_node].evaluation;
+            self.nodes[nh].stats.update(evaluation);
             // Add nodes to stack as appropriate.
             for &mh in &self.nodes[nh].incoming {
                 stack.push(self.moves[mh].parent)
