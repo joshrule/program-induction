@@ -10,7 +10,7 @@ use rand::Rng;
 use serde::Serialize;
 use serde_json::Value;
 
-type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
+pub type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
 type Adjust<M> = <<M as MCTS>::State as State<M>>::AbstractDepthAdjustment;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
 type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEvaluation;
@@ -42,11 +42,12 @@ pub trait NodeStatistic<M: MCTS> {
 
 pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
     type NodeStatistics: std::fmt::Debug + Serialize + NodeStatistic<M> + Clone + Sync + Sized;
-    fn choose<'a, MoveIter>(
+    fn choose<'a, R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
         node: NodeHandle,
         tree: &SearchTree<M>,
+        rng: &mut R,
     ) -> Option<&'a MoveInfo<M>>
     where
         MoveIter: Iterator<Item = &'a MoveInfo<M>>;
@@ -438,7 +439,7 @@ impl<M: MCTS> SearchTree<M> {
             // Looks weird, but helps prevent a borrowing issue.
             let mh = self
                 .move_eval
-                .choose(moves, nh, &self)
+                .choose(moves, nh, &self, rng)
                 .expect("INVARIANT: active nodes must have moves")
                 .handle;
             let mov = &self.moves[mh];

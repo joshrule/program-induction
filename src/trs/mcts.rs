@@ -1,20 +1,21 @@
 use itertools::Itertools;
 use mcts::{
-    MoveEvaluator, MoveInfo, NodeHandle, NodeStatistic, SearchTree, State, StateEvaluator, MCTS,
+    MoveEvaluator, MoveInfo, NodeHandle, NodeStatistic, SearchTree, State, StateEvaluator, Stats,
+    MCTS,
 };
 use polytype::TypeSchema;
 use rand::{
-    distributions::WeightedIndex,
+    distributions::{Bernoulli, WeightedIndex},
     prelude::{Distribution, Rng, SliceRandom},
 };
 use serde_json::Value;
-use std::{collections::HashMap, convert::TryFrom};
+use std::{cmp::Ordering, collections::HashMap, convert::TryFrom};
 use term_rewriting::{Atom, Context, Rule, RuleContext, Term};
 use trs::{
     Composition, GenerationLimit, Hypothesis, Lexicon, ModelParams, Recursion, Types,
     Variablization, TRS,
 };
-use utils::logsumexp;
+use utils::{exp_normalize, logsumexp};
 
 type RevisionHandle = usize;
 type TerminalHandle = usize;
@@ -81,9 +82,16 @@ pub struct QN {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub struct QNMean(QN);
+
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub struct QNMax(QN);
+
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Selection {
     RelativeMassUCT,
     BestSoFarUCT,
+    Thompson(u32),
 }
 
 pub fn relative_mass_uct(parent: &QN, child: &QN) -> f64 {
@@ -99,7 +107,8 @@ pub fn rescaled_by_best_uct(parent: &QN, child: &QN, best: f64) -> f64 {
     (child.q - best).exp() / child.n + (parent.n.ln() / child.n).sqrt()
 }
 
-pub fn best_so_far_uct(parent: &QN, child: &QN, best: f64) -> f64 {
+pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
+    let best = mcts.best;
     let exploit = (child.q - best).exp();
     let explore = (parent.n.ln() / child.n).sqrt();
     let score = exploit + explore;
@@ -110,7 +119,31 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, best: f64) -> f64 {
     score
 }
 
-pub struct MCTSMoveEvaluator;
+pub fn thompson_sample<R: Rng>(
+    parent: &Vec<f64>,
+    child: &Vec<f64>,
+    mcts: &TRSMCTS,
+    rng: &mut R,
+) -> f64 {
+    let m = match mcts.params.selection {
+        Selection::Thompson(m) => m,
+        x => panic!("in thompson_sample but Selection is {:?}", x),
+    };
+    let n = child.len() as u32;
+    let source = if Bernoulli::from_ratio(n, m + n).unwrap().sample(rng) {
+        child
+    } else {
+        parent
+    };
+    exp_normalize(source, Some(-1000f64.ln()))
+        .map(|ps| source[WeightedIndex::new(ps).unwrap().sample(rng)])
+        .unwrap_or_else(|| *source.choose(rng).unwrap())
+}
+
+pub struct BestSoFarMoveEvaluator;
+pub struct RescaledByBestMoveEvaluator;
+pub struct RelativeMassMoveEvaluator;
+pub struct ThompsonMoveEvaluator;
 
 pub struct MCTSStateEvaluator;
 
@@ -152,19 +185,35 @@ pub enum PlayoutState<T: std::fmt::Debug + Copy> {
     Success(T),
 }
 
-impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QN {
+impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNMean {
     fn new() -> Self {
-        QN {
+        QNMean(QN {
             q: std::f64::NEG_INFINITY,
             n: 0.0,
-        }
+        })
     }
     fn update(&mut self, evaluation: f64) {
-        self.q += evaluation;
-        self.n += 1.0;
+        self.0.q += evaluation;
+        self.0.n += 1.0;
     }
     fn combine(&mut self, other: &Self) {
-        self.q = logsumexp(&[self.q, other.q]);
+        self.0.q = logsumexp(&[self.0.q, other.0.q]);
+    }
+}
+
+impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNMax {
+    fn new() -> Self {
+        QNMax(QN {
+            q: std::f64::NEG_INFINITY,
+            n: 0.0,
+        })
+    }
+    fn update(&mut self, evaluation: f64) {
+        self.0.q = self.0.q.max(evaluation);
+        self.0.n += 1.0;
+    }
+    fn combine(&mut self, other: &Self) {
+        self.0.q = self.0.q.max(other.0.q);
     }
 }
 
@@ -1180,7 +1229,7 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
 
 impl<'a, 'b> MCTS for TRSMCTS<'a, 'b> {
     type StateEval = MCTSStateEvaluator;
-    type MoveEval = MCTSMoveEvaluator;
+    type MoveEval = ThompsonMoveEvaluator;
     type State = MCTSState;
     fn max_depth(&self) -> usize {
         self.params.max_depth
@@ -1283,55 +1332,110 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
     }
 }
 
-impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MCTSMoveEvaluator {
-    type NodeStatistics = QN;
-    fn choose<'c, MoveIter>(
+fn unexplored_first<'c, F, M: MCTS, R: Rng, MoveIter>(
+    moves: MoveIter,
+    nh: NodeHandle,
+    tree: &SearchTree<M>,
+    selector: F,
+    rng: &mut R,
+) -> Option<&'c MoveInfo<M>>
+where
+    MoveIter: Iterator<Item = &'c MoveInfo<M>>,
+    F: Fn(&Stats<M>, &Stats<M>, &M, &mut R) -> f64,
+{
+    // Split the moves into those with and without children.
+    let (childful, childless): (Vec<_>, Vec<_>) = moves.partition(|mv| mv.child.is_some());
+    // Take the first childless move, or perform UCT on childed moves.
+    if let Some(mv) = childless.choose(rng) {
+        println!(
+            "#   There are {} childless. We chose: {}.",
+            childless.len() + 1,
+            mv.mov
+        );
+        Some(mv)
+    } else {
+        childful
+            .into_iter()
+            .map(|mv| {
+                let ch = mv.child.expect("INVARIANT: partition failed us");
+                let parent = &tree.node(nh).stats;
+                let child = &tree.node(ch).stats;
+                let score = selector(parent, child, tree.mcts(), rng);
+                println!("#     ({}): {:.4} - {}", ch, score, mv.mov,);
+                (mv, score)
+            })
+            .fold(vec![], |mut acc, x| {
+                if acc.is_empty() {
+                    acc.push(x);
+                    acc
+                } else {
+                    match acc[0].1.partial_cmp(&x.1) {
+                        None | Some(Ordering::Greater) => acc,
+                        Some(Ordering::Less) => vec![x],
+                        Some(Ordering::Equal) => {
+                            acc.push(x);
+                            acc
+                        }
+                    }
+                }
+            })
+            .choose(rng)
+            .map(|(mv, _)| {
+                println!("#     we're going with {}", mv.mov);
+                *mv
+            })
+            .or_else(|| {
+                println!("#     no available moves");
+                None
+            })
+    }
+}
+
+//impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for RescaledByBestMoveEvaluator {
+//    type NodeStatistics = QNMean;
+//    fn choose<'c, R: Rng, MoveIter>(
+//        &self,
+//        moves: MoveIter,
+//        nh: NodeHandle,
+//        tree: &SearchTree<TRSMCTS<'a, 'b>>,
+//        rng: &mut R,
+//    ) -> Option<&'c MoveInfo<TRSMCTS<'a, 'b>>>
+//    where
+//        MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'a, 'b>>>,
+//    {
+//        unexplored_first(moves, nh, tree, rescaled_by_best_uct, rng)
+//    }
+//}
+
+//impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for BestSoFarMoveEvaluator {
+//    type NodeStatistics = QNMax;
+//    fn choose<'c, R: Rng, MoveIter>(
+//        &self,
+//        moves: MoveIter,
+//        nh: NodeHandle,
+//        tree: &SearchTree<TRSMCTS<'a, 'b>>,
+//        rng: &mut R,
+//    ) -> Option<&'c MoveInfo<TRSMCTS<'a, 'b>>>
+//    where
+//        MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'a, 'b>>>,
+//    {
+//        unexplored_first(moves, nh, tree, best_so_far_uct, rng)
+//    }
+//}
+
+impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for ThompsonMoveEvaluator {
+    type NodeStatistics = Vec<f64>;
+    fn choose<'c, R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
         nh: NodeHandle,
         tree: &SearchTree<TRSMCTS<'a, 'b>>,
+        rng: &mut R,
     ) -> Option<&'c MoveInfo<TRSMCTS<'a, 'b>>>
     where
         MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'a, 'b>>>,
     {
-        // Split the moves into those with and without children.
-        let (childful, mut childless): (Vec<_>, Vec<_>) = moves.partition(|mv| mv.child.is_some());
-        // Take the first childless move, or perform UCT on childed moves.
-        if let Some(mv) = childless.pop() {
-            println!(
-                "#   There are {} childless. We chose: {}.",
-                childless.len() + 1,
-                mv.mov
-            );
-            Some(mv)
-        } else {
-            childful
-                .into_iter()
-                .map(|mv| {
-                    let ch = mv.child.expect("INVARIANT: partition failed us");
-                    let parent = tree.node(nh);
-                    let child = tree.node(ch);
-                    let score = match tree.mcts().params.selection {
-                        Selection::RelativeMassUCT => {
-                            relative_mass_uct(&parent.stats, &child.stats)
-                        }
-                        Selection::BestSoFarUCT => {
-                            best_so_far_uct(&parent.stats, &child.stats, tree.mcts().best)
-                        }
-                    };
-                    println!("#     UCT ({}): {:.4} - {}", ch, score, mv.mov,);
-                    (mv, score)
-                })
-                .max_by(|x, y| x.1.partial_cmp(&y.1).expect("There a NaN on the loose!"))
-                .map(|(mv, _)| {
-                    println!("#     we're going with {:?}", mv.mov);
-                    mv
-                })
-                .or_else(|| {
-                    println!("#     no available moves");
-                    None
-                })
-        }
+        unexplored_first(moves, nh, tree, thompson_sample, rng)
     }
 }
 
