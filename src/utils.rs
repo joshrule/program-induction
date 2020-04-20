@@ -6,12 +6,45 @@ use rand::{
 use std::{cmp, f64, iter::repeat};
 
 pub fn logsumexp(lps: &[f64]) -> f64 {
-    let largest = lps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let largest = lps.iter().fold(f64::NEG_INFINITY, |acc, lp| acc.max(*lp));
     if largest == f64::NEG_INFINITY {
         f64::NEG_INFINITY
     } else {
         let x = lps.iter().map(|lp| (lp - largest).exp()).sum::<f64>().ln();
         largest + x
+    }
+}
+
+pub fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64>> {
+    let (non_inf_min, max) = lps
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, lp| {
+            if *lp == f64::NEG_INFINITY {
+                (acc.0, acc.1.max(*lp))
+            } else {
+                (acc.0.min(*lp), acc.1.max(*lp))
+            }
+        });
+    if max == f64::NEG_INFINITY {
+        None
+    } else {
+        let mut ps = match rescale {
+            Some(ceiling) if non_inf_min < ceiling => {
+                let factor = non_inf_min / ceiling;
+                lps.iter().map(|x| ((x - max) / factor).exp()).collect_vec()
+            }
+            _ => lps.iter().map(|x| (x - max).exp()).collect_vec(),
+        };
+        let sum = ps.iter().sum::<f64>();
+        let ps_len = ps.len() as f64;
+        for p in ps.iter_mut() {
+            if sum == 0_f64 {
+                *p = 1.0 / ps_len;
+            } else {
+                *p /= sum;
+            }
+        }
+        Some(ps)
     }
 }
 
