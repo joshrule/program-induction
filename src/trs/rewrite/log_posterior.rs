@@ -1,7 +1,5 @@
 use std::{collections::HashMap, f64::NEG_INFINITY};
-use term_rewriting::{Rule, Term};
-
-use trs::{rewrite::TRS, ModelParams};
+use trs::{rewrite::TRS, Datum, ModelParams};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Combine [`log_prior`] and [`log_likelihood`], failing early if the
@@ -11,9 +9,8 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// [`log_likelihood`]: struct.TRS.html#method.log_likelihood
     pub fn log_posterior(
         &self,
-        data: &[Rule],
-        input: Option<&Term>,
-        evals: &mut HashMap<Rule, f64>,
+        data: &[Datum],
+        evals: &mut HashMap<Datum, f64>,
         t: f64,
         params: ModelParams,
     ) -> f64 {
@@ -21,7 +18,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         if prior == NEG_INFINITY {
             NEG_INFINITY
         } else {
-            let ll = self.log_likelihood(data, input, evals, params.likelihood);
+            let ll = self.log_likelihood(data, evals, params.likelihood);
             let temperature = params.schedule.temperature(t);
             (params.p_temp * prior + params.l_temp * ll) / temperature
         }

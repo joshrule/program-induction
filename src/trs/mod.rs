@@ -125,6 +125,27 @@ pub struct ModelParams {
     pub p_temp: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Datum {
+    Full(Rule),
+    Partial(Term),
+}
+
+impl Datum {
+    pub fn is_full(&self) -> bool {
+        match self {
+            Datum::Full(_) => true,
+            _ => false,
+        }
+    }
+    pub fn is_partial(&self) -> bool {
+        match self {
+            Datum::Partial(_) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum Schedule {
     // Don't anneal at all.
@@ -148,52 +169,53 @@ impl Schedule {
     }
 }
 
-pub struct Hypothesis<'a, 'b> {
-    pub trs: TRS<'a, 'b>,
+pub trait ProbabilisticModel {
+    type Object;
+    type Datum;
+    fn log_prior(&mut self, object: &Self::Object) -> f64;
+    fn single_log_likelihood<DataIter>(&mut self, object: &Self::Object, data: &Self::Datum)
+        -> f64;
+    fn log_likelihood(&mut self, object: &Self::Object, data: &[Self::Datum]) -> f64;
+    /// Computes the log posterior of `object` given `data` and returns
+    /// `(<log_prior>, <log_likelihood>, <log_posterior>)`.
+    fn log_posterior(&mut self, object: &Self::Object, data: &[Self::Datum]) -> (f64, f64, f64) {
+        let lprior = self.log_prior(object);
+        let llikelihood = self.log_likelihood(object, data);
+        let lposterior = lprior + llikelihood;
+        (lprior, llikelihood, lposterior)
+    }
+}
+
+pub struct Hypothesis<O, D, M>
+where
+    M: ProbabilisticModel<Object = O, Datum = D>,
+{
+    pub object: O,
+    model: M,
     pub lprior: f64,
     pub llikelihood: f64,
     pub lposterior: f64,
-    evals: HashMap<Rule, f64>,
-    temperature: f64,
-    params: ModelParams,
 }
 
-impl<'a, 'b> Hypothesis<'a, 'b> {
-    pub fn new(
-        trs: TRS<'a, 'b>,
-        data: &[Rule],
-        input: Option<&Term>,
-        t: f64,
-        params: ModelParams,
-    ) -> Hypothesis<'a, 'b> {
-        let lprior = trs.log_prior(params.prior);
-        let mut evals = HashMap::with_capacity(data.len());
-        let llikelihood = trs.log_likelihood(data, input, &mut evals, params.likelihood);
-        let temperature = params.schedule.temperature(t);
-        let lposterior = (params.p_temp * lprior + params.l_temp * llikelihood) / temperature;
+impl<O, D, M> Hypothesis<O, D, M>
+where
+    M: ProbabilisticModel<Object = O, Datum = D>,
+{
+    pub fn new(object: O, model: M) -> Self {
         Hypothesis {
-            trs,
-            llikelihood,
-            lprior,
-            lposterior,
-            temperature,
-            params,
-            evals,
+            object,
+            model,
+            lprior: std::f64::NAN,
+            llikelihood: std::f64::NAN,
+            lposterior: std::f64::NAN,
         }
     }
-    pub fn change_data(&mut self, data: &[Rule], input: Option<&Term>) {
-        self.llikelihood =
-            self.trs
-                .log_likelihood(data, input, &mut self.evals, self.params.likelihood);
-        self.lposterior = (self.params.p_temp * self.lprior
-            + self.params.l_temp * self.llikelihood)
-            / self.temperature;
-    }
-    pub fn change_time(&mut self, t: f64) {
-        self.temperature = self.params.schedule.temperature(t);
-        self.lposterior = (self.params.p_temp * self.lprior
-            + self.params.l_temp * self.llikelihood)
-            / self.temperature;
+    pub fn log_posterior(&mut self, data: &[D]) -> f64 {
+        let (lprior, llikelihood, lposterior) = self.model.log_posterior(&self.object, data);
+        self.lprior = lprior;
+        self.llikelihood = llikelihood;
+        self.lposterior = lposterior;
+        self.lposterior
     }
 }
 
@@ -283,8 +305,7 @@ pub enum SingleLikelihood {
 /// [`Task`]: ../struct.Task.html
 /// [`TRS`]: struct.TRS.html
 pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
-    data: &'a [Rule],
-    input: Option<&'a Term>,
+    data: &'a [Datum],
     params: ModelParams,
     lex: &Lexicon,
     t: f64,
@@ -292,10 +313,9 @@ pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
 ) -> Result<Task<'a, Lexicon<'c>, TRS<'b, 'c>, O>, TypeError> {
     Ok(Task {
         oracle: Box::new(move |_s: &Lexicon, h: &TRS| {
-            -h.log_posterior(data, input, &mut HashMap::new(), t, params)
+            -h.log_posterior(data, &mut HashMap::new(), t, params)
         }),
-        // assuming the data have no variables, we can use the Lexicon's ctx.
-        tp: lex.infer_rules(data, &mut lex.0.ctx.clone())?,
+        tp: lex.infer_data(data, &mut lex.0.ctx.clone())?,
         observation,
     })
 }

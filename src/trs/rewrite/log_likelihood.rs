@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::{convert::TryInto, f64::NEG_INFINITY};
+use std::f64::NEG_INFINITY;
 use term_rewriting::{trace::Trace, Rule, Term, TRS as UntypedTRS};
-use trs::{Environment, Likelihood, SingleLikelihood, TRS};
+use trs::{Datum, Environment, Likelihood, SingleLikelihood, TRS};
 use utils::logsumexp;
 
 impl<'a, 'b> TRS<'a, 'b> {
@@ -11,28 +11,28 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// [`term_rewriting::Trace`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/trace/struct.Trace.html
     pub fn log_likelihood(
         &self,
-        data: &[Rule],
-        input: Option<&Term>,
-        evals: &mut HashMap<Rule, f64>,
+        data: &[Datum],
+        evals: &mut HashMap<Datum, f64>,
         likelihood: Likelihood,
     ) -> f64 {
-        let n_data = data.len() + input.is_some() as usize;
-        let ll = data
-            .iter()
+        data.iter()
+            .rev()
             .enumerate()
             .map(|(i, datum)| {
-                let weight = likelihood
-                    .decay
-                    .powi(n_data.saturating_sub(i + 1).try_into().unwrap());
+                let weight = likelihood.decay.powi(i as i32);
                 let ll = evals
                     .entry(datum.clone())
                     .or_insert_with(|| self.single_log_likelihood(datum, likelihood));
                 weight.ln() + *ll
             })
-            .sum();
-        input
-            .map(|term| ll + self.partial_single_log_likelihood(term, likelihood))
-            .unwrap_or(ll)
+            .sum()
+    }
+
+    pub(crate) fn single_log_likelihood(&self, datum: &Datum, likelihood: Likelihood) -> f64 {
+        match datum {
+            Datum::Full(ref rule) => self.full_single_log_likelihood(rule, likelihood),
+            Datum::Partial(ref term) => self.partial_single_log_likelihood(term, likelihood),
+        }
     }
 
     /// Compute the log likelihood when all you have is a single input.
@@ -79,7 +79,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
 
     /// Compute the log likelihood for a single datum.
-    pub(crate) fn single_log_likelihood(&self, datum: &Rule, likelihood: Likelihood) -> f64 {
+    pub(crate) fn full_single_log_likelihood(&self, datum: &Rule, likelihood: Likelihood) -> f64 {
         let utrs = self.full_utrs();
         let sig = &self.lex.0.signature;
         if let Some(ref rhs) = datum.rhs() {

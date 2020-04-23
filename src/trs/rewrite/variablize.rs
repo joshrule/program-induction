@@ -245,6 +245,44 @@ impl<'a, 'b> TRS<'a, 'b> {
                 }
             })
     }
+    pub(crate) fn apply_variablization_typeless(
+        &self,
+        tp: &Type,
+        places: &[Place],
+        rule: &Rule,
+    ) -> Option<Rule> {
+        places
+            .get(0)
+            .and_then(|place| rule.at(place))
+            .and_then(|term| {
+                let applies = {
+                    let mut tp_rule = rule.clone();
+                    tp_rule.canonicalize(&mut HashMap::new());
+                    let mut types = HashMap::new();
+                    let mut ctx = self.lex.0.ctx.clone();
+                    let mut env = Environment::from_vars(&tp_rule.variables(), &mut ctx);
+                    self.lex
+                        .infer_rule(&tp_rule, &mut types, &mut env, &mut ctx)
+                        .ok()?;
+                    places
+                        .iter()
+                        .all(|place| types.get(place) == Some(tp) && rule.at(place) == Some(term))
+                };
+                if applies {
+                    let mut context =
+                        RuleContext::from(rule.clone()).replace_all(places, Context::Hole)?;
+                    context.canonicalize(&mut HashMap::new());
+                    let id = context.lhs.variables().len();
+                    let context =
+                        context.replace_all(places, Context::Variable(Variable { id }))?;
+                    let mut new_rule = Rule::try_from(&context).ok()?;
+                    new_rule.canonicalize(&mut HashMap::new());
+                    Some(new_rule)
+                } else {
+                    None
+                }
+            })
+    }
     pub(crate) fn adopt_solution(&self, rules: &mut Vec<Rule>) -> Option<TRS<'a, 'b>> {
         self.filter_background(rules);
 

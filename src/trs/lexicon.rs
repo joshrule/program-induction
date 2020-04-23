@@ -1,4 +1,3 @@
-use super::{SampleError, TypeError};
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type, TypeSchema, Variable as TypeVar};
 use rand::{
@@ -16,7 +15,7 @@ use term_rewriting::{
     Atom, Context, MergeStrategy, Operator, PStringDist, Place, Rule, RuleContext, Signature,
     SignatureChange, Term, Variable, TRS as UntypedTRS,
 };
-use trs::gp::TRSGP;
+use trs::{gp::TRSGP, Datum, SampleError, TypeError};
 
 type SampleChoice = (Atom, Vec<Type>, Environment, TypeContext);
 type RuleEnumerationPartial = (
@@ -649,12 +648,12 @@ impl<'a> Lexicon<'a> {
     ///
     /// [`TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
-    pub fn infer_rules(
+    pub fn infer_data(
         &self,
-        rules: &[Rule],
+        data: &[Datum],
         ctx: &mut TypeContext,
     ) -> Result<TypeSchema, TypeError> {
-        self.0.infer_rules(rules, ctx)
+        self.0.infer_data(data, ctx)
     }
     /// Infer the [`TypeSchema`] associated with a [`Context`].
     ///
@@ -1211,17 +1210,24 @@ impl Lex {
         lex_vars.append(&mut env.free_vars(ctx));
         Ok(lhs_type.apply_compress(ctx).generalize(&lex_vars))
     }
-    fn infer_rules(&self, rules: &[Rule], ctx: &mut TypeContext) -> Result<TypeSchema, TypeError> {
-        let rule_tps = rules
+    fn infer_data(&self, data: &[Datum], ctx: &mut TypeContext) -> Result<TypeSchema, TypeError> {
+        let data_tps = data
             .iter()
-            .map(|rule| {
-                let mut env = Environment::from_vars(&rule.variables(), ctx);
-                self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)
-                    .map(|rule_tp| rule_tp.instantiate(ctx))
+            .map(|datum| match datum {
+                Datum::Full(rule) => {
+                    let mut env = Environment::from_vars(&rule.variables(), ctx);
+                    self.infer_rule(rule, &mut HashMap::new(), &mut env, ctx)
+                        .map(|tp| tp.instantiate(ctx))
+                }
+                Datum::Partial(term) => {
+                    let mut env = Environment::from_vars(&term.variables(), ctx);
+                    self.infer_term(term, &mut HashMap::new(), &mut env, ctx)
+                        .map(|tp| tp.instantiate(ctx))
+                }
             })
             .collect::<Result<Vec<_>, _>>()?;
         let tp = ctx.new_variable();
-        for rule_tp in rule_tps {
+        for rule_tp in data_tps {
             ctx.unify(&tp, &rule_tp)?;
         }
         let lex_vars = self.free_vars(ctx);

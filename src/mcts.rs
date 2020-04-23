@@ -22,11 +22,12 @@ pub trait State<M: MCTS<State = Self>>: std::hash::Hash + Eq + Sized + Sync {
     type MoveList: IntoIterator<Item = Self::Move>;
     type AbstractDepthAdjustment;
     fn available_moves(&self, mcts: &mut M) -> Self::MoveList;
-    fn make_move<R: Rng>(
+    fn make_move(
         &self,
+        parent: NodeHandle,
         mov: &Self::Move,
         mcts: &mut M,
-        rng: &mut R,
+        tree: &TreeStore<M>,
     ) -> Option<(Self, Option<Self::AbstractDepthAdjustment>)>;
     fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut M) -> Self::MoveList;
     fn adjust_abstract_depth(&self, adjustment: &Self::AbstractDepthAdjustment, mcts: &mut M);
@@ -82,11 +83,15 @@ pub struct MCTSManager<M: MCTS> {
 
 pub struct SearchTree<M: MCTS> {
     mcts: M,
+    tree: TreeStore<M>,
+    state_eval: M::StateEval,
+    move_eval: M::MoveEval,
+}
+
+pub struct TreeStore<M: MCTS> {
     root: NodeHandle,
     nodes: Vec<Node<M>>,
     moves: Vec<MoveInfo<M>>,
-    state_eval: M::StateEval,
-    move_eval: M::MoveEval,
 }
 
 pub struct Node<M: MCTS> {
@@ -141,6 +146,21 @@ impl<M: MCTS> Node<M> {
     }
     pub fn state(&self) -> &M::State {
         &self.state
+    }
+    pub fn soft_pruned(&self) -> bool {
+        self.soft_pruned
+    }
+    pub fn evaluation(&self) -> &StateEvaluation<M> {
+        &self.evaluation
+    }
+    pub fn maximum_valid_depth(&self) -> usize {
+        self.maximum_valid_depth
+    }
+    pub fn incoming(&self) -> &[MoveHandle] {
+        &self.incoming
+    }
+    pub fn outgoing(&self) -> &[MoveHandle] {
+        &self.outgoing
     }
 }
 
@@ -199,6 +219,46 @@ impl<M: MCTS> MCTSManager<M> {
     }
 }
 
+impl<M: MCTS> TreeStore<M> {
+    pub fn paths(&self, node: NodeHandle) -> Vec<Vec<MoveHandle>> {
+        if node == self.root {
+            return vec![vec![]];
+        }
+        let mut stack = self.nodes[node]
+            .incoming
+            .iter()
+            .map(|mh| vec![*mh])
+            .collect::<Vec<_>>();
+        let mut paths = vec![];
+        while let Some(mut path) = stack.pop() {
+            let last = path.last().unwrap();
+            let mv = &self.moves[*last];
+            let incoming = &self.nodes[mv.parent].incoming;
+            if incoming.is_empty() {
+                path.reverse();
+                paths.push(path);
+            } else {
+                // if the parent of the last move has incoming edges, add them
+                for &mh in incoming {
+                    let mut new_path = path.clone();
+                    new_path.push(mh);
+                    stack.push(new_path);
+                }
+            }
+        }
+        paths
+    }
+    pub fn node(&self, node: NodeHandle) -> &Node<M> {
+        &self.nodes[node]
+    }
+    pub fn mv(&self, mh: MoveHandle) -> &MoveInfo<M> {
+        &self.moves[mh]
+    }
+    pub fn siblings(&self, mh: MoveHandle) -> Vec<MoveHandle> {
+        self.nodes[self.moves[mh].parent].outgoing.clone()
+    }
+}
+
 impl<M: MCTS> SearchTree<M> {
     pub fn new<R: Rng>(
         mut mcts: M,
@@ -231,36 +291,40 @@ impl<M: MCTS> SearchTree<M> {
             soft_pruned: moves.is_empty(),
             hard_pruned: vec![],
         };
+        let tree = TreeStore {
+            moves,
+            root: 0,
+            nodes: vec![root_node],
+        };
         SearchTree {
             mcts,
             state_eval,
             move_eval,
-            moves,
-            root: 0,
-            nodes: vec![root_node],
+            tree,
         }
     }
     pub fn summary(&self) -> (usize, usize) {
-        (self.nodes.len(), self.moves.len())
+        (self.tree.nodes.len(), self.tree.moves.len())
     }
     pub fn show(&self) {
         println!("SearchTree");
-        println!("root: {}", self.root);
+        println!("root: {}", self.tree.root);
         println!();
-        println!("nodes: {}", self.nodes.len());
-        for (i, node) in self.nodes.iter().enumerate() {
+        println!("nodes: {}", self.tree.nodes.len());
+        for (i, node) in self.tree.nodes.iter().enumerate() {
             println!("{}", i);
             node.show()
         }
         println!();
-        println!("moves: {}", self.moves.len());
-        for (i, mov) in self.moves.iter().enumerate() {
+        println!("moves: {}", self.tree.moves.len());
+        for (i, mov) in self.tree.moves.iter().enumerate() {
             println!("{}", i);
             mov.show()
         }
     }
     pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {
         let moves = self
+            .tree
             .moves
             .iter()
             .enumerate()
@@ -269,11 +333,12 @@ impl<M: MCTS> SearchTree<M> {
                     "handle": i,
                     "parent": mv.parent,
                     "child": mv.child,
-                    "move": self.nodes[mv.parent].state.describe_move(&mv.mov, &self.mcts),
+                    "move": self.tree.nodes[mv.parent].state.describe_move(&mv.mov, &self.mcts),
                 })
             })
             .collect::<Vec<_>>();
         let nodes = self
+            .tree
             .nodes
             .iter()
             .enumerate()
@@ -292,7 +357,7 @@ impl<M: MCTS> SearchTree<M> {
             })
             .collect::<Vec<_>>();
         let tree = json!({
-            "root": self.root,
+            "root": self.tree.root,
             "moves": moves,
             "nodes": nodes,
         });
@@ -308,45 +373,46 @@ impl<M: MCTS> SearchTree<M> {
         &mut self.mcts
     }
     pub fn node(&self, node: NodeHandle) -> &Node<M> {
-        &self.nodes[node]
+        &self.tree.nodes[node]
     }
     pub fn mov(&self, mov: MoveHandle) -> &MoveInfo<M> {
-        &self.moves[mov]
+        &self.tree.moves[mov]
     }
     pub fn reevaluate_states(&mut self) {
         println!("#     reevaluating states");
         // iterate over the nodes and copy the evaluation information from the objects.
         println!("#       reevaluating nodes");
-        for node in self.nodes.iter_mut() {
+        for node in self.tree.nodes.iter_mut() {
             node.evaluation = self.state_eval.reread(&node.state, &mut self.mcts);
         }
         println!("#       updating qs");
         self.recompute_qs();
     }
     pub fn recompute_qs(&mut self) {
-        let mut stack = vec![self.root];
+        let mut stack = vec![self.tree.root];
         let mut finished = vec![];
         while let Some(&node) = stack.last() {
-            let ready = self.nodes[node]
-                .outgoing
-                .iter()
-                .all(|&mh| match self.moves[mh].child {
-                    None => true,
-                    Some(nh) => finished.contains(&nh),
-                });
+            let ready =
+                self.tree.nodes[node]
+                    .outgoing
+                    .iter()
+                    .all(|&mh| match self.tree.moves[mh].child {
+                        None => true,
+                        Some(nh) => finished.contains(&nh),
+                    });
             if ready {
                 let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
-                stats.update(self.nodes[node].evaluation);
-                for &mh in &self.nodes[node].outgoing {
-                    if let Some(child) = self.moves[mh].child {
-                        stats.combine(&self.nodes[child].stats);
+                stats.update(self.tree.nodes[node].evaluation);
+                for &mh in &self.tree.nodes[node].outgoing {
+                    if let Some(child) = self.tree.moves[mh].child {
+                        stats.combine(&self.tree.nodes[child].stats);
                     }
                 }
-                self.nodes[node].stats = stats;
+                self.tree.nodes[node].stats = stats;
                 finished.push(stack.pop().expect("INVARIANT: stack has last element"));
             } else {
-                for &mh in &self.nodes[node].outgoing {
-                    if let Some(nh) = self.moves[mh].child {
+                for &mh in &self.tree.nodes[node].outgoing {
+                    if let Some(nh) = self.tree.moves[mh].child {
                         stack.push(nh);
                     }
                 }
@@ -354,40 +420,40 @@ impl<M: MCTS> SearchTree<M> {
         }
     }
     pub fn update_moves(&mut self) {
-        let mut unpruned = Vec::with_capacity(self.nodes.len());
+        let mut unpruned = Vec::with_capacity(self.tree.nodes.len());
         // Add moves as appropriate.
-        for nh in 0..self.nodes.len() {
-            let curr_edges = self.nodes[nh].outgoing.iter();
-            let pruned_edges = self.nodes[nh].hard_pruned.iter();
+        for nh in 0..self.tree.nodes.len() {
+            let curr_edges = self.tree.nodes[nh].outgoing.iter();
+            let pruned_edges = self.tree.nodes[nh].hard_pruned.iter();
             let old_moves = curr_edges
                 .chain(pruned_edges)
-                .map(|&m| &self.moves[m].mov)
+                .map(|&m| &self.tree.moves[m].mov)
                 .cloned()
                 .collect::<Vec<_>>();
-            for mov in self.nodes[nh]
+            for mov in self.tree.nodes[nh]
                 .state
                 .add_moves_for_new_data(&old_moves, &mut self.mcts)
             {
-                let handle = self.moves.len();
+                let handle = self.tree.moves.len();
                 let new_move = MoveInfo {
                     handle,
                     mov,
                     parent: nh,
                     child: None,
                 };
-                self.moves.push(new_move);
-                self.nodes[nh].outgoing.push(handle);
+                self.tree.moves.push(new_move);
+                self.tree.nodes[nh].outgoing.push(handle);
                 unpruned.push(nh);
             }
         }
         // Backpropagate any changes in soft pruning.
         while let Some(nh) = unpruned.pop() {
-            if self.nodes[nh].soft_pruned {
+            if self.tree.nodes[nh].soft_pruned {
                 println!("#       unpruning {}", nh);
             }
-            self.nodes[nh].soft_pruned = false;
-            for &mh in &self.nodes[nh].incoming {
-                let parent = self.moves[mh].parent;
+            self.tree.nodes[nh].soft_pruned = false;
+            for &mh in &self.tree.nodes[nh].incoming {
+                let parent = self.tree.moves[mh].parent;
                 if !unpruned.contains(&parent) {
                     unpruned.push(parent);
                 }
@@ -405,36 +471,35 @@ impl<M: MCTS> SearchTree<M> {
     }
     // Expand the search tree by taking a single move.
     fn expand<R: Rng>(&mut self, rng: &mut R) -> Result<NodeHandle, MCTSError> {
-        if self.nodes.len() >= self.mcts.max_states() {
+        if self.tree.nodes.len() >= self.mcts.max_states() {
             return Err(MCTSError::TreeAtMaxStates);
-        } else if self.nodes[self.root].soft_pruned {
+        } else if self.tree.nodes[self.tree.root].soft_pruned {
             return Err(MCTSError::TreeExhausted);
         } else if self.mcts.max_depth() == 0
-            || self.nodes[self.root]
-                .outgoing
-                .iter()
-                .all(|mh| match self.moves[*mh].child {
-                    Some(nh) => self.nodes[nh].maximum_valid_depth == 0,
+            || self.tree.nodes[self.tree.root].outgoing.iter().all(|mh| {
+                match self.tree.moves[*mh].child {
+                    Some(nh) => self.tree.nodes[nh].maximum_valid_depth == 0,
                     None => false,
-                })
+                }
+            })
         {
             return Err(MCTSError::TreeAtMaxDepth);
         }
-        let mut nh = self.root;
+        let mut nh = self.tree.root;
         for depth in 0..self.mcts.max_depth() {
             // Choose a move.
-            let moves = self.nodes[nh]
+            let moves = self.tree.nodes[nh]
                 .outgoing
                 .iter()
                 // Avoid moves going too deep or to pruned nodes.
-                .filter(|mh| match self.moves[**mh].child {
+                .filter(|mh| match self.tree.moves[**mh].child {
                     None => true,
                     Some(child_nh) => {
-                        !self.nodes[child_nh].soft_pruned
-                            && self.nodes[child_nh].maximum_valid_depth > depth
+                        !self.tree.nodes[child_nh].soft_pruned
+                            && self.tree.nodes[child_nh].maximum_valid_depth > depth
                     }
                 })
-                .map(|mh| &self.moves[*mh]);
+                .map(|mh| &self.tree.moves[*mh]);
             println!("#   got some moves");
             // Looks weird, but helps prevent a borrowing issue.
             let mh = self
@@ -442,7 +507,7 @@ impl<M: MCTS> SearchTree<M> {
                 .choose(moves, nh, &self, rng)
                 .expect("INVARIANT: active nodes must have moves")
                 .handle;
-            let mov = &self.moves[mh];
+            let mov = &self.tree.moves[mh];
             match mov.child {
                 // Descend known moves.
                 Some(child_nh) => {
@@ -452,9 +517,12 @@ impl<M: MCTS> SearchTree<M> {
                 // Take new moves.
                 None => {
                     println!("#   No child. Taking the move at depth {}.", depth);
-                    let child_state = self.nodes[nh]
-                        .state
-                        .make_move(&mov.mov, &mut self.mcts, rng);
+                    let child_state = self.tree.nodes[nh].state.make_move(
+                        nh,
+                        &mov.mov,
+                        &mut self.mcts,
+                        &self.tree,
+                    );
                     println!("#   Updating tree.");
                     return self.update_tree(child_state, mh, rng);
                 }
@@ -475,7 +543,7 @@ impl<M: MCTS> SearchTree<M> {
             }
             Some((child_state, adjustment)) => {
                 // Identify the parent handle and child handle.
-                let ph = self.moves[mov].parent;
+                let ph = self.tree.moves[mov].parent;
                 let ch = self.find_or_make_node(child_state, rng);
                 // Prevent cycles: don't add moves that make a child its own ancestor.
                 if self.ancestors(ph).contains(&ch) || ph == ch {
@@ -488,11 +556,12 @@ impl<M: MCTS> SearchTree<M> {
                     Err(MCTSError::MoveCreatedCycle)
                 } else {
                     // Give the move a child.
-                    self.moves[mov].child = Some(ch);
+                    self.tree.moves[mov].child = Some(ch);
                     // Add the move as a parent of the child, if new.
-                    if !self.nodes[ch].incoming.contains(&mov) {
-                        self.nodes[ch].incoming.push(mov);
+                    if !self.tree.nodes[ch].incoming.contains(&mov) {
+                        self.tree.nodes[ch].incoming.push(mov);
                     }
+                    // Adjust the abstract depth of the node.
                     self.adjust_abstract_depth(ch, &adjustment);
                     Ok(ch)
                 }
@@ -502,14 +571,14 @@ impl<M: MCTS> SearchTree<M> {
     fn hard_prune(&mut self, mh: MoveHandle) {
         println!("#       hard pruning {}", mh);
         // Remove the move from the parent's outgoing list.
-        let parent = self.moves[mh].parent;
-        self.nodes[parent].outgoing = self.nodes[parent]
+        let parent = self.tree.moves[mh].parent;
+        self.tree.nodes[parent].outgoing = self.tree.nodes[parent]
             .outgoing
             .iter()
             .filter(|omh| **omh != mh)
             .copied()
             .collect();
-        self.nodes[parent].hard_pruned.push(mh);
+        self.tree.nodes[parent].hard_pruned.push(mh);
         // Keep the tree consistent.
         self.soft_prune(parent);
         self.update_maximum_valid_depths(parent);
@@ -518,44 +587,45 @@ impl<M: MCTS> SearchTree<M> {
         let mut stack = vec![start];
         while let Some(nh) = stack.pop() {
             // Nodes are soft-pruned if they have no unexplored descendants.
-            let prunable = self.nodes[nh]
-                .outgoing
-                .iter()
-                .all(|mh| match self.moves[*mh].child {
-                    None => false,
-                    Some(child_nh) => self.nodes[child_nh].soft_pruned,
-                });
+            let prunable =
+                self.tree.nodes[nh]
+                    .outgoing
+                    .iter()
+                    .all(|mh| match self.tree.moves[*mh].child {
+                        None => false,
+                        Some(child_nh) => self.tree.nodes[child_nh].soft_pruned,
+                    });
             if prunable {
                 println!("#       soft pruning {}", nh);
-                self.nodes[nh].soft_pruned = true;
+                self.tree.nodes[nh].soft_pruned = true;
             }
             // Add nodes to stack as appropriate.
-            for &mh in &self.nodes[nh].incoming {
-                stack.push(self.moves[mh].parent)
+            for &mh in &self.tree.nodes[nh].incoming {
+                stack.push(self.tree.moves[mh].parent)
             }
         }
     }
     fn find_or_make_node<R: Rng>(&mut self, s: <M>::State, rng: &mut R) -> NodeHandle {
-        match self.nodes.iter().position(|n| n.state == s) {
+        match self.tree.nodes.iter().position(|n| n.state == s) {
             Some(h) => {
                 println!("          found node {}", h);
                 h
             }
             None => {
-                let node_handle = self.nodes.len();
+                let node_handle = self.tree.nodes.len();
                 let evaluation = self.state_eval.evaluate(&s, &mut self.mcts, rng);
                 let incoming = vec![];
                 let mut outgoing = vec![];
                 for mov in s.available_moves(&mut self.mcts) {
                     println!("#     pushing move: {}", mov);
-                    let handle = self.moves.len();
+                    let handle = self.tree.moves.len();
                     let new_move = MoveInfo {
                         handle,
                         mov,
                         parent: node_handle,
                         child: None,
                     };
-                    self.moves.push(new_move);
+                    self.tree.moves.push(new_move);
                     outgoing.push(handle);
                 }
                 let node = Node {
@@ -573,7 +643,7 @@ impl<M: MCTS> SearchTree<M> {
                     node_handle,
                     node.outgoing.len()
                 );
-                self.nodes.push(node);
+                self.tree.nodes.push(node);
                 node_handle
             }
         }
@@ -585,29 +655,29 @@ impl<M: MCTS> SearchTree<M> {
         while let Some(nh) = stack.pop() {
             println!("#     dealing with node {}.", nh);
             // Update stats.
-            let evaluation = self.nodes[new_node].evaluation;
-            self.nodes[nh].stats.update(evaluation);
+            let evaluation = self.tree.nodes[new_node].evaluation;
+            self.tree.nodes[nh].stats.update(evaluation);
             // Add nodes to stack as appropriate.
-            for &mh in &self.nodes[nh].incoming {
-                stack.push(self.moves[mh].parent)
+            for &mh in &self.tree.nodes[nh].incoming {
+                stack.push(self.tree.moves[mh].parent)
             }
         }
     }
     fn update_maximum_valid_depths(&mut self, new_node: NodeHandle) {
         let mut stack = vec![new_node];
         while let Some(nh) = stack.pop() {
-            let current_depth = self.nodes[nh].maximum_valid_depth;
+            let current_depth = self.tree.nodes[nh].maximum_valid_depth;
             // If nh has children, max_valid_depth <-
             //    max(max_valid_depth(child) for child in children if !child.soft_pruned) - 1.
             // else max_valid_depth <- depth_limit
-            let new_depth = self.nodes[nh]
+            let new_depth = self.tree.nodes[nh]
                 .outgoing
                 .iter()
                 .map(|m| {
-                    self.moves[*m]
+                    self.tree.moves[*m]
                         .child
-                        .filter(|ch| !self.nodes[*ch].soft_pruned)
-                        .map(|ch| self.nodes[ch].maximum_valid_depth)
+                        .filter(|ch| !self.tree.nodes[*ch].soft_pruned)
+                        .map(|ch| self.tree.nodes[ch].maximum_valid_depth)
                         .unwrap_or_else(|| self.mcts.max_depth())
                 })
                 .max()
@@ -615,10 +685,10 @@ impl<M: MCTS> SearchTree<M> {
                 .unwrap_or_else(|| self.mcts.max_depth());
             if new_depth != current_depth {
                 // Update the maximum valid depth.
-                self.nodes[nh].maximum_valid_depth = new_depth;
+                self.tree.nodes[nh].maximum_valid_depth = new_depth;
                 // Add moves leading to the parent to the stack.
-                for &mh in &self.nodes[nh].incoming {
-                    stack.push(self.moves[mh].parent);
+                for &mh in &self.tree.nodes[nh].incoming {
+                    stack.push(self.tree.moves[mh].parent);
                 }
             }
         }
@@ -627,11 +697,11 @@ impl<M: MCTS> SearchTree<M> {
         match *adjustment {
             None => (),
             Some(ref adjustment) => {
-                self.nodes[nh]
+                self.tree.nodes[nh]
                     .state
                     .adjust_abstract_depth(adjustment, &mut self.mcts);
                 for dh in self.descendants(nh) {
-                    self.nodes[dh]
+                    self.tree.nodes[dh]
                         .state
                         .adjust_abstract_depth(adjustment, &mut self.mcts);
                 }
@@ -642,8 +712,8 @@ impl<M: MCTS> SearchTree<M> {
         let mut stack = vec![node];
         let mut ancestors = vec![];
         while let Some(node) = stack.pop() {
-            for &mov in &self.nodes[node].incoming {
-                let parent = self.moves[mov].parent;
+            for &mov in &self.tree.nodes[node].incoming {
+                let parent = self.tree.moves[mov].parent;
                 if !ancestors.contains(&parent) {
                     ancestors.push(parent);
                     stack.push(parent);
@@ -656,8 +726,8 @@ impl<M: MCTS> SearchTree<M> {
         let mut stack = vec![node];
         let mut descendants = vec![];
         while let Some(node) = stack.pop() {
-            for &mh in &self.nodes[node].outgoing {
-                if let Some(ch) = self.moves[mh].child {
+            for &mh in &self.tree.nodes[node].outgoing {
+                if let Some(ch) = self.tree.moves[mh].child {
                     if !descendants.contains(&ch) {
                         descendants.push(ch);
                         stack.push(ch);
