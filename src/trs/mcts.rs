@@ -272,6 +272,7 @@ pub enum MCTSMove {
     SampleAtom(Atom),
     RegenerateRule,
     RegenerateThisRule(usize, RuleContext),
+    MemorizeAll,
     MemorizeDatum(Option<usize>),
     DeleteRule(Option<usize>),
     Variablize(Option<Variablization>),
@@ -336,6 +337,7 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for Vec<f64> {
 impl MCTSMove {
     fn pretty(&self, lex: &Lexicon) -> String {
         match *self {
+            MCTSMove::MemorizeAll => format!("MemorizeAll"),
             MCTSMove::MemorizeDatum(Some(n)) => format!("MemorizeDatum({})", n),
             MCTSMove::SampleAtom(atom) => format!("SampleAtom({})", atom.display(lex.signature())),
             MCTSMove::RegenerateThisRule(n, ref c) => {
@@ -375,6 +377,7 @@ impl MCTSMove {
 impl std::fmt::Display for MCTSMove {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
+            MCTSMove::MemorizeAll => write!(f, "MemorizeAll"),
             MCTSMove::MemorizeDatum(Some(n)) => write!(f, "MemorizeDatum({})", n),
             MCTSMove::Variablize(Some((ref n, ref t, ref ps))) => {
                 write!(f, "Variablize({}, {}, {:?})", n, t, ps)
@@ -457,7 +460,7 @@ impl Revision {
                         Datum::Partial(_) => false,
                         Datum::Full(rule) => trs.utrs.get_clause(rule).is_none(),
                     }) {
-                        println!("pushing MemorizeDatum");
+                        moves.push(MCTSMove::MemorizeAll);
                         moves.push(MCTSMove::MemorizeDatum(None));
                     }
                 }
@@ -581,6 +584,22 @@ impl Revision {
                 tryo![trs.utrs.remove_idx(n).ok()];
                 println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 MoveResult::Revision(Some(trs), None)
+            }
+            MCTSMove::MemorizeAll => {
+                let mut trs = trs.clone();
+                let new_data = data
+                    .iter()
+                    .filter_map(|d| match d {
+                        Datum::Partial(_) => None,
+                        Datum::Full(rule) => trs.utrs.get_clause(rule).map(|_| rule.clone()),
+                    })
+                    .collect_vec();
+                if new_data.is_empty() {
+                    return MoveResult::Failed;
+                }
+                tryo![trs.append_clauses(new_data).ok()];
+                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
+                return MoveResult::Revision(Some(trs), None);
             }
             MCTSMove::MemorizeDatum(None) => {
                 MoveResult::Revision(None, Some(MCTSMoveState::MemorizeDatum))
