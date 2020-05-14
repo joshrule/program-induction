@@ -345,12 +345,9 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
     }
     pub fn infer_rule(&mut self, rule: &Rule) -> Result<Ty<'ctx>, TypeError<'ctx>> {
         let lhs_type = self.infer_term(&rule.lhs)?;
-        // println!("  lhs_type: {}", lhs_type);
         for rhs in &rule.rhs {
             let rhs_type = self.infer_term(&rhs)?;
-            // println!("  rhs_type: {}", rhs_type);
             Type::unify_with_sub(&[(&rhs_type, &lhs_type)], &mut self.sub)?;
-            // println!("    unifies");
         }
         Ok(lhs_type)
     }

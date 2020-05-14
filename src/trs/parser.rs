@@ -399,9 +399,7 @@ fn typed_rule<'a, 'ctx, 'lex>(
 ) -> nom::IResult<CompleteStr<'a>, Rule> {
     lex.lex.to_mut().sig.clear_variables();
     if let Ok(rule) = parse_untyped_rule(&mut lex.lex.to_mut().sig, *input) {
-        println!("parsed untyped rule");
         if lex.infer_rule(&rule).is_ok() {
-            println!("typechecked rule");
             return Ok((CompleteStr(""), rule));
         }
     }
@@ -425,9 +423,7 @@ fn typed_context<'a>(
 ) -> nom::IResult<CompleteStr<'a>, Context> {
     lex.lex.to_mut().sig.clear_variables();
     if let Ok(context) = parse_untyped_context(&mut lex.lex.to_mut().sig, *input) {
-        println!("parsed untyped context");
         if lex.infer_context(&context).is_ok() {
-            println!("typechecked context");
             return Ok((CompleteStr(""), context));
         }
     }

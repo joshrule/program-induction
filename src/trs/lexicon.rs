@@ -354,7 +354,6 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     /// [`Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
     pub fn infer_rule(&self, rule: &Rule) -> Result<Env<'ctx, 'lex>, TypeError<'ctx>> {
         let mut env = Env::from_vars(&rule.variables(), false, self, Some(self.lex.src));
-        println!("  constructed env: {:?}", env);
         env.infer_rule(rule)?;
         Ok(env)
     }
