@@ -1,12 +1,12 @@
 use super::{SampleError, TRS};
 use itertools::Itertools;
-use polytype::{Context as TypeContext, Type};
+use polytype::atype::{Schema, Ty, Type, Variable as TVar};
 use std::{collections::HashMap, convert::TryFrom};
 use term_rewriting::{Atom, Context, Operator, Rule, SituatedAtom, Term, Variable};
-use trs::lexicon::{Environment, Lexicon};
+use trs::{Env, Lexicon};
 
-impl<'a, 'b> TRS<'a, 'b> {
-    pub fn generalize(&self) -> Result<TRS<'a, 'b>, SampleError> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
+    pub fn generalize(&self) -> Result<Self, SampleError<'ctx>> {
         let (lhs_context, clauses) = TRS::find_lhs_context(&self.utrs.rules)?;
         let (rhs_context, clauses) = TRS::find_rhs_context(&clauses)?;
         let mut trs = self.clone();
@@ -18,17 +18,17 @@ impl<'a, 'b> TRS<'a, 'b> {
         let stop = trs.len();
         Ok(trs.smart_delete(start, stop)?)
     }
-    fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {
+    fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError<'ctx>> {
         TRS::find_shared_context(clauses, |c| c.lhs.clone(), 1)
     }
-    fn find_rhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError> {
+    fn find_rhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError<'ctx>> {
         TRS::find_shared_context(clauses, |c| c.rhs().unwrap(), 3) // TODO: constant is a HACK
     }
     fn find_shared_context<T>(
         clauses: &[Rule],
         f: T,
         max_holes: usize,
-    ) -> Result<(Context, Vec<Rule>), SampleError>
+    ) -> Result<(Context, Vec<Rule>), SampleError<'ctx>>
     where
         T: Fn(&Rule) -> Term,
     {
@@ -141,14 +141,11 @@ impl<'a, 'b> TRS<'a, 'b> {
         lhs_context: &Context,
         rhs_context: &Context,
         clauses: &[Rule],
-    ) -> Result<Vec<Rule>, SampleError> {
+    ) -> Result<Vec<Rule>, SampleError<'ctx>> {
         // Create the LHS.
         let (lhs, lhs_place, var) =
             TRS::fill_hole_with_variable(&lhs_context).ok_or(SampleError::Subterm)?;
-        let mut types = HashMap::new();
-        let mut ctx = self.lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&lhs.variables(), &mut ctx);
-        self.lex.infer_term(&lhs, &mut types, &mut env, &mut ctx)?;
+        let mut env = self.lex.infer_term(&lhs)?;
         env.invent = false;
         // Fill the RHS context and create subproblem rules.
         let mut rhs = rhs_context.clone();
@@ -158,9 +155,9 @@ impl<'a, 'b> TRS<'a, 'b> {
             let (types, terms, vars) =
                 TRS::collect_information(&self.lex, &lhs, &lhs_place, rhs_place, clauses, var)?;
             // Infer the type for this place.
-            let return_tp = TRS::compute_place_type(&mut self.lex.0.ctx.clone(), &types)?;
+            let return_tp = TRS::compute_place_type(&mut self.lex, &mut env, &types)?;
             // Create the new operator for this place. TODO HACK: make applicative parameterizable.
-            let new_op = TRS::new_operator(&mut self.lex, true, &vars, &return_tp, &env, &mut ctx)?;
+            let new_op = TRS::new_operator(&mut self.lex, true, &vars, return_tp, &env)?;
             // Create the rules expressing subproblems for this place.
             for (lhs_term, rhs_term) in &terms {
                 let new_rule = TRS::new_rule(&self.lex, new_op, lhs_term, rhs_term, var, &vars)?;
@@ -175,13 +172,15 @@ impl<'a, 'b> TRS<'a, 'b> {
         Ok(new_rules)
     }
     fn fill_next_hole(
-        lex: &Lexicon,
+        lex: &Lexicon<'ctx, 'b>,
         rhs: &Context,
         place: &[usize],
         new_op: Operator,
         vars: Vec<Variable>,
-    ) -> Result<Context, SampleError> {
-        let app = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
+    ) -> Result<Context, SampleError<'ctx>> {
+        let app = lex
+            .has_operator(Some("."), 2)
+            .map_err(|_| SampleError::Subterm)?;
         let mut subctx = Context::from(SituatedAtom::new(Atom::from(new_op), lex.signature()));
         for var in vars {
             subctx = Context::Application {
@@ -193,13 +192,13 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
     #[allow(clippy::type_complexity)]
     fn collect_information<'c>(
-        lex: &Lexicon,
+        lex: &Lexicon<'ctx, 'b>,
         lhs: &Term,
         lhs_place: &[usize],
         rhs_place: &[usize],
         clauses: &'c [Rule],
         var: Variable,
-    ) -> Result<(Vec<Type>, Vec<(&'c Term, Term)>, Vec<Variable>), SampleError> {
+    ) -> Result<(Vec<Ty<'ctx>>, Vec<(&'c Term, Term)>, Vec<Variable>), SampleError<'ctx>> {
         let mut terms = vec![];
         let mut types = vec![];
         let mut vars = vec![var];
@@ -207,11 +206,14 @@ impl<'a, 'b> TRS<'a, 'b> {
             let rhs = clause.rhs().ok_or(SampleError::Subterm)?;
             let lhs_subterm = clause.lhs.at(lhs_place).ok_or(SampleError::Subterm)?;
             let rhs_subterm = rhs.at(rhs_place).ok_or(SampleError::Subterm)?;
-            let mut map = HashMap::new();
-            let mut ctx = lex.0.ctx.clone();
-            let mut env = Environment::from_vars(&rhs.variables(), &mut ctx);
-            lex.infer_term(&rhs, &mut map, &mut env, &mut ctx)?;
-            types.push(map[rhs_place].clone());
+            let env = lex.infer_term(&rhs)?;
+            let map: HashMap<_, _> = rhs
+                .subterms()
+                .into_iter()
+                .zip(&env.tps)
+                .map(|((_, p), tp)| (p, *tp))
+                .collect();
+            types.push(map[rhs_place]);
             let alpha = Term::pmatch(&[(&lhs, &clause.lhs)]).ok_or(SampleError::Subterm)?;
             for &var in &rhs_subterm.variables() {
                 let var_term = Term::Variable(var);
@@ -225,13 +227,18 @@ impl<'a, 'b> TRS<'a, 'b> {
         }
         Ok((types, terms, vars))
     }
-    fn compute_place_type(ctx: &mut TypeContext, types: &[Type]) -> Result<Type, SampleError> {
-        let return_tp = ctx.new_variable();
+    fn compute_place_type(
+        lex: &mut Lexicon<'ctx, 'b>,
+        env: &mut Env<'ctx, 'b>,
+        types: &[Ty<'ctx>],
+    ) -> Result<Ty<'ctx>, SampleError<'ctx>> {
+        let tvar = TVar(lex.lex.to_mut().src.fresh());
+        let return_tp = env.lex.lex.ctx.intern_tvar(tvar);
         for tp in types {
-            ctx.unify(&return_tp, tp)
+            Type::unify_with_sub(&[(return_tp, tp)], &mut env.sub)
                 .map_err(|_| SampleError::Subterm)?;
         }
-        Ok(return_tp.apply(&ctx))
+        Ok(return_tp.apply(&env.sub))
     }
     // Patch a `Context` with a `Variable`.
     fn fill_hole_with_variable(context: &Context) -> Option<(Term, Vec<usize>, Variable)> {
@@ -248,38 +255,42 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
     // Create a new `Operator` whose type is consistent with `Vars`.
     fn new_operator(
-        lex: &mut Lexicon,
+        lex: &mut Lexicon<'ctx, 'b>,
         applicative: bool,
         vars: &[Variable],
-        return_tp: &Type,
-        env: &Environment,
-        ctx: &mut TypeContext,
-    ) -> Result<Operator, SampleError> {
+        return_tp: Ty<'ctx>,
+        env: &Env<'ctx, 'b>,
+    ) -> Result<Operator, SampleError<'ctx>> {
         // Construct the name.
         let name = None;
         // Construct the arity.
         let arity = (!applicative as u8) * (vars.len() as u8);
         // Construct the type.
-        let mut tp = return_tp.clone();
+        let mut tp = return_tp;
         for &var in vars.iter().rev() {
-            let schema = lex.infer_variable(var, env)?;
-            tp = Type::arrow(schema.instantiate(&mut lex.0.to_mut().ctx), tp);
+            let schema: Schema<'ctx> = env.vars.get(var.0).ok_or(SampleError::Subterm)?;
+            tp = env.lex.lex.ctx.arrow(
+                schema.instantiate(&env.lex.lex.ctx, &mut lex.lex.to_mut().src),
+                tp,
+            );
         }
-        tp = tp.apply_compress(ctx);
+        tp = tp.apply(&env.sub);
         // Create the new variable.
         Ok(lex.invent_operator(name, arity, &tp))
     }
     // Create a new rule setting up a generalization subproblem.
     fn new_rule(
-        lex: &Lexicon,
+        lex: &Lexicon<'ctx, 'b>,
         op: Operator,
         lhs_arg: &Term,
         rhs: &Term,
         var: Variable,
         vars: &[Variable],
-    ) -> Result<Rule, SampleError> {
+    ) -> Result<Rule, SampleError<'ctx>> {
         let mut lhs = Term::apply(op, vec![], lex.signature()).ok_or(SampleError::Subterm)?;
-        let app = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
+        let app = lex
+            .has_operator(Some("."), 2)
+            .map_err(|_| SampleError::Subterm)?;
         for &v in vars {
             let arg = if v == var {
                 lhs_arg.clone()
@@ -295,13 +306,13 @@ impl<'a, 'b> TRS<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use itertools::Itertools;
-    use polytype::Context as TypeContext;
+    use polytype::atype::{with_ctx, TypeContext, Variable as TVar};
     use std::collections::HashMap;
     use term_rewriting::{Atom, Context, SituatedAtom, Variable};
     use trs::parser::{parse_context, parse_lexicon, parse_rule, parse_term, parse_trs};
-    use trs::{Environment, Lexicon, TRS};
+    use trs::{Env, Lexicon, TRS};
 
-    fn create_test_lexicon<'b>() -> Lexicon<'b> {
+    fn create_test_lexicon<'ctx, 'b>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {
         parse_lexicon(
             &[
                 "+/0: INT -> INT -> INT;",
@@ -313,11 +324,11 @@ mod tests {
                 " 9/0: INT;",
             ]
             .join(" "),
-            TypeContext::default(),
+            ctx,
         )
         .unwrap()
     }
-    fn create_list_test_lexicon<'b>() -> Lexicon<'b> {
+    fn create_list_test_lexicon<'ctx, 'b>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {
         parse_lexicon(
             &[
                 "C/0: list -> list;",
@@ -332,219 +343,215 @@ mod tests {
                 "9/0: int;",
             ]
             .join(" "),
-            TypeContext::default(),
+            ctx,
         )
         .unwrap()
     }
 
     #[test]
-    fn find_lhs_context_test_0() {
-        let mut lex = create_test_lexicon();
-        let clauses = vec![
-            parse_rule("^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1)", &mut lex)
-                .expect("parsed rule 1"),
-            parse_rule("^ (+ x_ 2) 2 = + (^ x_ 4) (+ (* 2 x_) 4)", &mut lex)
-                .expect("parsed rule 2"),
-            parse_rule("^ (+ x_ 3) 2 = + (^ x_ 6) (+ (* 2 x_) 9)", &mut lex)
-                .expect("parsed rule 3"),
-        ];
-        let (context, clauses) = TRS::find_lhs_context(&clauses).unwrap();
-        let sig = &lex.0.signature;
-        assert_eq!("^ (+ v0_ [!]) 2", context.pretty(sig));
-        assert_eq!(3, clauses.len());
-    }
-
-    #[test]
-    fn find_lhs_context_test_1() {
-        let mut lex = create_test_lexicon();
-        let clauses = vec![
-            parse_rule("^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1)", &mut lex)
-                .expect("parsed rule 1"),
-            parse_rule("^ (+ x_ 2) 2 = + (^ x_ 4) (+ (* 2 x_) 4)", &mut lex)
-                .expect("parsed rule 2"),
-            parse_rule("^ (+ x_ 3) 2 = + (^ x_ 6) (+ (* 2 x_) 9)", &mut lex)
-                .expect("parsed rule 3"),
-            parse_rule("+ x_ 0 = x_", &mut lex).expect("parsed rule 4"),
-            parse_rule("+ 0 x_ = x_", &mut lex).expect("parsed rule 5"),
-        ];
-        let (context, clauses) = TRS::find_lhs_context(&clauses).unwrap();
-        let sig = &lex.0.signature;
-        assert_eq!("^ (+ v0_ [!]) 2", context.pretty(sig));
-        assert_eq!(3, clauses.len());
+    fn find_lhs_context_test() {
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let clauses = vec![
+                parse_rule("^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1)", &mut lex).expect("rule 1"),
+                parse_rule("^ (+ x_ 2) 2 = + (^ x_ 4) (+ (* 2 x_) 4)", &mut lex).expect("rule 2"),
+                parse_rule("^ (+ x_ 3) 2 = + (^ x_ 6) (+ (* 2 x_) 9)", &mut lex).expect("rule 3"),
+                parse_rule("+ x_ 0 = x_", &mut lex).expect("parsed rule 4"),
+                parse_rule("+ 0 x_ = x_", &mut lex).expect("parsed rule 5"),
+            ];
+            let (context, clauses) = TRS::find_lhs_context(&clauses).unwrap();
+            let sig = lex.signature();
+            assert_eq!("^ (+ v0_ [!]) 2", context.pretty(sig));
+            assert_eq!(3, clauses.len());
+        })
     }
 
     #[test]
     fn find_rhs_context_test() {
-        let mut lex = create_test_lexicon();
-        let clauses = vec![
-            parse_rule("^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1)", &mut lex)
-                .expect("parsed rule 1"),
-            parse_rule("^ (+ x_ 2) 2 = + (^ x_ 4) (+ (* 2 x_) 4)", &mut lex)
-                .expect("parsed rule 2"),
-            parse_rule("^ (+ x_ 3) 2 = + (^ x_ 6) (+ (* 2 x_) 9)", &mut lex)
-                .expect("parsed rule 3"),
-        ];
-        let (context, clauses) = TRS::find_rhs_context(&clauses).unwrap();
-        let sig = &lex.0.signature;
-        assert_eq!("+ (^ v0_ [!]) (+ (* 2 v0_) [!])", context.pretty(sig));
-        assert_eq!(3, clauses.len());
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let clauses = vec![
+                parse_rule("^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1)", &mut lex)
+                    .expect("parsed rule 1"),
+                parse_rule("^ (+ x_ 2) 2 = + (^ x_ 4) (+ (* 2 x_) 4)", &mut lex)
+                    .expect("parsed rule 2"),
+                parse_rule("^ (+ x_ 3) 2 = + (^ x_ 6) (+ (* 2 x_) 9)", &mut lex)
+                    .expect("parsed rule 3"),
+            ];
+            let (context, clauses) = TRS::find_rhs_context(&clauses).unwrap();
+            let sig = lex.signature();
+            assert_eq!("+ (^ v0_ [!]) (+ (* 2 v0_) [!])", context.pretty(sig));
+            assert_eq!(3, clauses.len());
+        })
     }
 
     #[test]
     fn fill_hole_with_variable_test() {
-        let mut lex = create_test_lexicon();
-        let context = parse_context("^ (+ v0_ [!]) 2", &mut lex).expect("parsed context");
-        let (term, place, _) = TRS::fill_hole_with_variable(&context).unwrap();
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let context = parse_context("^ (+ v0_ [!]) 2", &mut lex).expect("context");
+            let (term, place, _) = TRS::fill_hole_with_variable(&context).unwrap();
 
-        let mut types = HashMap::new();
-        let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&term.variables(), &mut ctx);
-        lex.infer_term(&term, &mut types, &mut env, &mut ctx)
-            .unwrap();
-        let tp = &types[&place];
+            let env = lex.infer_term(&term).expect("env");
+            let map: HashMap<_, _> = term
+                .subterms()
+                .into_iter()
+                .zip(&env.tps)
+                .map(|((_, p), tp)| (p, *tp))
+                .collect();
+            let tp = map[&place].apply(&env.sub);
 
-        assert_eq!("^ (+ v0_ v1_) 2", term.pretty(&lex.0.signature));
-        assert_eq!(vec![0, 1, 1], place);
-        assert_eq!("INT", tp.to_string());
+            assert_eq!("^ (+ v0_ v1_) 2", term.pretty(lex.signature()));
+            assert_eq!(vec![0, 1, 1], place);
+            assert_eq!("INT", tp.to_string());
+        })
     }
 
     #[test]
     fn new_operator_test() {
-        //lex: &mut Lexicon,
-        //applicative: bool,
-        //vars: &[Variable],
-        //return_tp: &Type,
-        //env: &Environment,
-        let mut lex = create_test_lexicon();
-        let applicative = true;
-        let vars = &[Variable(0), Variable(1)];
-        let return_tp = tp!(LIST);
-        let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::new(true);
-        env.invent_variable(&mut ctx);
-        env.invent_variable(&mut ctx);
-        ctx.extend(0, tp!(INT));
-        ctx.extend(1, tp!(LIST));
-        let op =
-            TRS::new_operator(&mut lex, applicative, vars, &return_tp, &env, &mut ctx).unwrap();
-        let context = Context::from(SituatedAtom::new(Atom::from(op), lex.signature()));
-        let mut map = HashMap::new();
-        let mut env = Environment::from_vars(&context.variables(), &mut ctx);
-        let tp = lex
-            .infer_context(&context, &mut map, &mut env, &mut ctx)
-            .unwrap();
-        assert_eq!(11, op.id());
-        assert_eq!(0, op.arity(lex.signature()));
-        assert_eq!("INT → LIST → LIST", tp.to_string());
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let applicative = true;
+            let vars = &[Variable(0), Variable(1)];
+            let list = ctx.intern_name("list");
+            let int = ctx.intern_name("int");
+            let t_list = ctx.intern_tcon(list, &[]);
+            let t_int = ctx.intern_tcon(int, &[]);
+            let mut env = Env::new(true, &lex, Some(lex.lex.src));
+            let dummy = env.src.fresh();
+            env.new_variable(); // Add v0_.
+            env.new_variable(); // Add v1_.
+            env.sub.add(TVar(dummy + 1), t_int);
+            env.sub.add(TVar(dummy + 2), t_list);
+            let op = TRS::new_operator(&mut lex, applicative, vars, t_list, &env).expect("op");
+            let context = Context::from(SituatedAtom::new(Atom::from(op), lex.signature()));
+            let tp = lex
+                .infer_context(&context)
+                .map(|mut env| env.tps[0].apply(&env.sub))
+                .expect("tp");
+            assert_eq!(11, op.id());
+            assert_eq!(0, op.arity(lex.signature()));
+            assert_eq!("int → list → list", tp.to_string());
+        })
     }
 
     #[test]
     fn new_rule_test() {
-        let mut lex = create_test_lexicon();
-        let op = lex.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(INT), tp!(INT)]]);
-        let lhs_arg = parse_term("1", &mut lex).unwrap();
-        let rhs = parse_term("2", &mut lex).unwrap();
-        let var = Variable(0);
-        let vars = vec![var];
-        let rule = TRS::new_rule(&lex, op, &lhs_arg, &rhs, var, &vars).unwrap();
-        let sig = &lex.0.signature;
-        assert_eq!("F 1 = 2", rule.pretty(sig));
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let int = ctx.intern_name("int");
+            let t_int = ctx.intern_tcon(int, &[]);
+            let tp = ctx.arrow(t_int, t_int);
+            let op = lex.invent_operator(Some("F".to_string()), 0, tp);
+            let lhs_arg = parse_term("1", &mut lex).unwrap();
+            let rhs = parse_term("2", &mut lex).unwrap();
+            let var = Variable(0);
+            let vars = vec![var];
+            let rule = TRS::new_rule(&lex, op, &lhs_arg, &rhs, var, &vars).expect("rule");
+            assert_eq!("F 1 = 2", rule.pretty(lex.signature()));
+        })
     }
 
     #[test]
     fn generalize_clauses_test() {
-        let mut lex = create_test_lexicon();
-        let mut trs = parse_trs(
-            &[
-                "^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1);",
-                "^ (+ x_ 2) 2 = + (^ x_ 2) (+ (* 4 x_) 4);",
-                "^ (+ x_ 3) 2 = + (^ x_ 2) (+ (* 6 x_) 9);",
-                "+ x_ 0 = x_;",
-                "+ 0 x_ = x_;",
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let mut trs = parse_trs(
+                &[
+                    "^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1);",
+                    "^ (+ x_ 2) 2 = + (^ x_ 2) (+ (* 4 x_) 4);",
+                    "^ (+ x_ 3) 2 = + (^ x_ 2) (+ (* 6 x_) 9);",
+                    "+ x_ 0 = x_;",
+                    "+ 0 x_ = x_;",
+                ]
+                .join(" "),
+                &mut lex,
+                true,
+                &[],
+            )
+            .expect("parsed trs");
+            let (lhs_context, clauses) = TRS::find_lhs_context(&trs.utrs.rules).unwrap();
+            let (rhs_context, clauses) = TRS::find_rhs_context(&clauses).unwrap();
+            let rules = trs
+                .generalize_clauses(&lhs_context, &rhs_context, &clauses)
+                .unwrap();
+            let sig = trs.lex.signature();
+            let rule_string = rules.iter().map(|r| r.pretty(sig)).join("\n");
+            let expected = [
+                "op11 1 = 2",
+                "op11 2 = 4",
+                "op11 3 = 6",
+                "op12 1 = 1",
+                "op12 2 = 4",
+                "op12 3 = 9",
+                "^ (+ v0_ v1_) 2 = + (^ v0_ 2) (+ (* (op11 v1_) v0_) (op12 v1_))",
             ]
-            .join(" "),
-            &mut lex,
-            true,
-            &[],
-        )
-        .expect("parsed trs");
-        let (lhs_context, clauses) = TRS::find_lhs_context(&trs.utrs.rules).unwrap();
-        let (rhs_context, clauses) = TRS::find_rhs_context(&clauses).unwrap();
-        let rules = trs
-            .generalize_clauses(&lhs_context, &rhs_context, &clauses)
-            .unwrap();
-        let sig = &trs.lex.0.signature;
-        let rule_string = rules.iter().map(|r| r.pretty(sig)).join("\n");
-        let expected = [
-            "op11 1 = 2",
-            "op11 2 = 4",
-            "op11 3 = 6",
-            "op12 1 = 1",
-            "op12 2 = 4",
-            "op12 3 = 9",
-            "^ (+ v0_ v1_) 2 = + (^ v0_ 2) (+ (* (op11 v1_) v0_) (op12 v1_))",
-        ]
-        .join("\n");
-        assert_eq!(expected, rule_string);
+            .join("\n");
+            assert_eq!(expected, rule_string);
+        })
     }
 
     #[test]
     fn generalize_test_1() {
-        let mut lex = create_test_lexicon();
-        let trs = parse_trs(
-            &[
-                "^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1);",
-                "^ (+ x_ 2) 2 = + (^ x_ 2) (+ (* 4 x_) 4);",
-                "^ (+ x_ 3) 2 = + (^ x_ 2) (+ (* 6 x_) 9);",
-                "+ x_ 0 = x_;",
-                "+ 0 x_ = x_;",
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let trs = parse_trs(
+                &[
+                    "^ (+ x_ 1) 2 = + (^ x_ 2) (+ (* 2 x_) 1);",
+                    "^ (+ x_ 2) 2 = + (^ x_ 2) (+ (* 4 x_) 4);",
+                    "^ (+ x_ 3) 2 = + (^ x_ 2) (+ (* 6 x_) 9);",
+                    "+ x_ 0 = x_;",
+                    "+ 0 x_ = x_;",
+                ]
+                .join(" "),
+                &mut lex,
+                true,
+                &[],
+            )
+            .expect("parsed trs");
+            let trs = trs.generalize().unwrap();
+            let sig = trs.lex.signature();
+            let trs_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
+            let expected = [
+                "+ v0_ 0 = v0_",
+                "+ 0 v0_ = v0_",
+                "op11 1 = 2",
+                "op11 2 = 4",
+                "op11 3 = 6",
+                "op12 1 = 1",
+                "op12 2 = 4",
+                "op12 3 = 9",
+                "^ (+ v0_ v1_) 2 = + (^ v0_ 2) (+ (* (op11 v1_) v0_) (op12 v1_))",
             ]
-            .join(" "),
-            &mut lex,
-            true,
-            &[],
-        )
-        .expect("parsed trs");
-        let trs = trs.generalize().unwrap();
-        let sig = &trs.lex.0.signature;
-        let trs_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
-        let expected = [
-            "+ v0_ 0 = v0_",
-            "+ 0 v0_ = v0_",
-            "op11 1 = 2",
-            "op11 2 = 4",
-            "op11 3 = 6",
-            "op12 1 = 1",
-            "op12 2 = 4",
-            "op12 3 = 9",
-            "^ (+ v0_ v1_) 2 = + (^ v0_ 2) (+ (* (op11 v1_) v0_) (op12 v1_))",
-        ]
-        .join("\n");
+            .join("\n");
 
-        assert_eq!(expected, trs_string);
+            assert_eq!(expected, trs_string);
+        })
     }
 
     #[test]
     fn generalize_test_2() {
-        let mut lex = create_list_test_lexicon();
-        let trs = parse_trs(
-            &[
-                "4 = 5;",
-                "C (CONS (DIGIT 3) NIL) = (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) NIL));",
-                "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 1) (CONS (DIGIT 3) NIL))) = (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) NIL));",
-            ].join(""),
-            &mut lex,
-            true,
-            &[],
-        )
-            .expect("parsed trs");
-        let trs = trs.generalize().unwrap();
-        let sig = &trs.lex.0.signature;
-        let trs_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
+        with_ctx(1024, |ctx| {
+            let mut lex = create_list_test_lexicon(&ctx);
+            let trs = parse_trs(
+                &[
+                    "4 = 5;",
+                    "C (CONS (DIGIT 3) NIL) = (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) NIL));",
+                    "C (CONS (DIGIT 9) (CONS (DECC (DIGIT 1) 1) (CONS (DIGIT 3) NIL))) = (CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) NIL));",
+                ].join(""),
+                &mut lex,
+                true,
+                &[],
+            )
+                .expect("parsed trs");
+            let trs = trs.generalize().unwrap();
+            let sig = trs.lex.signature();
+            let trs_string = trs.utrs.rules.iter().map(|r| r.pretty(sig)).join("\n");
 
-        assert_eq!(
-            "4 = 5\nC v0_ = CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) [])",
-            trs_string
-        );
+            assert_eq!(
+                "4 = 5\nC v0_ = CONS (DECC (DIGIT 1) 6) (CONS (DECC (DIGIT 2) 5) [])",
+                trs_string
+            );
+        })
     }
 }

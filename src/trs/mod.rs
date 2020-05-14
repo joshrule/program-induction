@@ -44,23 +44,20 @@ pub use self::parser::{
     parse_context, parse_lexicon, parse_rule, parse_rulecontext, parse_rulecontexts, parse_rules,
     parse_term, parse_trs,
 };
-// pub use self::rewrite::{Composition, Recursion, Types, Variablization, TRS};
-pub use self::rewrite::TRS;
-use Task;
-
-use polytype;
-use std::{collections::HashMap, fmt};
+pub use self::rewrite::{Composition, Recursion, Variablization, TRS};
+use polytype::atype::UnificationError;
+use std::fmt;
 use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError, Term};
 
 #[derive(Debug, Clone)]
 /// The error type for type inference.
 pub enum TypeError<'ctx> {
-    Unification(polytype::atype::UnificationError<'ctx>),
+    Unification(UnificationError<'ctx>),
     NotFound,
     Malformed,
 }
-impl<'ctx> From<polytype::atype::UnificationError<'ctx>> for TypeError<'ctx> {
-    fn from(e: polytype::atype::UnificationError<'ctx>) -> Self {
+impl<'ctx> From<UnificationError<'ctx>> for TypeError<'ctx> {
+    fn from(e: UnificationError<'ctx>) -> Self {
         TypeError::Unification(e)
     }
 }
@@ -99,8 +96,8 @@ impl<'ctx> From<TRSError> for SampleError<'ctx> {
         SampleError::TRSError(e)
     }
 }
-impl<'ctx> From<polytype::atype::UnificationError<'ctx>> for SampleError<'ctx> {
-    fn from(e: polytype::atype::UnificationError<'ctx>) -> Self {
+impl<'ctx> From<UnificationError<'ctx>> for SampleError<'ctx> {
+    fn from(e: UnificationError<'ctx>) -> Self {
         SampleError::TypeError(TypeError::Unification(e))
     }
 }

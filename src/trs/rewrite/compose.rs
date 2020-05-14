@@ -1,23 +1,13 @@
 use itertools::Itertools;
-use polytype::Type;
+use polytype::atype::{Ty, Type};
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term, Variable};
-use trs::{as_result, rewrite::FactoredSolution, Environment, Lexicon, SampleError, TRS};
+use trs::{rewrite::FactoredSolution, Lexicon, SampleError, TRS};
 
-pub type Composition = (Term, Place, Place, Type);
+pub type Composition<'ctx> = (Term, Place, Place, Ty<'ctx>);
 
-impl<'a, 'b> TRS<'a, 'b> {
-    pub fn compose(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
-        let (_, clauses): (Vec<usize>, Vec<Rule>) = self.clauses().into_iter().unzip();
-        let trss = self
-            .find_all_compositions()
-            .into_iter()
-            .filter_map(|composition| self.try_composition(&composition, &clauses).ok())
-            .filter_map(|solution| self.adopt_composition(solution))
-            .collect_vec();
-        as_result(trss)
-    }
-    pub fn find_all_compositions(&self) -> Vec<Composition> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
+    pub fn find_all_compositions(&self) -> Vec<Composition<'ctx>> {
         self.clauses()
             .into_iter()
             .map(|(_, c)| c)
@@ -25,63 +15,67 @@ impl<'a, 'b> TRS<'a, 'b> {
             .unique()
             .collect_vec()
     }
-    pub fn compose_by(&self, composition: &Composition) -> Option<TRS<'a, 'b>> {
+    fn find_compositions(&self, rule: &Rule) -> Vec<Composition<'ctx>> {
+        // Typecheck the rule.
+        if let Ok(mut env) = self.lex.infer_rule(rule) {
+            let map: HashMap<_, _> = rule
+                .subterms()
+                .into_iter()
+                .zip(&env.tps)
+                .map(|((_, p), tp)| (p, *tp))
+                .collect();
+            // Find the symbols in the rule that might decompose.
+            let ss = env.snapshot();
+            let fs = TRS::collect_recursive_fns(&map, rule, &mut env.sub);
+            env.rollback(ss);
+            // For each decomposable symbol:
+            let (_, rhss) = TRS::partition_subrules(rule);
+            let mut transforms = vec![];
+            for (f, place, tp) in fs {
+                // Find the argument to the symbol.
+                let mut lhs_place = place.to_vec();
+                if let Some(position) = lhs_place.last_mut() {
+                    *position = 1;
+                }
+                // If the argument has the appropriate type:
+                let outer_snapshot = env.snapshot();
+                if Type::unify_with_sub(&[(&tp, &map[&lhs_place])], &mut env.sub).is_ok() {
+                    // For each subterm in the RHS:
+                    for rhs_place in &rhss {
+                        // If the argument has the appropriate type:
+                        let inner_snapshot = env.snapshot();
+                        if rhs_place.len() > 1
+                            && Type::unify_with_sub(&[(&tp, &map[rhs_place])], &mut env.sub).is_ok()
+                        {
+                            // that item can be decomposed.
+                            let tp = tp.apply(&env.sub);
+                            transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone(), tp));
+                        }
+                        env.rollback(inner_snapshot);
+                    }
+                }
+                env.rollback(outer_snapshot);
+            }
+            transforms
+        } else {
+            vec![]
+        }
+    }
+    pub fn compose_by(&self, composition: &Composition<'ctx>) -> Option<Self> {
         let clauses = self.clauses().into_iter().map(|(_, c)| c).collect_vec();
         self.try_composition(composition, &clauses)
             .ok()
             .and_then(|solution| self.adopt_composition(solution))
     }
-    fn find_compositions(&self, rule: &Rule) -> Vec<Composition> {
-        // Typecheck the rule.
-        let mut ctx = self.lex.0.ctx.clone();
-        let mut map = HashMap::new();
-        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
-        if self
-            .lex
-            .infer_rule(rule, &mut map, &mut env, &mut ctx)
-            .is_err()
-        {
-            return vec![];
-        }
-        // Find the symbols in the rule that might decompose.
-        let fs = TRS::collect_recursive_fns(&map, &self.lex, rule);
-        // For each decomposable symbol:
-        let (_, rhss) = TRS::partition_subrules(rule);
-        let mut transforms = vec![];
-        for (f, place, tp) in fs {
-            // Find the argument to the symbol.
-            let mut lhs_place = place.to_vec();
-            if let Some(position) = lhs_place.last_mut() {
-                *position = 1;
-            }
-            // If the argument has the appropriate type:
-            let outer_snapshot = ctx.len();
-            if ctx.unify(&tp, &map[&lhs_place]).is_ok() {
-                // For each subterm in the RHS:
-                for rhs_place in &rhss {
-                    // If the argument has the appropriate type:
-                    let inner_snapshot = ctx.len();
-                    if rhs_place.len() > 1 && ctx.unify(&tp, &map[rhs_place]).is_ok() {
-                        // that item can be decomposed.
-                        let tp = tp.apply(&ctx);
-                        transforms.push((f.clone(), lhs_place.clone(), rhs_place.clone(), tp));
-                    }
-                    ctx.rollback(inner_snapshot);
-                }
-            }
-            ctx.rollback(outer_snapshot);
-        }
-        transforms
-    }
     fn try_composition(
         &self,
-        t: &Composition,
+        t: &Composition<'ctx>,
         rules: &[Rule],
-    ) -> Result<FactoredSolution<'b>, SampleError> {
+    ) -> Result<FactoredSolution<'ctx, 'b>, SampleError<'ctx>> {
         let mut lex = self.lex.clone();
         // Identify atoms, including two new operators F and G.
-        let op = lex.has_op(Some("."), 2)?;
-        let tp = Type::arrow(t.3.clone(), t.3.clone());
+        let op = lex.has_operator(Some("."), 2)?;
+        let tp = lex.lex.ctx.arrow(t.3, t.3);
         let mut headmost = t.0.clone();
         headmost.canonicalize(&mut HashMap::new());
         let f = lex.invent_operator(None, 0, &tp);
@@ -114,7 +108,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         y: Term,
         op: Operator,
         lex: &Lexicon,
-    ) -> Result<Rule, SampleError> {
+    ) -> Result<Rule, SampleError<'ctx>> {
         let lhs = Term::apply(
             op,
             vec![
@@ -134,7 +128,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         v: Variable,
         op: Operator,
         lex: &Lexicon,
-    ) -> Result<Rule, SampleError> {
+    ) -> Result<Rule, SampleError<'ctx>> {
         let lhs = Term::apply(op, vec![t, Term::Variable(v)], lex.signature())
             .ok_or(SampleError::Subterm)?;
         let rhs = Term::apply(
@@ -158,8 +152,8 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
     fn adopt_composition(
         &self,
-        (lex, old_rules, master, f_sub, g_sub): FactoredSolution<'b>,
-    ) -> Option<TRS<'a, 'b>> {
+        (lex, old_rules, master, f_sub, g_sub): FactoredSolution<'ctx, 'b>,
+    ) -> Option<Self> {
         // Combine rules
         let mut new_rules = vec![];
         for rule in f_sub.into_iter().chain(g_sub).chain(master) {
@@ -184,13 +178,13 @@ impl<'a, 'b> TRS<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    use polytype::Context as TypeContext;
+    use polytype::atype::{with_ctx, TypeContext};
     use trs::{
         parser::{parse_lexicon, parse_rule, parse_trs},
         Lexicon, TRS,
     };
 
-    fn create_test_lexicon<'b>() -> Lexicon<'b> {
+    fn create_test_lexicon<'ctx, 'b>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {
         parse_lexicon(
             &[
                 "C/0: list -> list;",
@@ -205,47 +199,54 @@ mod tests {
                 "9/0: int;",
             ]
             .join(" "),
-            TypeContext::default(),
+            &ctx,
         )
         .expect("parsed lexicon")
     }
 
     #[test]
-    fn find_compositions_test() {
-        let mut lex = create_test_lexicon();
-        let trs = TRS::new_unchecked(&lex, true, &[], vec![]);
-        let rule = parse_rule(
-            "C (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) (CONS (DECC (DIGIT 5) 4) NIL))))))))) = (CONS (DIGIT 9) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DECC (DIGIT 1) 0 ) (CONS (DIGIT 9) (CONS (DECC (DIGIT 2) 0) (CONS (DIGIT 3) (CONS (DECC (DIGIT 7) 7) (CONS (DIGIT 0) NIL)))))))))",
-            &mut lex,
-        )
-            .expect("parsed rule");
-        let compositions = trs.find_compositions(&rule);
+    fn find_all_compositions_test() {
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let trs = parse_trs(
+                "C (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) NIL)))) = (CONS (DIGIT 0) (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) (CONS (DIGIT 5) NIL))))));",
+                &mut lex,
+                true,
+                &[],
+            ).expect("trs");
+            let compositions = trs.find_all_compositions();
 
-        let sig = lex.signature();
-        for (i, (t, p1, p2, tp)) in compositions.iter().enumerate() {
-            println!("{}. {} {:?} {:?} {}", i, t.pretty(&sig), p1, p2, tp);
-        }
+            let sig = lex.signature();
+            for (i, (t, p1, p2, tp)) in compositions.iter().enumerate() {
+                println!("{}. {} {:?} {:?} {}", i, t.pretty(&sig), p1, p2, tp);
+            }
 
-        assert_eq!(9, compositions.len());
+            assert_eq!(6, compositions.len());
+        })
     }
     #[test]
-    fn compose_test() {
-        let mut lex = create_test_lexicon();
-        let trs = parse_trs(
-            "C (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) NIL)))) = (CONS (DIGIT 0) (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) (CONS (DIGIT 5) NIL))))));",
-            &mut lex,
-            true,
-            &[],
-        )
-            .expect("parsed rule");
+    fn compose_by_test() {
+        with_ctx(1024, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let trs = parse_trs(
+                "C (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) NIL)))) = (CONS (DIGIT 0) (CONS (DIGIT 1) (CONS (DIGIT 2) (CONS (DIGIT 3) (CONS (DIGIT 4) (CONS (DIGIT 5) NIL))))));",
+                &mut lex,
+                true,
+                &[],
+            )
+                .expect("parsed rule");
 
-        let result = trs.compose();
-        assert!(result.is_ok());
+            let trss: Vec<_> = trs
+                .find_all_compositions()
+                .into_iter()
+                .map(|c| trs.compose_by(&c))
+                .collect::<Option<Vec<_>>>()
+                .expect("trss");
 
-        let trss = result.unwrap();
-        for (i, trs) in trss.iter().enumerate() {
-            println!("{}.\n{}\n", i, trs);
-        }
-        assert_eq!(6, trss.len());
+            for (i, trs) in trss.iter().enumerate() {
+                println!("{}.\n{}\n", i, trs);
+            }
+            assert_eq!(6, trss.len());
+        })
     }
 }

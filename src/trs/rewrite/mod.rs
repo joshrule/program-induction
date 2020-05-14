@@ -5,12 +5,10 @@
 //! - https://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system
 //! - (TAPL; Pierce, 2002, ch. 22)
 
-// TODO: reinstate
-// mod compose;
-// mod generalize;
-// mod recurse;
 mod combine;
+mod compose;
 mod delete_rule;
+mod generalize;
 mod lgg;
 mod local_difference;
 mod log_likelihood;
@@ -18,14 +16,15 @@ mod log_posterior;
 mod log_prior;
 mod memorize;
 mod move_rule;
+mod recurse;
 mod regenerate_rule;
 mod sample_rule;
 mod swap_lhs_and_rhs;
 mod variablize;
 
-//pub use self::compose::Composition;
-//pub use self::recurse::Recursion;
-//pub use self::variablize::{Types, Variablization};
+pub use self::compose::Composition;
+pub use self::recurse::Recursion;
+pub use self::variablize::Variablization;
 use itertools::Itertools;
 use rand::{seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};

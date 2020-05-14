@@ -1,7 +1,6 @@
 use polytype::atype::Variable as TVar;
 use rand::Rng;
-use std::collections::HashMap;
-use trs::{as_result, Env, GenerationLimit, SampleError, SampleParams, TRS};
+use trs::{as_result, GenerationLimit, SampleError, SampleParams, TRS};
 
 impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Sample a rule and add it to the rewrite system.

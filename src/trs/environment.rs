@@ -444,6 +444,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                     .var_tp(v)?
                     .0
                     .instantiate(&self.lex.lex.ctx, &mut self.src);
+                self.tps.push(tp);
                 Ok(tp)
             }
             Context::Application { op, .. } if self.lex.lex.ops[op.id()].1 == 0 => {
@@ -452,6 +453,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                     .0
                     .instantiate(&self.lex.lex.ctx, &mut self.src)
                     .apply(&self.sub);
+                self.tps.push(tp);
                 Ok(tp)
             }
             Context::Application { op, ref args } => {

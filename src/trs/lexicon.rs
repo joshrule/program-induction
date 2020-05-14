@@ -112,7 +112,11 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
         self.lex.src
     }
     /// Return the specified `Operator` if possible.
-    pub fn has_operator(&self, name: Option<&str>, arity: u8) -> Result<Operator, SampleError> {
+    pub fn has_operator(
+        &self,
+        name: Option<&str>,
+        arity: u8,
+    ) -> Result<Operator, SampleError<'ctx>> {
         self.lex
             .sig
             .has_op(arity, name.map(String::from))
@@ -198,7 +202,10 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///
     /// [`TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`Atom`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Atom.html
-    pub fn infer_atom(&self, atom: &Atom) -> Result<(Schema<'ctx>, Option<usize>), TypeError> {
+    pub fn infer_atom(
+        &self,
+        atom: &Atom,
+    ) -> Result<(Schema<'ctx>, Option<usize>), TypeError<'ctx>> {
         let env = Env::from_vars(&atom.variables(), false, self, Some(self.lex.src));
         env.infer_atom(atom)
     }
@@ -226,7 +233,7 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///
     /// [`TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`Term`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/enum.Term.html
-    pub fn infer_term(&self, term: &Term) -> Result<Env<'ctx, 'lex>, TypeError> {
+    pub fn infer_term(&self, term: &Term) -> Result<Env<'ctx, 'lex>, TypeError<'ctx>> {
         let mut env = Env::from_vars(&term.variables(), false, self, Some(self.lex.src));
         env.infer_term(term)?;
         Ok(env)

@@ -109,6 +109,7 @@ pub fn block_generative_logpdf(a: f64, p: f64, n_items: usize, n_blocks: usize) 
     }
 }
 
+#[allow(dead_code)]
 pub fn weighted_permutation<T: Clone>(xs: &[T], ws: &[f64], n: Option<usize>) -> Vec<T> {
     let mut ws = ws.to_vec();
     let mut idxs: Vec<_> = (0..(ws.len())).collect();
@@ -124,6 +125,7 @@ pub fn weighted_permutation<T: Clone>(xs: &[T], ws: &[f64], n: Option<usize>) ->
     permutation
 }
 
+#[allow(dead_code)]
 /// Samples an item from `xs` given the weights `ws`.
 pub fn weighted_sample<'a, T>(xs: &'a [T], ws: &[f64]) -> &'a T {
     assert_eq!(xs.len(), ws.len(), "weighted sample given invalid inputs");
