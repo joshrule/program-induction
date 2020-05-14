@@ -2,7 +2,7 @@ use itertools::Itertools;
 use polytype::Type;
 use std::collections::HashMap;
 use term_rewriting::{Operator, Place, Rule, Term, Variable};
-use trs::{as_result, rewrite::FactoredSolution, Environment, SampleError, TRS};
+use trs::{as_result, rewrite::FactoredSolution, Environment, Lexicon, SampleError, TRS};
 
 pub type Composition = (Term, Place, Place, Type);
 
@@ -86,34 +86,42 @@ impl<'a, 'b> TRS<'a, 'b> {
         headmost.canonicalize(&mut HashMap::new());
         let f = lex.invent_operator(None, 0, &tp);
         let g = lex.invent_operator(None, 0, &tp);
-        let x = Variable {
-            id: headmost.variables().len(),
-        };
+        let x = Variable(headmost.variables().len());
         // Add the rule T x = F (G x).
-        let master = vec![TRS::make_txfgx_rule(headmost, f, g, x, op)?];
+        let master = vec![TRS::make_txfgx_rule(headmost, f, g, x, op, &lex)?];
         // Process the existing rules into subproblems.
         let mut old_rules = vec![];
         let mut f_subproblem = vec![];
         let mut g_subproblem = vec![];
         for rule in rules {
-            if Term::pmatch(vec![(&master[0].lhs, &rule.lhs)]).is_some() {
+            if Term::pmatch(&[(&master[0].lhs, &rule.lhs)]).is_some() {
                 let t_1 = rule.at(&t.1).ok_or(SampleError::Subterm)?.clone();
                 let t_2 = rule.at(&t.2).ok_or(SampleError::Subterm)?.clone();
                 let t_3 = rule.rhs().ok_or(SampleError::Subterm)?;
                 // Add the rule G x = y', where y' is a subterm of y.
-                g_subproblem.push(TRS::make_fxy_rule(g, t_1, t_2.clone(), op)?);
+                g_subproblem.push(TRS::make_fxy_rule(g, t_1, t_2.clone(), op, &lex)?);
                 // Add the rule F y' = y.
-                f_subproblem.push(TRS::make_fxy_rule(f, t_2, t_3, op)?);
+                f_subproblem.push(TRS::make_fxy_rule(f, t_2, t_3, op, &lex)?);
                 old_rules.push(rule.clone());
             }
         }
         // Ok((master, new_rules, lex))
         Ok((lex, old_rules, master, f_subproblem, g_subproblem))
     }
-    fn make_fxy_rule(f: Operator, x: Term, y: Term, op: Operator) -> Result<Rule, SampleError> {
+    fn make_fxy_rule(
+        f: Operator,
+        x: Term,
+        y: Term,
+        op: Operator,
+        lex: &Lexicon,
+    ) -> Result<Rule, SampleError> {
         let lhs = Term::apply(
             op,
-            vec![Term::apply(f, vec![]).ok_or(SampleError::Subterm)?, x],
+            vec![
+                Term::apply(f, vec![], lex.signature()).ok_or(SampleError::Subterm)?,
+                x,
+            ],
+            lex.signature(),
         )
         .ok_or(SampleError::Subterm)?;
         let rhs = y;
@@ -125,21 +133,25 @@ impl<'a, 'b> TRS<'a, 'b> {
         g: Operator,
         v: Variable,
         op: Operator,
+        lex: &Lexicon,
     ) -> Result<Rule, SampleError> {
-        let lhs = Term::apply(op, vec![t, Term::Variable(v)]).ok_or(SampleError::Subterm)?;
+        let lhs = Term::apply(op, vec![t, Term::Variable(v)], lex.signature())
+            .ok_or(SampleError::Subterm)?;
         let rhs = Term::apply(
             op,
             vec![
-                Term::apply(f, vec![]).ok_or(SampleError::Subterm)?,
+                Term::apply(f, vec![], lex.signature()).ok_or(SampleError::Subterm)?,
                 Term::apply(
                     op,
                     vec![
-                        Term::apply(g, vec![]).ok_or(SampleError::Subterm)?,
+                        Term::apply(g, vec![], lex.signature()).ok_or(SampleError::Subterm)?,
                         Term::Variable(v),
                     ],
+                    lex.signature(),
                 )
                 .ok_or(SampleError::Subterm)?,
             ],
+            lex.signature(),
         )
         .ok_or(SampleError::Subterm)?;
         Rule::new(lhs, vec![rhs]).ok_or(SampleError::Subterm)

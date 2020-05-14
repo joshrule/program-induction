@@ -15,27 +15,37 @@
 //! # extern crate programinduction;
 //! # extern crate term_rewriting;
 //! # use programinduction::trs::{parse_lexicon, parse_trs};
-//! # use polytype::Context as TypeContext;
-//! let mut lex = parse_lexicon(
-//!     "PLUS/2: int -> int -> int; SUCC/1: int-> int; ZERO/0: int;",
-//!     TypeContext::default(),
-//! )
-//!     .expect("parsed lexicon");
+//! # use polytype::atype::with_ctx;
+//! with_ctx(32, |ctx| {
+//!     let mut lex = parse_lexicon(
+//!         "PLUS/2: int -> int -> int; SUCC/1: int-> int; ZERO/0: int;",
+//!         &ctx,
+//!     ).expect("lex");
 //!
-//! let trs = parse_trs("PLUS(v0_ ZERO) = v0_; PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_));", &mut lex, true, &[]);
+//!     let trs = parse_trs(
+//!         "PLUS(v0_ ZERO) = v0_; PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_));",
+//!         &mut lex, true, &[]
+//!     ).expect("trs");
+//!
+//!     assert_eq!(trs.len(), 2);
+//! })
 //! ```
 
-pub mod gp;
+// TODO: uncomment me
+// pub mod gp;
+// pub mod mcts;
+mod environment;
 mod lexicon;
-pub mod mcts;
 pub mod parser;
 mod rewrite;
-pub use self::lexicon::{Environment, GenerationLimit, Lexicon};
+pub use self::environment::{AtomEnumeration, Env, SampleParams};
+pub use self::lexicon::{GenerationLimit, Lexicon};
 pub use self::parser::{
     parse_context, parse_lexicon, parse_rule, parse_rulecontext, parse_rulecontexts, parse_rules,
     parse_term, parse_trs,
 };
-pub use self::rewrite::{Composition, Recursion, Types, Variablization, TRS};
+// pub use self::rewrite::{Composition, Recursion, Types, Variablization, TRS};
+pub use self::rewrite::TRS;
 use Task;
 
 use polytype;
@@ -44,17 +54,17 @@ use term_rewriting::{PStringDist, Rule, Strategy as RewriteStrategy, TRSError, T
 
 #[derive(Debug, Clone)]
 /// The error type for type inference.
-pub enum TypeError {
-    Unification(polytype::UnificationError),
+pub enum TypeError<'ctx> {
+    Unification(polytype::atype::UnificationError<'ctx>),
     NotFound,
     Malformed,
 }
-impl From<polytype::UnificationError> for TypeError {
-    fn from(e: polytype::UnificationError) -> TypeError {
+impl<'ctx> From<polytype::atype::UnificationError<'ctx>> for TypeError<'ctx> {
+    fn from(e: polytype::atype::UnificationError<'ctx>) -> Self {
         TypeError::Unification(e)
     }
 }
-impl fmt::Display for TypeError {
+impl<'ctx> fmt::Display for TypeError<'ctx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             TypeError::Unification(ref e) => write!(f, "unification error: {}", e),
@@ -63,7 +73,7 @@ impl fmt::Display for TypeError {
         }
     }
 }
-impl ::std::error::Error for TypeError {
+impl<'ctx> ::std::error::Error for TypeError<'ctx> {
     fn description(&self) -> &'static str {
         "type error"
     }
@@ -71,30 +81,30 @@ impl ::std::error::Error for TypeError {
 
 #[derive(Debug, Clone)]
 /// The error type for sampling operations.
-pub enum SampleError {
-    TypeError(TypeError),
+pub enum SampleError<'ctx> {
+    TypeError(TypeError<'ctx>),
     TRSError(TRSError),
     SizeExceeded,
     OptionsExhausted,
     Subterm,
     Trivial,
 }
-impl From<TypeError> for SampleError {
-    fn from(e: TypeError) -> SampleError {
+impl<'ctx> From<TypeError<'ctx>> for SampleError<'ctx> {
+    fn from(e: TypeError<'ctx>) -> Self {
         SampleError::TypeError(e)
     }
 }
-impl From<TRSError> for SampleError {
-    fn from(e: TRSError) -> SampleError {
+impl<'ctx> From<TRSError> for SampleError<'ctx> {
+    fn from(e: TRSError) -> Self {
         SampleError::TRSError(e)
     }
 }
-impl From<polytype::UnificationError> for SampleError {
-    fn from(e: polytype::UnificationError) -> SampleError {
+impl<'ctx> From<polytype::atype::UnificationError<'ctx>> for SampleError<'ctx> {
+    fn from(e: polytype::atype::UnificationError<'ctx>) -> Self {
         SampleError::TypeError(TypeError::Unification(e))
     }
 }
-impl fmt::Display for SampleError {
+impl<'ctx> fmt::Display for SampleError<'ctx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             SampleError::TypeError(ref e) => write!(f, "type error: {}", e),
@@ -106,7 +116,7 @@ impl fmt::Display for SampleError {
         }
     }
 }
-impl ::std::error::Error for SampleError {
+impl<'ctx> std::error::Error for SampleError<'ctx> {
     fn description(&self) -> &'static str {
         "sample error"
     }
@@ -292,35 +302,36 @@ pub enum SingleLikelihood {
     },
 }
 
-/// Construct a [`Task`] evaluating [`TRS`]s (constructed from a [`Lexicon`])
-/// using rewriting of inputs to outputs.
-///
-/// Each [`term_rewriting::Rule`] in `data` must have a single RHS term. The
-/// resulting [`Task`] checks whether each datum's LHS gets rewritten to its RHS
-/// under a [`TRS`] within the constraints specified by the [`ModelParams`].
-///
-/// [`Lexicon`]: struct.Lexicon.html
-/// [`ModelParams`]: struct.ModelParams.html
-/// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
-/// [`Task`]: ../struct.Task.html
-/// [`TRS`]: struct.TRS.html
-pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
-    data: &'a [Datum],
-    params: ModelParams,
-    lex: &Lexicon,
-    t: f64,
-    observation: O,
-) -> Result<Task<'a, Lexicon<'c>, TRS<'b, 'c>, O>, TypeError> {
-    Ok(Task {
-        oracle: Box::new(move |_s: &Lexicon, h: &TRS| {
-            -h.log_posterior(data, &mut HashMap::new(), t, params)
-        }),
-        tp: lex.infer_data(data, &mut lex.0.ctx.clone())?,
-        observation,
-    })
-}
+// TODO: FIXME - I'm broken because TRSs are no longer thread safe.
+///// Construct a [`Task`] evaluating [`TRS`]s (constructed from a [`Lexicon`])
+///// using rewriting of inputs to outputs.
+/////
+///// Each [`term_rewriting::Rule`] in `data` must have a single RHS term. The
+///// resulting [`Task`] checks whether each datum's LHS gets rewritten to its RHS
+///// under a [`TRS`] within the constraints specified by the [`ModelParams`].
+/////
+///// [`Lexicon`]: struct.Lexicon.html
+///// [`ModelParams`]: struct.ModelParams.html
+///// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
+///// [`Task`]: ../struct.Task.html
+///// [`TRS`]: struct.TRS.html
+//pub fn task_by_rewrite<'a, 'b, 'c, O: Sync>(
+//    data: &'a [Datum],
+//    params: ModelParams,
+//    lex: &Lexicon<'b, 'c>,
+//    t: f64,
+//    observation: O,
+//) -> Result<Task<'a, Lexicon<'b, 'c>, TRS<'b, 'c>, O>, TypeError<'b>> {
+//    Ok(Task {
+//        oracle: Box::new(move |_s: &Lexicon, h: &TRS| {
+//            -h.log_posterior(data, &mut HashMap::new(), t, params)
+//        }),
+//        tp: lex.infer_data(data)?,
+//        observation,
+//    })
+//}
 
-fn as_result<T>(xs: Vec<T>) -> Result<Vec<T>, SampleError> {
+fn as_result<'ctx, T>(xs: Vec<T>) -> Result<Vec<T>, SampleError<'ctx>> {
     if xs.is_empty() {
         Err(SampleError::OptionsExhausted)
     } else {

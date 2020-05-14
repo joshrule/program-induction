@@ -26,6 +26,7 @@ rand = {version = "0.7", features = ["small_rng"]}
 rayon = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+smallvec = "1.4"
 term_rewriting = "0.7"
 
 [dev-dependencies]

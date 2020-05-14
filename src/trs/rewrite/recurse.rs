@@ -256,9 +256,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             .map(|(_, rules)| rules.last())
             .combinations(2)
             .all(|bs| match (&bs[0], &bs[1]) {
-                (Some(x), Some(y)) => {
-                    Term::alpha(vec![(&x.1.lhs, &y.1.lhs)]).is_none() || x.1 == y.1
-                }
+                (Some(x), Some(y)) => Term::alpha(&[(&x.1.lhs, &y.1.lhs)]).is_none() || x.1 == y.1,
                 _ => false,
             })
     }
@@ -295,7 +293,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             return Err(SampleError::Subterm);
         }
         let id = context.variables().len();
-        let new_var = Variable { id };
+        let new_var = Variable(id);
         // Swap lhs_structure for: new_var.
         let mut rec = rule.clone();
         rec.canonicalize(&mut HashMap::new());
@@ -327,7 +325,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     ) -> Result<(), SampleError> {
         TRS::collect_recursive_fns(map, lex, rule)
             .iter()
-            .find(|(term, _, _)| Term::alpha(vec![(term, f)]).is_some())
+            .find(|(term, _, _)| Term::alpha(&[(term, f)]).is_some())
             .map(|_| ())
             .ok_or(SampleError::Subterm)
     }

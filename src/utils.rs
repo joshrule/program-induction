@@ -5,7 +5,8 @@ use rand::{
 };
 use std::{cmp, f64, iter::repeat};
 
-pub fn logsumexp(lps: &[f64]) -> f64 {
+#[allow(dead_code)]
+pub(crate) fn logsumexp(lps: &[f64]) -> f64 {
     let largest = lps.iter().fold(f64::NEG_INFINITY, |acc, lp| acc.max(*lp));
     if largest == f64::NEG_INFINITY {
         f64::NEG_INFINITY
@@ -15,7 +16,8 @@ pub fn logsumexp(lps: &[f64]) -> f64 {
     }
 }
 
-pub fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64>> {
+#[allow(dead_code)]
+pub(crate) fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64>> {
     let (non_inf_min, max) = lps
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, lp| {

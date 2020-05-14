@@ -3,7 +3,7 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::Rule;
 
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Selects a rule from the TRS at random, swaps the LHS and RHS if possible and inserts the resulting rules
     /// back into the TRS imediately after the background.
     ///
@@ -13,51 +13,31 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
     /// # extern crate rand;
-    /// # extern crate term_rewriting;
     /// # use programinduction::trs::{parse_lexicon, parse_trs};
-    /// # use polytype::Context as TypeContext;
     /// # use rand::thread_rng;
-    /// let mut rng = thread_rng();
-    /// let mut lex = parse_lexicon(
-    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
-    ///     TypeContext::default(),
-    /// )
-    ///     .expect("parsed lexicon");
+    /// # use polytype::{Source, atype::{with_ctx, TypeSchema, TypeContext}};
+    /// with_ctx(10, |ctx: TypeContext<'_>| {
+    ///     let mut rng = thread_rng();
+    ///     let mut lex = parse_lexicon(
+    ///         "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///         &ctx,
+    ///     ).expect("lex");
     ///
-    /// let trs1 = parse_trs(
-    ///     "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_)) | PLUS(SUCC(x_) y_);",
-    ///     &mut lex,
-    ///     false,
-    ///     &[]
-    /// )
-    ///     .expect("parsed trs");
-    /// assert_eq!(trs1.len(), 1);
-    /// assert_eq!(trs1.to_string(), "PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_)) | PLUS(SUCC(v0_) v1_);");
+    ///     let trs = parse_trs(
+    ///         "PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_)) | PLUS(SUCC(x_) y_);",
+    ///         &mut lex, false, &[],
+    ///     ).expect("trs");
+    ///     assert_eq!(trs.len(), 1);
     ///
-    /// let trs2 = trs1.swap_lhs_and_rhs(&mut rng).unwrap();
-    /// assert_eq!(trs2.len(), 2);
-    /// assert_eq!(trs2.to_string(), "SUCC(PLUS(v0_ v1_)) = PLUS(v0_ SUCC(v1_));\nPLUS(SUCC(v0_) v1_) = PLUS(v0_ SUCC(v1_));");
+    ///     let trs = trs.swap_lhs_and_rhs(&mut rng).expect("trs");
+    ///     assert_eq!(trs.len(), 2);
+    ///     assert_eq!(trs.to_string(), "SUCC(PLUS(v0_ v1_)) = PLUS(v0_ SUCC(v1_));\nPLUS(SUCC(v0_) v1_) = PLUS(v0_ SUCC(v1_));");
+    ///
+    ///     let trs = parse_trs("PLUS(x_ y_) = SUCC(x_);", &mut lex, true, &[] ).expect("trs");
+    ///     assert!(trs.swap_lhs_and_rhs(&mut rng).is_err());
+    /// })
     /// ```
-    ///
-    /// ```
-    /// # #[macro_use] extern crate polytype;
-    /// # extern crate programinduction;
-    /// # extern crate rand;
-    /// # extern crate term_rewriting;
-    /// # use programinduction::trs::{parse_lexicon, parse_trs};
-    /// # use polytype::Context as TypeContext;
-    /// # use rand::thread_rng;
-    /// let mut rng = thread_rng();
-    /// let mut lex = parse_lexicon(
-    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
-    ///     TypeContext::default(),
-    /// )
-    ///     .expect("parsed lexicon");
-    ///
-    /// let trs = parse_trs("PLUS(x_ y_) = SUCC(x_);", &mut lex, true, &[] ).expect("parsed trs");
-    /// assert!(trs.swap_lhs_and_rhs(&mut rng).is_err());
-    /// ```
-    pub fn swap_lhs_and_rhs<R: Rng>(&self, rng: &mut R) -> Result<TRS, SampleError> {
+    pub fn swap_lhs_and_rhs<R: Rng>(&self, rng: &mut R) -> Result<Self, SampleError<'ctx>> {
         if !self.is_empty() {
             let idx = rng.gen_range(0, self.len());
             let mut trs = self.clone();
@@ -72,7 +52,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
     /// returns a vector of a rules with each rhs being the lhs of the original
     /// rule and each lhs is each rhs of the original.
-    fn swap_rule(rule: &Rule) -> Result<Vec<Rule>, SampleError> {
+    fn swap_rule(rule: &Rule) -> Result<Vec<Rule>, SampleError<'ctx>> {
         let rules = rule
             .clauses()
             .iter()

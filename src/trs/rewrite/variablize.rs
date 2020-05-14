@@ -2,17 +2,17 @@ use itertools::Itertools;
 use polytype::Type;
 use std::{collections::HashMap, convert::TryFrom};
 use term_rewriting::{Context, Place, Rule, RuleContext, Term, Variable};
-use trs::{as_result, Environment, SampleError, TRS};
+use trs::{as_result, Env, SampleError, TRS};
 
 pub type Variablization = (usize, Type, Vec<Place>);
 pub type Types = HashMap<Rule, HashMap<Place, Type>>;
 
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Replace subterms of [`term_rewriting::Rule`]s with [`term_rewriting::Variable`]s.
     ///
     /// [`term_rewriting::Rule`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Rule.html
     /// [`term_rewriting::Variable`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.Variable.html
-    pub fn variablize(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    pub fn variablize(&self) -> Result<Vec<TRS<'ctx, 'b>>, SampleError> {
         let trs = if self.len() < 2 {
             self.clone()
         } else {
@@ -114,7 +114,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         // TODO: incorrect for non-deterministic case
         let mut max = 0;
         for (m, &n) in combo.iter().enumerate() {
-            if let Some(rule_max) = ruless[m][n].variables().iter().map(|v| v.id).max() {
+            if let Some(rule_max) = ruless[m][n].variables().iter().map(|v| v.id()).max() {
                 max = max.max(rule_max + 1);
             }
         }
@@ -122,7 +122,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             .background
             .iter()
             .flat_map(|r| r.variables())
-            .map(|v| v.id)
+            .map(|v| v.id())
             .max()
             .map(|n| n + 1)
             .unwrap_or(0);
@@ -133,13 +133,13 @@ impl<'a, 'b> TRS<'a, 'b> {
         let combo_lhss = combo.iter().enumerate().map(|(m, &n)| &ruless[m][n].lhs);
         bg_lhss
             .chain(combo_lhss)
-            .all(|prior| Term::pmatch(vec![(prior, &lhs)]).is_none())
+            .all(|prior| Term::pmatch(&[(prior, &lhs)]).is_none())
     }
     pub fn variablize_by(
         &self,
         (affected, tp, places): &Variablization,
         types: &mut Types,
-    ) -> Option<TRS<'a, 'b>> {
+    ) -> Option<TRS<'ctx, 'b>> {
         let mut clauses = self.utrs.clauses();
         let rule = &clauses[*affected];
         let new_rule = self.apply_variablization(tp, places, rule, types)?;
@@ -152,7 +152,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             .filter_map(|(_, r)| {
                 let mut ctx = self.lex.0.ctx.clone();
                 let mut types = HashMap::new();
-                let mut env = Environment::from_vars(&r.variables(), &mut ctx);
+                let mut env = Env::from_vars(&r.variables(), &mut ctx);
                 self.lex
                     .infer_rule(&r, &mut types, &mut env, &mut ctx)
                     .ok()
@@ -232,8 +232,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                         RuleContext::from(rule.clone()).replace_all(places, Context::Hole)?;
                     context.canonicalize(&mut HashMap::new());
                     let id = context.lhs.variables().len();
-                    let context =
-                        context.replace_all(places, Context::Variable(Variable { id }))?;
+                    let context = context.replace_all(places, Context::Variable(Variable(id)))?;
                     let mut new_rule = Rule::try_from(&context).ok()?;
                     new_rule.canonicalize(&mut HashMap::new());
                     if !types.contains_key(&new_rule) {
@@ -260,7 +259,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                     tp_rule.canonicalize(&mut HashMap::new());
                     let mut types = HashMap::new();
                     let mut ctx = self.lex.0.ctx.clone();
-                    let mut env = Environment::from_vars(&tp_rule.variables(), &mut ctx);
+                    let mut env = Env::from_vars(&tp_rule.variables(), &mut ctx);
                     self.lex
                         .infer_rule(&tp_rule, &mut types, &mut env, &mut ctx)
                         .ok()?;
@@ -273,8 +272,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                         RuleContext::from(rule.clone()).replace_all(places, Context::Hole)?;
                     context.canonicalize(&mut HashMap::new());
                     let id = context.lhs.variables().len();
-                    let context =
-                        context.replace_all(places, Context::Variable(Variable { id }))?;
+                    let context = context.replace_all(places, Context::Variable(Variable(id)))?;
                     let mut new_rule = Rule::try_from(&context).ok()?;
                     new_rule.canonicalize(&mut HashMap::new());
                     Some(new_rule)
@@ -283,7 +281,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                 }
             })
     }
-    pub(crate) fn adopt_solution(&self, rules: &mut Vec<Rule>) -> Option<TRS<'a, 'b>> {
+    pub(crate) fn adopt_solution(&self, rules: &mut Vec<Rule>) -> Option<TRS<'ctx, 'b>> {
         self.filter_background(rules);
 
         let mut i = 0;
@@ -296,7 +294,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             } else if self.is_deterministic()
                 && rules[..i]
                     .iter()
-                    .any(|other| Term::alpha(vec![(&other.lhs, &rules[i].lhs)]).is_some())
+                    .any(|other| Term::alpha(&[(&other.lhs, &rules[i].lhs)]).is_some())
             {
                 return None;
             } else {
@@ -317,7 +315,7 @@ mod tests {
     use polytype::Context as TypeContext;
     use std::collections::HashMap;
     use trs::parser::{parse_lexicon, parse_rule, parse_trs};
-    use trs::{Environment, Lexicon, TRS};
+    use trs::{Env, Lexicon, TRS};
 
     fn create_test_lexicon<'b>() -> Lexicon<'b> {
         parse_lexicon(
@@ -347,7 +345,7 @@ mod tests {
         let mut types = HashMap::new();
         let mut types2 = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        let mut env = Env::from_vars(&rule.variables(), &mut ctx);
         lex.infer_rule(&rule, &mut types2, &mut env, &mut ctx)
             .unwrap();
         types.insert(rule.clone(), types2);
@@ -386,7 +384,7 @@ mod tests {
         let mut types = HashMap::new();
         let mut types2 = HashMap::new();
         let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
+        let mut env = Env::from_vars(&rule.variables(), &mut ctx);
         lex.infer_rule(&rule, &mut types2, &mut env, &mut ctx)
             .unwrap();
         types.insert(rule.clone(), types2);

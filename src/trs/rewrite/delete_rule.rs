@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use term_rewriting::{Rule, Term};
 use trs::{as_result, SampleError, TRS};
 
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Delete a learned rule from the rewrite system.
-    pub fn delete_rule(&self) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    pub fn delete_rule(&self) -> Result<Vec<TRS<'ctx, 'b>>, SampleError<'ctx>> {
         let rules = self
             .utrs
             .rules
@@ -32,7 +32,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         &self,
         rng: &mut R,
         threshold: usize,
-    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    ) -> Result<Vec<TRS<'ctx, 'b>>, SampleError<'ctx>> {
         let deletable = as_result(self.clauses())?;
         let mut trss = vec![];
         if 2usize.pow(deletable.len() as u32) > 2 * threshold {
@@ -68,7 +68,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         &self,
         mut start: usize,
         mut stop: usize,
-    ) -> Result<TRS<'a, 'b>, SampleError> {
+    ) -> Result<Self, SampleError<'ctx>> {
         let mut rules = &self.utrs.rules[..];
         if rules.is_empty() {
             Err(SampleError::OptionsExhausted)
@@ -78,7 +78,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                 let mut new_rule = rules[0].clone();
                 let n = new_rules
                     .iter()
-                    .map(|r| r.lhs.variables().iter().map(|v| v.id).max().unwrap_or(0))
+                    .map(|r| r.lhs.variables().iter().map(|v| v.id()).max().unwrap_or(0))
                     .max()
                     .map(|n| n + 1)
                     .unwrap_or(0);
@@ -88,10 +88,10 @@ impl<'a, 'b> TRS<'a, 'b> {
                         && rules
                             .iter()
                             .skip(1)
-                            .all(|rule| Term::pmatch(vec![(&rule.lhs, &new_rule.lhs)]).is_none()))
+                            .all(|rule| Term::pmatch(&[(&rule.lhs, &new_rule.lhs)]).is_none()))
                     || new_rules
                         .iter()
-                        .all(|rule: &Rule| Term::pmatch(vec![(&rule.lhs, &new_rule.lhs)]).is_none())
+                        .all(|rule: &Rule| Term::pmatch(&[(&rule.lhs, &new_rule.lhs)]).is_none())
                 {
                     // in safe zone or outside safe zone with useful rule
                     new_rule.canonicalize(&mut HashMap::new());

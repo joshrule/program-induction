@@ -3,18 +3,21 @@ use itertools::Itertools;
 use rand::Rng;
 use term_rewriting::{Rule, Term};
 
-impl<'a, 'b> TRS<'a, 'b> {
-    pub fn combine<'c, 'd, R: Rng>(
-        parent1: &TRS<'c, 'd>,
-        parent2: &TRS,
+impl<'ctx, 'b> TRS<'ctx, 'b> {
+    pub fn combine<R: Rng>(
+        parent1: &TRS<'ctx, 'b>,
+        parent2: &TRS<'ctx, 'b>,
         rng: &mut R,
         threshold: usize,
-    ) -> Result<Vec<TRS<'c, 'd>>, SampleError> {
+    ) -> Result<Vec<TRS<'ctx, 'b>>, SampleError<'ctx>> {
         TRS::merge(parent1, parent2)?
             .smart_delete(0, 0)?
             .delete_rules(rng, threshold)
     }
-    fn merge<'c, 'd>(trs1: &TRS<'c, 'd>, trs2: &TRS) -> Result<TRS<'c, 'd>, SampleError> {
+    fn merge(
+        trs1: &TRS<'ctx, 'b>,
+        trs2: &TRS<'ctx, 'b>,
+    ) -> Result<TRS<'ctx, 'b>, SampleError<'ctx>> {
         if trs1.lex != trs2.lex {
             return Err(SampleError::OptionsExhausted);
         }
@@ -26,8 +29,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             .for_each(|r1| {
                 let unique = !rules.iter().any(|r2| {
                     Rule::alpha(&r1, r2).is_some()
-                        || (trs1.is_deterministic()
-                            && Term::alpha(vec![(&r1.lhs, &r2.lhs)]).is_some())
+                        || (trs1.is_deterministic() && Term::alpha(&[(&r1.lhs, &r2.lhs)]).is_some())
                 });
                 if unique {
                     rules.push(r1);

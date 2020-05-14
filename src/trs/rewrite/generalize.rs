@@ -2,7 +2,7 @@ use super::{SampleError, TRS};
 use itertools::Itertools;
 use polytype::{Context as TypeContext, Type};
 use std::{collections::HashMap, convert::TryFrom};
-use term_rewriting::{Atom, Context, Operator, Rule, Term, Variable};
+use term_rewriting::{Atom, Context, Operator, Rule, SituatedAtom, Term, Variable};
 use trs::lexicon::{Environment, Lexicon};
 
 impl<'a, 'b> TRS<'a, 'b> {
@@ -182,11 +182,11 @@ impl<'a, 'b> TRS<'a, 'b> {
         vars: Vec<Variable>,
     ) -> Result<Context, SampleError> {
         let app = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
-        let mut subctx = Context::from(Atom::from(new_op));
+        let mut subctx = Context::from(SituatedAtom::new(Atom::from(new_op), lex.signature()));
         for var in vars {
             subctx = Context::Application {
                 op: app,
-                args: vec![subctx, Context::from(Atom::from(var))],
+                args: vec![subctx, Context::from(var)],
             };
         }
         rhs.replace(place, subctx).ok_or(SampleError::Subterm)
@@ -212,11 +212,11 @@ impl<'a, 'b> TRS<'a, 'b> {
             let mut env = Environment::from_vars(&rhs.variables(), &mut ctx);
             lex.infer_term(&rhs, &mut map, &mut env, &mut ctx)?;
             types.push(map[rhs_place].clone());
-            let alpha = Term::pmatch(vec![(&lhs, &clause.lhs)]).ok_or(SampleError::Subterm)?;
+            let alpha = Term::pmatch(&[(&lhs, &clause.lhs)]).ok_or(SampleError::Subterm)?;
             for &var in &rhs_subterm.variables() {
                 let var_term = Term::Variable(var);
-                if let Some((&k, _)) = alpha.iter().find(|(_, &v)| *v == var_term) {
-                    vars.push(*k)
+                if let Some((&k, _)) = alpha.0.iter().find(|(_, v)| **v == var_term) {
+                    vars.push(k)
                 } else {
                     return Err(SampleError::Subterm);
                 }
@@ -239,9 +239,9 @@ impl<'a, 'b> TRS<'a, 'b> {
         let hole = context.leftmost_hole()?;
         // Create a variable to fill the hole.
         let id = context.variables().len();
-        let new_var = Variable { id };
+        let new_var = Variable(id);
         // Replace the hole with the new variable.
-        let filled_context = context.replace(&hole, Context::from(Atom::from(new_var)))?;
+        let filled_context = context.replace(&hole, Context::from(new_var))?;
         let term = Term::try_from(&filled_context).ok()?;
         // Return the term, the hole, and its replacement.
         Some((term, hole, new_var))
@@ -278,7 +278,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         var: Variable,
         vars: &[Variable],
     ) -> Result<Rule, SampleError> {
-        let mut lhs = Term::apply(op, vec![]).ok_or(SampleError::Subterm)?;
+        let mut lhs = Term::apply(op, vec![], lex.signature()).ok_or(SampleError::Subterm)?;
         let app = lex.has_op(Some("."), 2).map_err(|_| SampleError::Subterm)?;
         for &v in vars {
             let arg = if v == var {
@@ -286,7 +286,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             } else {
                 Term::Variable(v)
             };
-            lhs = Term::apply(app, vec![lhs, arg]).ok_or(SampleError::Subterm)?;
+            lhs = Term::apply(app, vec![lhs, arg], lex.signature()).ok_or(SampleError::Subterm)?;
         }
         Rule::new(lhs, vec![rhs.clone()]).ok_or(SampleError::Subterm)
     }
@@ -297,7 +297,7 @@ mod tests {
     use itertools::Itertools;
     use polytype::Context as TypeContext;
     use std::collections::HashMap;
-    use term_rewriting::{Atom, Context, Variable};
+    use term_rewriting::{Atom, Context, SituatedAtom, Variable};
     use trs::parser::{parse_context, parse_lexicon, parse_rule, parse_term, parse_trs};
     use trs::{Environment, Lexicon, TRS};
 
@@ -417,7 +417,7 @@ mod tests {
         //env: &Environment,
         let mut lex = create_test_lexicon();
         let applicative = true;
-        let vars = &[Variable { id: 0 }, Variable { id: 1 }];
+        let vars = &[Variable(0), Variable(1)];
         let return_tp = tp!(LIST);
         let mut ctx = lex.0.ctx.clone();
         let mut env = Environment::new(true);
@@ -427,14 +427,14 @@ mod tests {
         ctx.extend(1, tp!(LIST));
         let op =
             TRS::new_operator(&mut lex, applicative, vars, &return_tp, &env, &mut ctx).unwrap();
-        let context = Context::from(Atom::from(op));
+        let context = Context::from(SituatedAtom::new(Atom::from(op), lex.signature()));
         let mut map = HashMap::new();
         let mut env = Environment::from_vars(&context.variables(), &mut ctx);
         let tp = lex
             .infer_context(&context, &mut map, &mut env, &mut ctx)
             .unwrap();
         assert_eq!(11, op.id());
-        assert_eq!(0, op.arity());
+        assert_eq!(0, op.arity(lex.signature()));
         assert_eq!("INT → LIST → LIST", tp.to_string());
     }
 
@@ -444,7 +444,7 @@ mod tests {
         let op = lex.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(INT), tp!(INT)]]);
         let lhs_arg = parse_term("1", &mut lex).unwrap();
         let rhs = parse_term("2", &mut lex).unwrap();
-        let var = Variable { id: 0 };
+        let var = Variable(0);
         let vars = vec![var];
         let rule = TRS::new_rule(&lex, op, &lhs_arg, &rhs, var, &vars).unwrap();
         let sig = &lex.0.signature;

@@ -1,9 +1,9 @@
-use polytype::TypeSchema;
+use polytype::atype::Variable as TVar;
 use rand::Rng;
 use std::collections::HashMap;
-use trs::{as_result, Environment, GenerationLimit, SampleError, TRS};
+use trs::{as_result, Env, GenerationLimit, SampleError, SampleParams, TRS};
 
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Sample a rule and add it to the rewrite system.
     ///
     /// # Example
@@ -12,56 +12,50 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
     /// # extern crate rand;
-    /// # extern crate term_rewriting;
     /// # use programinduction::trs::{parse_lexicon, parse_trs};
-    /// # use polytype::Context as TypeContext;
     /// # use rand::thread_rng;
-    /// let mut lex = parse_lexicon(
-    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
-    ///     TypeContext::default(),
-    /// )
-    ///     .expect("parsed lexicon");
+    /// # use polytype::{Source, atype::{with_ctx, TypeSchema, TypeContext}};
+    /// with_ctx(10, |ctx: TypeContext<'_>| {
+    ///     let mut rng = thread_rng();
+    ///     let mut lex = parse_lexicon(
+    ///         "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///         &ctx,
+    ///     ).expect("lex");
+    ///     let trs = parse_trs(
+    ///         "PLUS(v0_ ZERO) = v0_; PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_));",
+    ///         &mut lex, false, &[],
+    ///     ).expect("trs");
+    ///     let atom_weights = (1.0, 1.0, 1.0, 1.0);
+    ///     let max_size = 50;
     ///
-    /// let trs = parse_trs(
-    ///     "PLUS(v0_ ZERO) = v0_; PLUS(v0_ SUCC(v1_)) = SUCC(PLUS(v0_ v1_));",
-    ///     &mut lex,
-    ///     false,
-    ///     &[]
-    /// )
-    ///     .expect("parsed trs");
-    ///
-    /// let atom_weights = (1.0, 1.0, 1.0, 1.0);
-    /// let max_size = 50;
-    /// let mut rng = thread_rng();
-    ///
-    /// if let Ok(new_trss) = trs.sample_rule(atom_weights, max_size, &mut rng) {
-    ///     assert_eq!(new_trss[0].len(), 3);
-    /// }
+    ///     if let Ok(new_trss) = trs.sample_rule(atom_weights, max_size, &mut rng) {
+    ///         assert_eq!(new_trss[0].len(), 3);
+    ///     }
+    /// })
     /// ```
     pub fn sample_rule<R: Rng>(
         &self,
         atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
-    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    ) -> Result<Vec<Self>, SampleError<'ctx>> {
         let mut trs = self.clone();
-        let schema = TypeSchema::Monotype(trs.lex.0.to_mut().ctx.new_variable());
-        let mut ctx = trs.lex.0.ctx.clone();
-        let limit = GenerationLimit::TermSize(max_size);
-        let rule = trs
-            .lex
-            .sample_rule(&schema, atom_weights, limit, true, &mut ctx, rng)?;
+        let tvar = TVar(trs.lex.lex.to_mut().src.fresh());
+        let ctx = &trs.lex.lex.ctx;
+        let schema = ctx.intern_monotype(ctx.intern_tvar(tvar));
+        let params = SampleParams {
+            atom_weights,
+            limit: GenerationLimit::TermSize(max_size),
+            variable: true,
+        };
+        let rule = trs.lex.sample_rule(&schema, params, true, rng)?;
         if rule.lhs == rule.rhs().unwrap() {
             return Err(SampleError::Trivial);
         }
-        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
-        trs.lex
-            .infer_rule(&rule, &mut HashMap::new(), &mut env, &mut ctx)?;
         let mut new_rules = vec![rule];
         trs.filter_background(&mut new_rules);
-        // INVARIANT: there's at most one rule in new_rules
-        let mut new_rules = as_result(new_rules)?;
-        trs.utrs.push(new_rules.pop().unwrap())?;
+        let new_rules = as_result(new_rules)?;
+        trs.utrs.pushes(new_rules)?;
         Ok(vec![trs])
     }
 }

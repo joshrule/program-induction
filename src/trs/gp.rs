@@ -322,3 +322,45 @@ impl<'a, 'b> GP for TRSGP<'a, 'b> {
         // seen.extend_from_slice(&offspring);
     }
 }
+
+impl<'a, 'b, 'c> From<&'c TRSGP<'a, 'b>> for &'c Lexicon<'b> {
+    fn from(gp_lex: &'c TRSGP<'a, 'b>) -> &'c Lexicon<'b> {
+        &gp_lex.lexicon
+    }
+}
+
+impl<'ctx, 'b> TRS<'ctx, 'b> {
+    pub fn nest<R: Rng>(
+        trss: &[Self],
+        task: &Task<Lexicon<'ctx, 'b>, Self, Vec<Rule>>,
+        gp_lex: &TRSGP<'ctx, 'b>,
+        rng: &mut R,
+        params: &GeneticParamsFull,
+        gpparams: &GPParams,
+    ) -> Result<Vec<Self>, SampleError<'ctx>> {
+        let new_trss = trss
+            .iter()
+            .filter_map(|trs| trs.recurse_search(task, gp_lex, params, gpparams, rng).ok())
+            .collect_vec();
+        as_result(new_trss)
+    }
+    fn recurse_search<R: Rng>(
+        &self,
+        task: &Task<Lexicon<'ctx, 'b>, Self, Vec<Rule>>,
+        gp_lex: &TRSGP<'ctx, 'b>,
+        genetic: &GeneticParamsFull,
+        gp: &GPParams,
+        rng: &mut R,
+    ) -> Result<Self, SampleError<'ctx>> {
+        let mut new_genetic = genetic.clone();
+        new_genetic.depth = 1.max(genetic.depth) - 1;
+        let score = (task.oracle)(&self.lex, self);
+        let mut seen = vec![self.clone()];
+        let mut pop = vec![(self.clone(), score)];
+        // TODO: constant is a HACK!
+        for _ in 0..20 {
+            gp_lex.evolve(&new_genetic, rng, &gp, task, &mut seen, &mut pop);
+        }
+        Ok(pop[0].0.clone())
+    }
+}

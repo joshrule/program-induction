@@ -1,8 +1,10 @@
 use nom;
 use nom::types::CompleteStr;
 use nom::{digit, Context as Nomtext, Err};
-use polytype::{Context as TypeContext, TypeSchema};
-use std::collections::HashMap;
+use polytype::{
+    atype::{Schema, TypeContext, TypeSchema},
+    Source,
+};
 use std::fmt;
 use std::io;
 use term_rewriting::{
@@ -10,11 +12,12 @@ use term_rewriting::{
     parse_rulecontext as parse_untyped_rulecontext, parse_term as parse_untyped_term, Atom,
     Context, Rule, RuleContext, Signature, Term,
 };
-use trs::{Environment, Lexicon, TRS};
+use trs::{Lexicon, TRS};
 
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 /// The error type for parsing operations.
 pub struct ParseError;
+
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "failed parse")
@@ -80,8 +83,11 @@ impl ::std::error::Error for ParseError {
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 /// [`polytype`]: ../../../polytype/index.html
 /// [augmented Backus-Naur form]: https://en.wikipedia.org/wiki/Augmented_Backus–Naur_form
-pub fn parse_lexicon<'a>(input: &str, ctx: TypeContext) -> Result<Lexicon<'a>, ParseError> {
-    lexicon(CompleteStr(input), Signature::default(), vec![], ctx)
+pub fn parse_lexicon<'ctx, 'lex>(
+    input: &str,
+    ctx: &TypeContext<'ctx>,
+) -> Result<Lexicon<'ctx, 'lex>, ParseError> {
+    lexicon(CompleteStr(input), Signature::default(), vec![], *ctx)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
 }
@@ -92,12 +98,12 @@ pub fn parse_lexicon<'a>(input: &str, ctx: TypeContext) -> Result<Lexicon<'a>, P
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`TRS`]: struct.TRS.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
-pub fn parse_trs<'a, 'b>(
+pub fn parse_trs<'ctx, 'lex>(
     input: &str,
-    lex: &mut Lexicon<'b>,
+    lex: &mut Lexicon<'ctx, 'lex>,
     deterministic: bool,
-    background: &'a [Rule],
-) -> Result<TRS<'a, 'b>, ParseError> {
+    background: &'lex [Rule],
+) -> Result<TRS<'ctx, 'lex>, ParseError> {
     match trs(CompleteStr(input), lex, deterministic, background) {
         Ok((CompleteStr(""), t)) => Ok(t),
         _ => Err(ParseError),
@@ -136,69 +142,67 @@ pub fn parse_context(input: &str, lex: &mut Lexicon) -> Result<Context, ParseErr
 /// ```
 /// # #[macro_use] extern crate polytype;
 /// # extern crate programinduction;
-/// # use programinduction::trs::{parse_lexicon, parse_rulecontext};
-/// # use polytype::{Context as TypeContext};
-/// # use std::collections::HashMap;
-/// let mut lex = parse_lexicon(
-///    &[
-///        ">/0: nat -> nat -> bool;",
-///        "+/0: nat -> nat -> nat;",
-///        "equal/0: t1. t1 -> t1 -> bool;",
-///        "0/0: nat;",
-///        "true/0: bool;",
-///        "false/0: bool;",
-///        "empty/0: list;",
-///        "cons/0: nat -> list -> list;",
-///        "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-///    ]
-///        .join(" "),
-///    TypeContext::default(),
-///)
-///    .expect("parsed lexicon");
+/// # use programinduction::trs::{parse_rulecontext, parse_lexicon};
+/// # use polytype::{Source, atype::{with_ctx, TypeSchema, TypeContext}};
+/// with_ctx(32, |ctx: TypeContext<'_>| {
+///     let mut lex = parse_lexicon(
+///        &[
+///            ">/0: nat -> nat -> bool;",
+///            "+/0: nat -> nat -> nat;",
+///            "equal/0: t1. t1 -> t1 -> bool;",
+///            "0/0: nat;",
+///            "true/0: bool;",
+///            "false/0: bool;",
+///            "empty/0: list;",
+///            "cons/0: nat -> list -> list;",
+///            "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+///        ].join(" "),
+///        &ctx,
+///     ).expect("parsed lexicon");
 ///
-/// // Rules are also RuleContexts.
-/// assert!(parse_rulecontext("> = >", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal = equal", &mut lex).is_ok());
-/// assert!(parse_rulecontext("> = equal", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal = >", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal 0 0 = true", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal v0_ v0_ = true", &mut lex).is_ok());
+///     // Rules are also RuleContexts.
+///     assert!(parse_rulecontext("> = >", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal = equal", &mut lex).is_ok());
+///     assert!(parse_rulecontext("> = equal", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal = >", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal 0 0 = true", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal v0_ v0_ = true", &mut lex).is_ok());
 ///
-/// assert!(parse_rulecontext("[!] = >", &mut lex).is_ok());
-/// assert!(parse_rulecontext("> = [!]", &mut lex).is_ok());
-/// assert!(parse_rulecontext("[!] = equal", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal = [!]", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal 0 = > 0", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal [!] = > 0", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal 0 = > [!]", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal [!] = > [!]", &mut lex).is_ok());
-/// assert!(parse_rulecontext("equal [!] = + [!]", &mut lex).is_err());
-/// assert!(parse_rulecontext("[!] 0 0 = true", &mut lex).is_ok());
-/// assert!(parse_rulecontext("[!] (cons 0 (cons 0 (cons 0 (cons 0 empty)))) = cons 0 empty", &mut lex).is_ok());
+///     assert!(parse_rulecontext("[!] = >", &mut lex).is_ok());
+///     assert!(parse_rulecontext("> = [!]", &mut lex).is_ok());
+///     assert!(parse_rulecontext("[!] = equal", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal = [!]", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal 0 = > 0", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal [!] = > 0", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal 0 = > [!]", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal [!] = > [!]", &mut lex).is_ok());
+///     assert!(parse_rulecontext("equal [!] = + [!]", &mut lex).is_err());
+///     assert!(parse_rulecontext("[!] 0 0 = true", &mut lex).is_ok());
+///     assert!(parse_rulecontext("[!] (cons 0 (cons 0 (cons 0 (cons 0 empty)))) = cons 0 empty", &mut lex).is_ok());
+/// })
 /// ```
 ///
 /// ```
 /// # #[macro_use] extern crate polytype;
 /// # extern crate programinduction;
-/// # use programinduction::trs::{parse_lexicon, parse_context, parse_rulecontext};
-/// # use polytype::{Context as TypeContext};
-/// # use std::collections::HashMap;
-/// let mut lex = parse_lexicon(
-///    &[
-///        "T/0: some_type;",
-///        "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-///    ]
-///        .join(" "),
-///    TypeContext::default(),
-///)
-///    .expect("parsed lexicon");
+/// # use programinduction::trs::{parse_rulecontext, parse_lexicon};
+/// # use polytype::{Source, atype::{with_ctx, TypeSchema, TypeContext}};
+/// with_ctx(32, |ctx: TypeContext<'_>| {
+///     let mut lex = parse_lexicon(
+///        &[
+///            "T/0: some_type;",
+///            "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+///        ].join(" "),
+///        &ctx,
+///     ).expect("lex");
 ///
-/// assert!(parse_rulecontext("[!] [!] [!] = T", &mut lex).is_ok());
-/// assert!(parse_rulecontext("v0_ [!] [!] = T", &mut lex).is_ok());
-/// assert!(parse_rulecontext("v0_ v0_ [!] = T", &mut lex).is_err());
-/// assert!(parse_rulecontext("v0_ v1_ [!] = T", &mut lex).is_ok());
-/// assert!(parse_rulecontext("v0_ T [!] = T", &mut lex).is_ok());
-/// assert!(parse_rulecontext("v0_ ([!] [!]) [!] = T", &mut lex).is_ok());
+///     assert!(parse_rulecontext("[!] [!] [!] = T", &mut lex).is_ok());
+///     assert!(parse_rulecontext("v0_ [!] [!] = T", &mut lex).is_ok());
+///     assert!(parse_rulecontext("v0_ v0_ [!] = T", &mut lex).is_err());
+///     assert!(parse_rulecontext("v0_ v1_ [!] = T", &mut lex).is_ok());
+///     assert!(parse_rulecontext("v0_ T [!] = T", &mut lex).is_ok());
+///     assert!(parse_rulecontext("v0_ ([!] [!]) [!] = T", &mut lex).is_ok());
+/// })
 /// ```
 ///
 /// [`Lexicon`]: ../struct.Lexicon.html
@@ -218,40 +222,41 @@ pub fn parse_rulecontext(input: &str, lex: &mut Lexicon) -> Result<RuleContext, 
 /// ```
 /// # #[macro_use] extern crate polytype;
 /// # extern crate programinduction;
-/// # use programinduction::trs::{parse_lexicon, parse_rule};
-/// # use polytype::{Context as TypeContext};
-/// # use std::collections::HashMap;
-/// let mut lex = parse_lexicon(
-///    &[
-///        ">/0: nat -> nat -> bool;",
-///        "equal/0: t1. t1 -> t1 -> bool;",
-///        "0/0: nat;",
-///        "true/0: bool;",
-///        "false/0: bool;",
-///        "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-///    ]
-///        .join(" "),
-///    TypeContext::default(),
-///)
-///    .expect("parsed lexicon");
+/// # use programinduction::trs::{parse_rule, parse_lexicon};
+/// # use polytype::{Source, atype::{with_ctx, TypeSchema, TypeContext}};
+/// with_ctx(32, |ctx: TypeContext<'_>| {
+///     let mut lex = parse_lexicon(
+///        &[
+///            ">/0: nat -> nat -> bool;",
+///            "equal/0: t1. t1 -> t1 -> bool;",
+///            "0/0: nat;",
+///            "true/0: bool;",
+///            "false/0: bool;",
+///            "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+///        ].join(" "),
+///        &ctx,
+///     )
+///        .expect("lex");
 ///
-/// assert!(parse_rule("> = >", &mut lex).is_ok());
-/// assert!(parse_rule("equal = equal", &mut lex).is_ok());
-/// assert!(parse_rule("> = equal", &mut lex).is_ok());
-/// assert!(parse_rule("equal = >", &mut lex).is_ok());
-/// assert!(parse_rule("equal 0 0 = true", &mut lex).is_ok());
-/// assert!(parse_rule("equal v0_ v0_ = true", &mut lex).is_ok());
-/// assert!(parse_rule("v0_ v1_ = v0_", &mut lex).is_err());
-/// assert!(parse_rule("v0_ v1_ = v1_", &mut lex).is_ok());
-/// assert!(parse_rule("v0_ v1_ = v0_ v1_", &mut lex).is_ok());
-/// assert!(parse_rule("v0_ v1_ = v1_ v0_", &mut lex).is_err());
+///     assert!(parse_rule("> = >", &mut lex).is_ok());
+///     assert!(parse_rule("equal = equal", &mut lex).is_ok());
+///     assert!(parse_rule("> = equal", &mut lex).is_ok());
+///     assert!(parse_rule("equal = >", &mut lex).is_ok());
+///     assert!(parse_rule("equal 0 0 = true", &mut lex).is_ok());
+///     assert!(parse_rule("equal v0_ v0_ = true", &mut lex).is_ok());
+///     assert!(parse_rule("v0_ v1_ = v0_", &mut lex).is_err());
+///     assert!(parse_rule("v0_ v1_ = v1_", &mut lex).is_ok());
+///     assert!(parse_rule("v0_ v1_ = v0_ v1_", &mut lex).is_ok());
+///     assert!(parse_rule("v0_ v1_ = v1_ v0_", &mut lex).is_err());
+/// })
+///
 /// ```
 ///
 /// [`Lexicon`]: ../struct.Lexicon.html
 /// [`Rule`]: ../../../term_rewriting/struct.Rule.html
 /// [`term_rewriting`]: ../../../term_rewriting/index.html
 pub fn parse_rule(input: &str, lex: &mut Lexicon) -> Result<Rule, ParseError> {
-    typed_rule(input, lex)
+    typed_rule(CompleteStr(input), lex)
         .map(|(_, t)| t)
         .map_err(|_| ParseError)
 }
@@ -282,19 +287,22 @@ pub fn parse_rules(input: &str, lex: &mut Lexicon) -> Result<Vec<Rule>, ParseErr
         .map_err(|_| ParseError)
 }
 
-fn schema_wrapper(input: CompleteStr) -> nom::IResult<CompleteStr, TypeSchema> {
-    if let Ok(schema) = TypeSchema::parse(*input) {
+fn schema_wrapper<'a, 'ctx>(
+    input: CompleteStr<'a>,
+    ctx: &TypeContext<'ctx>,
+) -> nom::IResult<CompleteStr<'a>, Schema<'ctx>> {
+    if let Ok(schema) = TypeSchema::parse(ctx, *input) {
         Ok((CompleteStr(""), schema))
     } else {
         Err(Err::Error(Nomtext::Code(input, nom::ErrorKind::Custom(0))))
     }
 }
 
-fn make_operator(
+fn make_operator<'ctx>(
     (name, arity): (String, u8),
     sig: &mut Signature,
-    schema: TypeSchema,
-    ops: &mut Vec<TypeSchema>,
+    schema: Schema<'ctx>,
+    ops: &mut Vec<Schema<'ctx>>,
 ) -> Atom {
     let o = sig.new_op(arity, Some(name));
     ops.push(schema);
@@ -321,43 +329,54 @@ named!(op_dec<CompleteStr, (String, u8)>,
                        arity: digit >>
                        (ident, arity)),
              |(s, a)| (s.to_string(), a.parse::<u8>().unwrap())));
-named!(schema<CompleteStr, TypeSchema>,
-       call!(schema_wrapper));
+fn schema<'a, 'ctx>(
+    input: CompleteStr<'a>,
+    ctx: &TypeContext<'ctx>,
+) -> nom::IResult<CompleteStr<'a>, Schema<'ctx>> {
+    schema_wrapper(input, ctx)
+}
 named!(comment<CompleteStr, CompleteStr>,
        map!(preceded!(tag!("#"), take_until_and_consume!("\n")),
             |s| CompleteStr(&s.trim())));
-named_args!(declaration<'a>(sig: &mut Signature, ops: &mut Vec<TypeSchema>) <CompleteStr<'a>, (Atom, TypeSchema)>,
-       map!(ws!(do_parse!(name: op_dec >>
-                      colon >>
-                      schema: schema >>
-                      (name, schema))),
-            |(n, s)| (make_operator(n, sig, s.clone(), ops), s)
-       ));
-fn lexicon<'a, 'b>(
+fn declaration<'a, 'ctx>(
+    input: CompleteStr<'a>,
+    sig: &mut Signature,
+    ops: &mut Vec<Schema<'ctx>>,
+    ctx: &TypeContext<'ctx>,
+) -> nom::IResult<CompleteStr<'a>, (Atom, Schema<'ctx>)> {
+    map!(
+        input,
+        ws!(do_parse!(
+            name: op_dec >> colon >> schema: apply!(schema, ctx) >> (name, schema)
+        )),
+        |(n, s)| (make_operator(n, sig, s, ops), s)
+    )
+}
+fn lexicon<'a, 'ctx, 'lex>(
     input: CompleteStr<'a>,
     mut sig: Signature,
-    mut ops: Vec<TypeSchema>,
-    ctx: TypeContext,
-) -> nom::IResult<CompleteStr<'a>, Lexicon<'b>> {
+    mut ops: Vec<Schema<'ctx>>,
+    ctx: TypeContext<'ctx>,
+) -> nom::IResult<CompleteStr<'a>, Lexicon<'ctx, 'lex>> {
     map!(
         input,
         ws!(many0!(do_parse!(
             many0!(ws!(comment))
                 >> dec: take_until_and_consume!(";")
-                >> expr_res!(declaration(dec, &mut sig, &mut ops))
+                >> expr_res!(declaration(dec, &mut sig, &mut ops, &ctx))
                 >> many0!(ws!(comment))
                 >> ()
         ))),
-        |_| Lexicon::from_signature(sig, ops, ctx)
+        |_| Lexicon::from_signature(sig, ops, ctx, Source::default())
     )
 }
 #[allow(clippy::cognitive_complexity)]
-fn trs<'a, 'b, 'c>(
+fn trs<'a, 'ctx, 'lex>(
     input: CompleteStr<'a>,
-    lex: &mut Lexicon<'c>,
+    lex: &mut Lexicon<'ctx, 'lex>,
     deterministic: bool,
-    background: &'b [Rule],
-) -> nom::IResult<CompleteStr<'a>, TRS<'b, 'c>> {
+    background: &'lex [Rule],
+) -> nom::IResult<CompleteStr<'a>, TRS<'ctx, 'lex>> {
     ws!(
         input,
         do_parse!(
@@ -366,7 +385,7 @@ fn trs<'a, 'b, 'c>(
                     many0!(do_parse!(
                         many0!(ws!(comment))
                             >> rule_text: take_until_and_consume!(";")
-                            >> rule: expr_res!(typed_rule(&rule_text, lex))
+                            >> rule: expr_res!(typed_rule(rule_text, lex))
                             >> many0!(ws!(comment))
                             >> (rule.1)
                     ))
@@ -374,37 +393,27 @@ fn trs<'a, 'b, 'c>(
         )
     )
 }
-fn typed_rule<'a>(input: &'a str, lex: &mut Lexicon) -> nom::IResult<CompleteStr<'a>, Rule> {
-    lex.0.to_mut().signature.clear_variables();
-    let result = parse_untyped_rule(&mut lex.0.to_mut().signature, input);
-    if let Ok(rule) = result {
-        let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
-        if lex
-            .infer_rule(&rule, &mut HashMap::new(), &mut env, &mut ctx)
-            .is_ok()
-        {
+fn typed_rule<'a, 'ctx, 'lex>(
+    input: CompleteStr<'a>,
+    lex: &mut Lexicon<'ctx, 'lex>,
+) -> nom::IResult<CompleteStr<'a>, Rule> {
+    lex.lex.to_mut().sig.clear_variables();
+    if let Ok(rule) = parse_untyped_rule(&mut lex.lex.to_mut().sig, *input) {
+        println!("parsed untyped rule");
+        if lex.infer_rule(&rule).is_ok() {
+            println!("typechecked rule");
             return Ok((CompleteStr(""), rule));
         }
     }
-    Err(Err::Error(Nomtext::Code(
-        CompleteStr(input),
-        nom::ErrorKind::Custom(0),
-    )))
+    Err(Err::Error(Nomtext::Code(input, nom::ErrorKind::Custom(0))))
 }
 fn typed_term<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, Term> {
-    lex.0.to_mut().signature.clear_variables();
-    let result = parse_untyped_term(&mut lex.0.to_mut().signature, *input);
-    if let Ok(term) = result {
-        let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&term.variables(), &mut ctx);
-        if lex
-            .infer_term(&term, &mut HashMap::new(), &mut env, &mut ctx)
-            .is_ok()
-        {
+    lex.lex.to_mut().sig.clear_variables();
+    if let Ok(term) = parse_untyped_term(&mut lex.lex.to_mut().sig, *input) {
+        if lex.infer_term(&term).is_ok() {
             return Ok((CompleteStr(""), term));
         }
     }
@@ -414,15 +423,11 @@ fn typed_context<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, Context> {
-    lex.0.to_mut().signature.clear_variables();
-    let result = parse_untyped_context(&mut lex.0.to_mut().signature, *input);
-    if let Ok(context) = result {
-        let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&context.variables(), &mut ctx);
-        if lex
-            .infer_context(&context, &mut HashMap::new(), &mut env, &mut ctx)
-            .is_ok()
-        {
+    lex.lex.to_mut().sig.clear_variables();
+    if let Ok(context) = parse_untyped_context(&mut lex.lex.to_mut().sig, *input) {
+        println!("parsed untyped context");
+        if lex.infer_context(&context).is_ok() {
+            println!("typechecked context");
             return Ok((CompleteStr(""), context));
         }
     }
@@ -432,16 +437,10 @@ fn typed_rulecontext<'a>(
     input: CompleteStr<'a>,
     lex: &mut Lexicon,
 ) -> nom::IResult<CompleteStr<'a>, RuleContext> {
-    lex.0.to_mut().signature.clear_variables();
-    let result = parse_untyped_rulecontext(&mut lex.0.to_mut().signature, *input);
-    if let Ok(rule) = result {
-        let mut ctx = lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&rule.variables(), &mut ctx);
-        if lex
-            .infer_rulecontext(&rule, &mut HashMap::new(), &mut env, &mut ctx)
-            .is_ok()
-        {
-            return Ok((CompleteStr(""), rule));
+    lex.lex.to_mut().sig.clear_variables();
+    if let Ok(context) = parse_untyped_rulecontext(&mut lex.lex.to_mut().sig, *input) {
+        if lex.infer_rulecontext(&context).is_ok() {
+            return Ok((CompleteStr(""), context));
         }
     }
     Err(Err::Error(Nomtext::Code(input, nom::ErrorKind::Custom(0))))
@@ -458,7 +457,7 @@ named_args!(templates<'a>(lex: &mut Lexicon) <CompleteStr<'a>, Vec<RuleContext>>
 named_args!(rules<'a>(lex: &mut Lexicon) <CompleteStr<'a>, Vec<Rule>>,
             ws!(do_parse!(rules: many0!(do_parse!(many0!(ws!(comment)) >>
                                                       r_text: take_until_and_consume!(";") >>
-                                                      r: expr_res!(typed_rule(&r_text, lex)) >>
+                                                      r: expr_res!(typed_rule(r_text, lex)) >>
                                                       many0!(ws!(comment)) >>
                                                       (r.1))) >>
                           (rules)))
@@ -467,6 +466,7 @@ named_args!(rules<'a>(lex: &mut Lexicon) <CompleteStr<'a>, Vec<Rule>>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polytype::atype::{with_ctx, TypeContext};
     use term_rewriting::Signature;
 
     #[test]
@@ -477,121 +477,138 @@ mod tests {
 
     #[test]
     fn declaration_op_test() {
-        let mut ops = vec![];
-        let mut sig = Signature::default();
-        let (_, (a, s)) =
-            declaration(CompleteStr("SUCC/1: int -> int"), &mut sig, &mut ops).unwrap();
-        assert_eq!(a.display(&sig), "SUCC");
-        assert_eq!(s.to_string(), "int → int");
+        with_ctx(32, |ctx| {
+            let mut ops = vec![];
+            let mut sig = Signature::default();
+            let (_, (a, s)) =
+                declaration(CompleteStr("SUCC/1: int -> int"), &mut sig, &mut ops, &ctx).unwrap();
+            assert_eq!(a.display(&sig), "SUCC");
+            assert_eq!(s.to_string(), "int → int");
+        })
     }
 
     #[test]
     fn lexicon_test() {
-        let res = lexicon(
-            CompleteStr("# COMMENT\nSUCC: int -> int;\nx_: list(int);"),
-            Signature::default(),
-            vec![],
-            TypeContext::default(),
-        );
-        assert!(res.is_ok());
+        with_ctx(32, |ctx| {
+            let res = lexicon(
+                CompleteStr("# COMMENT\nSUCC: int -> int;\nx_: list(int);"),
+                Signature::default(),
+                vec![],
+                ctx,
+            );
+            assert!(res.is_ok());
+        })
     }
 
     #[test]
     fn typed_rule_test() {
-        let mut lex = lexicon(
-            CompleteStr("ZERO/0: int; SUCC/1: int -> int;"),
-            Signature::default(),
-            vec![],
-            TypeContext::default(),
-        )
-        .unwrap()
-        .1;
-        let res = typed_rule("SUCC(x_) = ZERO", &mut lex);
-        let sig = &lex.0.signature;
+        with_ctx(32, |ctx| {
+            let mut lex = lexicon(
+                CompleteStr("ZERO/0: int; SUCC/1: int -> int;"),
+                Signature::default(),
+                vec![],
+                ctx,
+            )
+            .unwrap()
+            .1;
+            let res = typed_rule(CompleteStr("SUCC(x_) = ZERO"), &mut lex)
+                .unwrap()
+                .1;
 
-        assert_eq!(res.unwrap().1.display(sig), "SUCC(v0_) = ZERO");
+            assert_eq!(res.display(&lex.lex.sig), "SUCC(v0_) = ZERO");
+        })
     }
 
     #[test]
     fn trs_test() {
-        let mut lex = lexicon(
-            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            Signature::default(),
-            vec![],
-            TypeContext::default(),
-        )
-        .unwrap()
-        .1;
+        with_ctx(32, |ctx| {
+            let mut lex = lexicon(
+                CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
+                Signature::default(),
+                vec![],
+                ctx,
+            )
+            .unwrap()
+            .1;
 
-        let res = trs(
-            CompleteStr("PLUS(ZERO v0_) = ZERO; PLUS(SUCC(v0_) v1_) = SUCC(PLUS(v0_ v1_));"),
-            &mut lex,
-            true,
-            &[],
-        );
-        let sig = &lex.0.signature;
+            let res = trs(
+                CompleteStr("PLUS(ZERO v0_) = ZERO; PLUS(SUCC(v0_) v1_) = SUCC(PLUS(v0_ v1_));"),
+                &mut lex,
+                true,
+                &[],
+            )
+            .unwrap()
+            .1;
 
-        assert_eq!(
-            res.unwrap().1.utrs.display(sig),
-            "PLUS(ZERO v0_) = ZERO;\nPLUS(SUCC(v0_) v1_) = SUCC(PLUS(v0_ v1_));"
-        );
+            assert_eq!(
+                res.utrs.display(&lex.lex.sig),
+                "PLUS(ZERO v0_) = ZERO;\nPLUS(SUCC(v0_) v1_) = SUCC(PLUS(v0_ v1_));"
+            );
+        })
     }
 
     #[test]
     fn context_test() {
-        let mut lex = lexicon(
-            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            Signature::default(),
-            vec![],
-            TypeContext::default(),
-        )
-        .unwrap()
-        .1;
-        let res = typed_context(CompleteStr("PLUS(v0_ [!])"), &mut lex);
-        let sig = &lex.0.signature;
+        with_ctx(32, |ctx| {
+            let mut lex = lexicon(
+                CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
+                Signature::default(),
+                vec![],
+                ctx,
+            )
+            .unwrap()
+            .1;
+            let res = typed_context(CompleteStr("PLUS(v0_ [!])"), &mut lex)
+                .unwrap()
+                .1;
 
-        assert_eq!(res.unwrap().1.display(sig), "PLUS(v0_ [!])");
+            assert_eq!(res.display(&lex.lex.sig), "PLUS(v0_ [!])");
+        })
     }
 
     #[test]
     fn rulecontext_test() {
-        let mut lex = lexicon(
-            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            Signature::default(),
-            vec![],
-            TypeContext::default(),
-        )
-        .unwrap()
-        .1;
-        let res = typed_rulecontext(CompleteStr("PLUS(v0_ [!]) = ZERO"), &mut lex);
-        let sig = &lex.0.signature;
+        with_ctx(32, |ctx| {
+            let mut lex = lexicon(
+                CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
+                Signature::default(),
+                vec![],
+                ctx,
+            )
+            .unwrap()
+            .1;
+            let res = typed_rulecontext(CompleteStr("PLUS(v0_ [!]) = ZERO"), &mut lex)
+                .unwrap()
+                .1;
 
-        assert_eq!(res.unwrap().1.display(sig), "PLUS(v0_ [!]) = ZERO");
+            assert_eq!(res.display(&lex.lex.sig), "PLUS(v0_ [!]) = ZERO");
+        })
     }
 
     #[test]
     fn templates_test() {
-        let mut lex = lexicon(
-            CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
-            Signature::default(),
-            vec![],
-            TypeContext::default(),
-        )
-        .unwrap()
-        .1;
-        let res = templates(
-            CompleteStr("PLUS(v0_ [!]) = ZERO; [!] = SUCC(ZERO);"),
-            &mut lex,
-        );
-        let sig = &lex.0.signature;
-
-        let res_string = res
+        with_ctx(32, |ctx| {
+            let mut lex = lexicon(
+                CompleteStr("ZERO/0: int; SUCC/1: int -> int; PLUS/2: int -> int -> int;"),
+                Signature::default(),
+                vec![],
+                ctx,
+            )
             .unwrap()
-            .1
-            .iter()
-            .map(|rc| format!("{};", rc.display(sig)))
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert_eq!(res_string, "PLUS(v0_ [!]) = ZERO; [!] = SUCC(ZERO);");
+            .1;
+            let res = templates(
+                CompleteStr("PLUS(v0_ [!]) = ZERO; [!] = SUCC(ZERO);"),
+                &mut lex,
+            )
+            .unwrap()
+            .1;
+
+            let res_string = res
+                .iter()
+                .map(|rc| format!("{};", rc.display(&lex.lex.sig)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(res_string, "PLUS(v0_ [!]) = ZERO; [!] = SUCC(ZERO);");
+        })
     }
 }

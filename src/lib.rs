@@ -114,6 +114,8 @@ extern crate rayon;
 extern crate serde;
 #[macro_use]
 extern crate serde_json;
+#[macro_use]
+extern crate smallvec;
 extern crate term_rewriting;
 
 pub mod domains;

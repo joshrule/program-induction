@@ -4,7 +4,7 @@ use rand::Rng;
 use std::iter::once;
 use term_rewriting::{Rule, Term};
 
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Selects a rule from the TRS at random, finds all differences in the LHS and RHS,
     /// and makes rules from those differences and inserts them back into the TRS imediately after the background.
     ///
@@ -14,25 +14,27 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
     /// # extern crate rand;
-    /// # extern crate term_rewriting;
     /// # use programinduction::trs::{parse_lexicon, parse_trs};
-    /// # use polytype::Context as TypeContext;
     /// # use rand::thread_rng;
-    /// let mut lex = parse_lexicon(
-    ///     "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
-    ///     TypeContext::default(),
-    /// )
-    ///     .expect("parsed lexicon");
-    /// let trs = parse_trs("SUCC(PLUS(v0_ SUCC(v1_))) = SUCC(SUCC(PLUS(v0_ v1_)));", &mut lex, true, &[]).expect("parsed trs");
-    /// let mut rng = thread_rng();
+    /// # use polytype::{Source, atype::{with_ctx, TypeSchema, TypeContext}};
+    /// with_ctx(10, |ctx: TypeContext<'_>| {
+    ///     let mut rng = thread_rng();
+    ///     let mut lex = parse_lexicon(
+    ///         "PLUS/2: int -> int -> int; SUCC/1: int -> int; ZERO/0: int;",
+    ///         &ctx,
+    ///     ).expect("lex");
     ///
-    /// assert_eq!(1, trs.len());
+    ///     let trs = parse_trs(
+    ///         "SUCC(PLUS(v0_ SUCC(v1_))) = SUCC(SUCC(PLUS(v0_ v1_)));",
+    ///         &mut lex, true, &[],
+    ///     ).expect("trs");
+    ///     assert_eq!(1, trs.len());
     ///
-    /// let new_trss = trs.local_difference(&mut rng).unwrap();
-    ///
-    /// assert_eq!(2, new_trss.len())
+    ///     let new_trss = trs.local_difference(&mut rng).unwrap();
+    ///     assert_eq!(2, new_trss.len())
+    /// })
     /// ```
-    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    pub fn local_difference<R: Rng>(&self, rng: &mut R) -> Result<Vec<Self>, SampleError<'ctx>> {
         let (n, clause) = self.choose_clause(rng)?;
         let mut new_rules = TRS::local_difference_helper(&clause);
         self.filter_background(&mut new_rules);

@@ -4,17 +4,17 @@ use mcts::{
     StateEvaluator, Stats, TreeStore, MCTS,
 };
 use rand::{
-    distributions::{Bernoulli, WeightedIndex},
+    distributions::Bernoulli,
     prelude::{Distribution, Rng, SliceRandom},
 };
 use serde_json::Value;
 use std::{cmp::Ordering, collections::HashMap, convert::TryFrom};
-use term_rewriting::{Atom, Context, Rule, RuleContext};
+use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom};
 use trs::{
     Composition, Datum, Hypothesis, Lexicon, ModelParams, ProbabilisticModel, Recursion,
     Variablization, TRS,
 };
-use utils::{exp_normalize, logsumexp};
+use utils::logsumexp;
 
 type RevisionHandle = usize;
 type TerminalHandle = usize;
@@ -215,9 +215,7 @@ pub fn thompson_sample<R: Rng>(
     } else {
         parent
     };
-    exp_normalize(source, Some(-1000f64.ln()))
-        .map(|ps| source[WeightedIndex::new(ps).unwrap().sample(rng)])
-        .unwrap_or_else(|| *source.choose(rng).unwrap())
+    *source.choose(rng).unwrap()
 }
 
 pub fn compute_path(
@@ -331,6 +329,23 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for Vec<f64> {
 }
 
 impl MCTSMove {
+    fn head(&self) -> String {
+        match *self {
+            MCTSMove::MemorizeAll => "MemorizeAll".to_string(),
+            MCTSMove::SampleAtom(_) => "SampleAtom".to_string(),
+            MCTSMove::RegenerateThisRule(..) => "RegenerateThisRule".to_string(),
+            MCTSMove::Variablize(_) => "Variablize".to_string(),
+            MCTSMove::DeleteRule(_) => "DeleteRule".to_string(),
+            MCTSMove::MemorizeDatum(_) => "MemorizeDatum".to_string(),
+            MCTSMove::SampleRule => "SampleRule".to_string(),
+            MCTSMove::RegenerateRule => "RegenerateRule".to_string(),
+            MCTSMove::Generalize => "Generalize".to_string(),
+            MCTSMove::AntiUnify => "AntiUnify".to_string(),
+            MCTSMove::Compose(_) => "Compose".to_string(),
+            MCTSMove::Recurse(_) => "Recurse".to_string(),
+            MCTSMove::Stop => "Stop".to_string(),
+        }
+    }
     fn pretty(&self, lex: &Lexicon) -> String {
         match *self {
             MCTSMove::MemorizeAll => format!("MemorizeAll"),
@@ -622,7 +637,10 @@ impl Revision {
             MCTSMove::SampleAtom(atom) => match spec {
                 Some(MCTSMoveState::SampleRule(ref context)) => {
                     let place = tryo![context.leftmost_hole()];
-                    let new_context = tryo![context.replace(&place, Context::from(atom))];
+                    let new_context = tryo![context.replace(
+                        &place,
+                        Context::from(SituatedAtom::new(atom, trs.lex.signature()))
+                    )];
                     if let Ok(rule) = Rule::try_from(&new_context) {
                         let mut trs = trs.clone();
                         tryo![trs.append_clauses(vec![rule]).ok()];
@@ -635,7 +653,10 @@ impl Revision {
                 }
                 Some(MCTSMoveState::RegenerateRule(Some((n, ref context)))) => {
                     let place = tryo![context.leftmost_hole()];
-                    let new_context = tryo![context.replace(&place, Context::from(atom))];
+                    let new_context = tryo![context.replace(
+                        &place,
+                        Context::from(SituatedAtom::new(atom, trs.lex.signature()))
+                    )];
                     if let Ok(rule) = Rule::try_from(&new_context) {
                         let mut trs = trs.clone();
                         tryo![trs.utrs.remove_idx(*n).ok()];
@@ -781,7 +802,7 @@ impl PartialEq for Revision {
 impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
     type Move = MCTSMove;
     type MoveList = Vec<Self::Move>;
-    fn available_moves(&self, mcts: &mut TRSMCTS) -> Self::MoveList {
+    fn available_moves(&self, mcts: &TRSMCTS) -> Self::MoveList {
         match self.handle {
             StateHandle::Terminal(..) => vec![],
             StateHandle::Revision(rh) => mcts.revisions[rh].available_moves(mcts),
@@ -905,11 +926,15 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
             .filter(|m| !moves.contains(&m))
             .collect()
     }
-    fn describe_move(&self, mv: &Self::Move, mcts: &TRSMCTS) -> Value {
+    fn describe_move(&self, mv: &Self::Move, mcts: &TRSMCTS, failed: bool) -> Value {
         match self.handle {
             StateHandle::Terminal(_) => Value::Null,
             StateHandle::Revision(rh) => {
-                Value::String(mv.pretty(&mcts.trss[mcts.revisions[rh].trs].lex))
+                if failed {
+                    Value::String(mv.head())
+                } else {
+                    Value::String(mv.pretty(&mcts.trss[mcts.revisions[rh].trs].lex))
+                }
             }
         }
     }

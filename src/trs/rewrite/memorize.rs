@@ -2,14 +2,14 @@ use super::{super::as_result, Lexicon, SampleError, TRS};
 use itertools::Itertools;
 use term_rewriting::Rule;
 
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Given a list of `Rule`s considered to be data, memorize them all.
-    pub fn memorize<'c, 'd>(
-        lex: &Lexicon<'d>,
+    pub fn memorize(
+        lex: &Lexicon<'ctx, 'b>,
         deterministic: bool,
-        background: &'c [Rule],
+        background: &'b [Rule],
         data: &[Rule],
-    ) -> Vec<TRS<'c, 'd>> {
+    ) -> Vec<Self> {
         vec![TRS::new_unchecked(
             lex,
             deterministic,
@@ -19,7 +19,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
 
     /// Given a list of `Rule`s considered to be data, memorize a single datum.
-    pub fn memorize_one(&self, data: &[Rule]) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    pub fn memorize_one(&self, data: &[Rule]) -> Result<Vec<Self>, SampleError> {
         let mut rules = data.to_vec();
         self.filter_background(&mut rules);
         let results = rules

@@ -1,22 +1,16 @@
 use rand::Rng;
-use std::collections::HashMap;
 use term_rewriting::{Context, RuleContext};
-use trs::{as_result, Environment, GenerationLimit, SampleError, TRS};
+use trs::{as_result, GenerationLimit, SampleError, SampleParams, TRS};
 
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Regenerate some portion of a rule
     pub fn regenerate_rule<R: Rng>(
         &self,
         atom_weights: (f64, f64, f64, f64),
         max_size: usize,
         rng: &mut R,
-    ) -> Result<Vec<TRS<'a, 'b>>, SampleError> {
+    ) -> Result<Vec<TRS<'ctx, 'b>>, SampleError<'ctx>> {
         let (n, clause) = self.choose_clause(rng)?;
-        let mut types = HashMap::new();
-        let mut ctx = self.lex.0.ctx.clone();
-        let mut env = Environment::from_vars(&clause.variables(), &mut ctx);
-        self.lex
-            .infer_rule(&clause, &mut types, &mut env, &mut ctx)?;
         let rulecontext = RuleContext::from(clause.clone());
         let subcontexts = rulecontext.subcontexts();
         let mut trss = Vec::with_capacity(subcontexts.len());
@@ -24,16 +18,14 @@ impl<'a, 'b> TRS<'a, 'b> {
             for _attempt in 0..100 {
                 let template = rulecontext.replace(&place, Context::Hole).unwrap();
                 let mut trs = self.clone();
-                let mut ctx = trs.lex.0.to_mut().ctx.clone();
-                let limit = GenerationLimit::TotalSize(template.size() + max_size - 1);
-                let sample_result = trs.lex.sample_rule_from_context(
-                    &template,
+                let params = SampleParams {
                     atom_weights,
-                    limit,
-                    true,
-                    &mut ctx,
-                    rng,
-                );
+                    limit: GenerationLimit::TotalSize(template.size() + max_size - 1),
+                    variable: true,
+                };
+                let sample_result = trs
+                    .lex
+                    .sample_rule_from_context(&template, params, true, rng);
                 if let Ok(new_clause) = sample_result {
                     if new_clause.lhs != new_clause.rhs().unwrap() {
                         let mut new_rules = vec![new_clause];

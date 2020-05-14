@@ -20,7 +20,7 @@ pub type MoveHandle = usize;
 pub trait State<M: MCTS<State = Self>>: Clone + std::hash::Hash + Eq + Sized + Sync {
     type Move: std::fmt::Display + PartialEq + Clone + Sync + Send;
     type MoveList: IntoIterator<Item = Self::Move>;
-    fn available_moves(&self, mcts: &mut M) -> Self::MoveList;
+    fn available_moves(&self, mcts: &M) -> Self::MoveList;
     fn make_move(
         &self,
         parent: NodeHandle,
@@ -31,7 +31,7 @@ pub trait State<M: MCTS<State = Self>>: Clone + std::hash::Hash + Eq + Sized + S
     fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut M) -> Self::MoveList;
     fn check_move(mh: MoveHandle, mcts: &mut M, tree: &TreeStore<M>) -> MoveCheck<M>;
     fn describe_self(&self, mcts: &M) -> Value;
-    fn describe_move(&self, mv: &Self::Move, mcts: &M) -> Value;
+    fn describe_move(&self, mv: &Self::Move, mcts: &M, failed: bool) -> Value;
 }
 
 pub trait NodeStatistic<M: MCTS> {
@@ -336,7 +336,6 @@ impl<M: MCTS> SearchTree<M> {
             tree,
         }
     }
-    // TODO: update to use table.
     pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {
         let moves = self
             .tree
@@ -348,7 +347,7 @@ impl<M: MCTS> SearchTree<M> {
                     "handle": i,
                     "parent": mv.parent,
                     "child": mv.child,
-                    "move": self.tree.nodes[mv.parent].state.describe_move(&mv.mov, &self.mcts),
+                    "move": self.tree.nodes[mv.parent].state.describe_move(&mv.mov, &self.mcts, mv.pruning == Pruning::Hard),
                     "pruning": mv.pruning,
                 })
             })
@@ -492,13 +491,26 @@ impl<M: MCTS> SearchTree<M> {
         let old_moves = self.tree.nodes[nh]
             .outgoing
             .iter()
-            .map(|&m| &self.tree.moves[m].mov)
-            .cloned()
-            .collect::<Vec<_>>();
-        for mov in self.tree.nodes[nh]
-            .state
-            .add_moves_for_new_data(&old_moves, &mut self.mcts)
-        {
+            .map(|m| &self.tree.moves[*m].mov)
+            .collect::<Vec<&Move<M>>>();
+        let current_moves = self.tree.nodes[nh].state.available_moves(&self.mcts);
+        let (current_moves, new_moves): (Vec<Move<M>>, Vec<Move<M>>) = current_moves
+            .into_iter()
+            .partition(|m| old_moves.contains(&&m));
+        let (_, failed_moves): (Vec<&Move<M>>, Vec<&Move<M>>) = old_moves
+            .into_iter()
+            .partition(|m| current_moves.contains(*m));
+
+        let mut pruned = Vec::with_capacity(self.tree.nodes[nh].outgoing.len());
+        for &mh in &self.tree.nodes[nh].outgoing {
+            if failed_moves.contains(&&self.tree.moves[mh].mov) {
+                pruned.push(mh);
+            }
+        }
+        for mh in pruned {
+            self.hard_prune_tree(mh);
+        }
+        for mov in new_moves {
             let handle = self.tree.moves.len();
             let new_move: MoveInfo<M> = MoveInfo {
                 handle,

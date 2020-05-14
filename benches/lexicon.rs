@@ -5,13 +5,15 @@ extern crate rand;
 extern crate term_rewriting;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use polytype::{Context as TypeContext, TypeSchema};
-use programinduction::trs::{parse_lexicon, parse_term, Environment, Lexicon};
+use polytype::atype::{with_ctx, TypeContext, TypeSchema, Variable as TVar};
+use programinduction::trs::{
+    parse_lexicon, parse_rulecontext, parse_term, Env, GenerationLimit, Lexicon, SampleParams,
+};
 use rand::{rngs::StdRng, SeedableRng};
 use std::collections::HashMap;
-use term_rewriting::Term;
+use term_rewriting::{RuleContext, Term};
 
-fn create_test_lexicon<'b>() -> Lexicon<'b> {
+fn create_test_lexicon<'b, 'ctx>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {
     parse_lexicon(
         &[
             "C/0: list -> list;",
@@ -32,7 +34,7 @@ fn create_test_lexicon<'b>() -> Lexicon<'b> {
             "9/0: int;",
         ]
         .join(" "),
-        TypeContext::default(),
+        ctx,
     )
     .expect("parsed test lexicon")
 }
@@ -45,91 +47,119 @@ fn create_test_term(lex: &mut Lexicon) -> Term {
         .expect("parsed test term")
 }
 
-pub fn lexicon_infer_term_benchmark(c: &mut Criterion) {
-    let mut lex = create_test_lexicon();
-    let term = create_test_term(&mut lex);
-
-    c.bench_function("lexicon_infer_term", |b| {
-        b.iter(|| {
-            Lexicon::infer_term(
-                black_box(&lex),
-                black_box(&term),
-                black_box(&mut HashMap::new()),
-                black_box(&mut lex.context().clone()),
-            )
-        })
-    });
+fn create_test_rulecontext(lex: &mut Lexicon) -> RuleContext {
+    parse_rulecontext(
+        "(IF (ISEQUAL FALSE (ISEQUAL TRUE (ISEMPTY (TAIL (CONS [!] EMPTY))))) (CONS (HEAD (CONS (DIGIT 0) (CONS (DIGIT x_) [!]))) EMPTY) (C (CONS y_ (CONS z_ EMPTY)))) = [!] ([!] x_) (CONS z_ EMPTY) | (C (CONS y_ [!]))",
+        lex,
+    )
+        .expect("parsed test term")
 }
 
-pub fn lexicon_logprior_term_benchmark(c: &mut Criterion) {
-    let mut lex = create_test_lexicon();
-    let term = create_test_term(&mut lex);
-    let mut ctx = lex.context().clone();
-    let schema = TypeSchema::Monotype(ctx.new_variable());
-    let atom_weights = (5.0, 5.0, 1.0, 1.0);
+pub fn lexicon_enumerate_atoms_benchmark(c: &mut Criterion) {
+    with_ctx(1024, |ctx| {
+        let mut lex = create_test_lexicon(&ctx);
+        let tp = ctx.intern_tvar(TVar(lex.lex.to_mut().src.fresh()));
+        let mut env = Env::new(false, &lex, Some(lex.lex.src));
+        c.bench_function("enumerate_atoms", |b| {
+            b.iter(|| {
+                let s = env.snapshot();
+                black_box(&mut env).enumerate_atoms(black_box(tp)).count();
+                env.rollback(s);
+            })
+        });
+    })
+}
 
-    c.bench_function("lexicon_logprior_term", |b| {
-        b.iter(|| {
-            Lexicon::logprior_term(
-                black_box(&lex),
-                black_box(&term),
-                black_box(&schema),
-                black_box(atom_weights),
-                black_box(&mut Environment::new(true)),
-                black_box(&mut ctx.clone()),
-            )
-        })
-    });
+pub fn lexicon_infer_term_benchmark(c: &mut Criterion) {
+    with_ctx(1024, |ctx| {
+        let mut lex = create_test_lexicon(&ctx);
+        let term = create_test_term(&mut lex);
+        c.bench_function("lexicon_infer_term", |b| {
+            b.iter(|| black_box(&lex).infer_term(black_box(&term)))
+        });
+    })
 }
 
 pub fn lexicon_sample_term_benchmark(c: &mut Criterion) {
-    let lex = create_test_lexicon();
-    let mut ctx = lex.context().clone();
-    let schema = TypeSchema::Monotype(ctx.new_variable());
-    let atom_weights = (5.0, 5.0, 1.0, 1.0);
-    let variable = true;
-    let max_size = 20;
-    let mut rng = StdRng::seed_from_u64(1);
+    with_ctx(1024, |ctx| {
+        let mut lex = create_test_lexicon(&ctx);
+        let schema = ctx.intern_monotype(ctx.intern_tvar(TVar(lex.lex.to_mut().src.fresh())));
+        let params = SampleParams {
+            atom_weights: (5.0, 5.0, 1.0, 1.0),
+            variable: true,
+            limit: GenerationLimit::TermSize(20),
+        };
+        let invent = true;
+        let mut rng = StdRng::seed_from_u64(1);
 
-    c.bench_function("lexicon_sample_term", |b| {
-        b.iter(|| {
-            Lexicon::sample_term(
-                black_box(&lex),
-                black_box(&schema),
-                black_box(atom_weights),
-                black_box(variable),
-                black_box(max_size),
-                black_box(&mut Environment::new(true)),
-                black_box(&mut ctx.clone()),
-                black_box(&mut rng),
-            )
-        })
-    });
+        c.bench_function("lexicon_sample_term", |b| {
+            b.iter(|| {
+                black_box(&lex).sample_term(
+                    black_box(&schema),
+                    black_box(params),
+                    black_box(invent),
+                    black_box(&mut rng),
+                )
+            })
+        });
+    })
 }
 
-pub fn lexicon_enumerate_terms_benchmark(c: &mut Criterion) {
-    let lex = create_test_lexicon();
-    let mut ctx = lex.context().clone();
-    let schema = TypeSchema::Monotype(ctx.new_variable());
-    let env = Environment::new(true);
+pub fn lexicon_logprior_term_benchmark(c: &mut Criterion) {
+    with_ctx(1024, |ctx| {
+        let mut lex = create_test_lexicon(&ctx);
+        let term = create_test_term(&mut lex);
+        let schema = ctx.intern_monotype(ctx.intern_tvar(TVar(lex.lex.to_mut().src.fresh())));
+        let atom_weights = (5.0, 5.0, 1.0, 1.0);
 
-    c.bench_function("enumerate", |b| {
-        b.iter(|| {
-            black_box(&lex).enumerate_terms(
-                black_box(&schema),
-                black_box(5),
-                black_box(&env),
-                black_box(&ctx),
-            )
-        })
-    });
+        c.bench_function("lexicon_logprior_term", |b| {
+            b.iter(|| {
+                black_box(&lex).logprior_term(
+                    black_box(&term),
+                    black_box(&schema),
+                    black_box(true),
+                    black_box(atom_weights),
+                )
+            })
+        });
+    })
 }
+
+pub fn lexicon_infer_rulecontext_benchmark(c: &mut Criterion) {
+    with_ctx(1024, |ctx| {
+        let mut lex = create_test_lexicon(&ctx);
+        let context = create_test_rulecontext(&mut lex);
+        c.bench_function("lexicon_infer_rulecontext", |b| {
+            b.iter(|| black_box(&lex).infer_rulecontext(black_box(&context)))
+        });
+    })
+}
+
+//pub fn lexicon_enumerate_terms_benchmark(c: &mut Criterion) {
+//    let lex = create_test_lexicon();
+//    let mut ctx = lex.context().clone();
+//    let schema = TypeSchema::Monotype(ctx.new_variable());
+//    let env = Environment::new(true);
+//
+//    c.bench_function("enumerate", |b| {
+//        b.iter(|| {
+//            black_box(&lex).enumerate_terms(
+//                black_box(&schema),
+//                black_box(5),
+//                black_box(&env),
+//                black_box(&ctx),
+//            )
+//        })
+//    });
+//}
 
 criterion_group!(
     lexicon,
+    lexicon_enumerate_atoms_benchmark,
     lexicon_infer_term_benchmark,
-    lexicon_logprior_term_benchmark,
     lexicon_sample_term_benchmark,
-    lexicon_enumerate_terms_benchmark,
+    lexicon_logprior_term_benchmark,
+    lexicon_infer_rulecontext_benchmark,
+    //lexicon_enumerate_terms_benchmark,
 );
 criterion_main!(lexicon);

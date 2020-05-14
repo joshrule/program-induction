@@ -5,46 +5,46 @@
 //! - https://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system
 //! - (TAPL; Pierce, 2002, ch. 22)
 
+// TODO: reinstate
+// mod compose;
+// mod generalize;
+// mod recurse;
+// mod variablize;
 mod combine;
-mod compose;
 mod delete_rule;
-mod generalize;
 mod lgg;
 mod local_difference;
 mod log_likelihood;
 mod log_posterior;
 mod log_prior;
 mod memorize;
-mod meta;
 mod move_rule;
-mod recurse;
 mod regenerate_rule;
 mod sample_rule;
 mod swap_lhs_and_rhs;
-mod variablize;
 
-pub use self::compose::Composition;
-pub use self::recurse::Recursion;
-pub use self::variablize::{Types, Variablization};
+//pub use self::compose::Composition;
+//pub use self::recurse::Recursion;
+//pub use self::variablize::{Types, Variablization};
 use itertools::Itertools;
 use rand::{seq::IteratorRandom, Rng};
 use std::{borrow::Borrow, collections::HashMap, fmt};
 use term_rewriting::{MergeStrategy, Operator, Rule, Term, TRS as UntypedTRS};
-use trs::{Lexicon, Prior, SampleError, TypeError};
+use trs::{Lexicon, SampleError, TypeError};
 
 pub(crate) type Rules = Vec<Rule>;
-pub(crate) type FactoredSolution<'a> = (Lexicon<'a>, Rules, Rules, Rules, Rules);
+pub(crate) type FactoredSolution<'ctx, 'lex> = (Lexicon<'ctx, 'lex>, Rules, Rules, Rules, Rules);
 
 /// A typed term rewriting system.
 #[derive(Debug, PartialEq, Clone, Eq)]
-pub struct TRS<'a, 'b> {
-    pub(crate) lex: Lexicon<'b>,
+pub struct TRS<'ctx, 'b> {
+    pub(crate) lex: Lexicon<'ctx, 'b>,
     // INVARIANT: utrs never contains background information
-    pub(crate) background: &'a [Rule],
+    pub(crate) background: &'b [Rule],
     pub(crate) bg_ops: HashMap<Operator, Operator>,
     pub(crate) utrs: UntypedTRS,
 }
-impl<'a, 'b> TRS<'a, 'b> {
+impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Create a new `TRS` under the given [`Lexicon`]. Any background knowledge
     /// will be appended to the given ruleset.
     ///
@@ -53,35 +53,34 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// ```
     /// # #[macro_use] extern crate polytype;
     /// # extern crate programinduction;
-    /// # extern crate term_rewriting;
     /// # use programinduction::trs::{parse_lexicon, parse_rule, TRS};
-    /// # use polytype::Context as TypeContext;
-    /// let mut lex = parse_lexicon(
-    ///     "PLUS/2: int -> int -> int; SUCC/1: int-> int; ZERO/0: int;",
-    ///     TypeContext::default(),
-    /// )
-    ///     .expect("parsed lexicon");
+    /// # use polytype::atype::{with_ctx};
+    /// with_ctx(32, |ctx| {
+    ///     let mut lex = parse_lexicon(
+    ///         "PLUS/2: int -> int -> int; SUCC/1: int-> int; ZERO/0: int;",
+    ///         &ctx,
+    ///     ).expect("lex");
     ///
-    /// let rules = vec![
-    ///     parse_rule("PLUS(x_ ZERO) = x_", &mut lex).expect("parsed rule"),
-    ///     parse_rule("PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_))", &mut lex).expect("parsed rule"),
-    /// ];
+    ///     let rules = vec![
+    ///         parse_rule("PLUS(x_ ZERO) = x_", &mut lex).expect("rule 1"),
+    ///         parse_rule("PLUS(x_ SUCC(y_)) = SUCC(PLUS(x_ y_))", &mut lex).expect("rule 2"),
+    ///     ];
     ///
+    ///     let trs = TRS::new(&lex, true, &[], rules).unwrap();
     ///
-    /// let trs = TRS::new(&lex, true, &[], rules).unwrap();
-    ///
-    /// assert_eq!(trs.len(), 2);
+    ///     assert_eq!(trs.len(), 2);
+    /// })
     /// ```
     ///
     /// [`Lexicon`]: struct.Lexicon.html
-    pub fn new<'c, 'd>(
-        lexicon: &Lexicon<'d>,
+    pub fn new(
+        lexicon: &Lexicon<'ctx, 'b>,
         deterministic: bool,
-        background: &'c [Rule],
+        background: &'b [Rule],
         rules: Vec<Rule>,
-    ) -> Result<TRS<'c, 'd>, TypeError> {
+    ) -> Result<Self, TypeError<'ctx>> {
         let trs = TRS::new_unchecked(lexicon, deterministic, background, rules);
-        lexicon.infer_utrs(&trs.utrs, &mut lexicon.0.ctx.clone())?;
+        lexicon.infer_utrs(&trs.utrs)?;
         Ok(trs)
     }
 
@@ -89,12 +88,12 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// where you are already confident in the type safety of the new rules.
     ///
     /// [`TRS::new`]: struct.TRS.html#method.new
-    pub fn new_unchecked<'c, 'd>(
-        lexicon: &Lexicon<'d>,
+    pub fn new_unchecked(
+        lexicon: &Lexicon<'ctx, 'b>,
         deterministic: bool,
-        background: &'c [Rule],
+        background: &'b [Rule],
         rules: Vec<Rule>,
-    ) -> TRS<'c, 'd> {
+    ) -> Self {
         // Remove any rules already in the background
         let mut utrs = UntypedTRS::new(rules);
         for bg in background.iter().flat_map(|r| r.clauses()) {
@@ -103,10 +102,10 @@ impl<'a, 'b> TRS<'a, 'b> {
         if deterministic {
             utrs.make_deterministic();
         }
-        let lex = lexicon.clone();
+        //let lex = lexicon.clone();
         let bg_ops: HashMap<Operator, Operator> = HashMap::new();
         TRS {
-            lex,
+            lex: lexicon.clone(),
             background,
             bg_ops,
             utrs,
@@ -123,8 +122,8 @@ impl<'a, 'b> TRS<'a, 'b> {
             .collect()
     }
 
-    pub fn lexicon(&self) -> Lexicon {
-        self.lex.clone()
+    pub fn lexicon(&self) -> &Lexicon<'ctx, 'b> {
+        &self.lex
     }
 
     /// The size of the underlying [`term_rewriting::TRS`].
@@ -175,12 +174,12 @@ impl<'a, 'b> TRS<'a, 'b> {
         n: usize,
         old_clause: &Rule,
         new_clause: Rule,
-    ) -> Result<&mut TRS<'a, 'b>, SampleError> {
+    ) -> Result<&mut Self, SampleError<'ctx>> {
         self.utrs.replace(n, old_clause, new_clause)?;
         Ok(self)
     }
 
-    pub fn swap_rules(&mut self, rules: &[(Rule, Rule)]) -> Result<&mut TRS<'a, 'b>, SampleError> {
+    pub fn swap_rules(&mut self, rules: &[(Rule, Rule)]) -> Result<&mut Self, SampleError<'ctx>> {
         for (new_rule, old_rule) in rules {
             self.swap(&old_rule, new_rule.clone())?;
         }
@@ -191,7 +190,7 @@ impl<'a, 'b> TRS<'a, 'b> {
         &mut self,
         old_rule: &Rule,
         new_rule: Rule,
-    ) -> Result<&mut TRS<'a, 'b>, SampleError> {
+    ) -> Result<&mut Self, SampleError<'ctx>> {
         if let Some((n, _)) = self.utrs.get_clause(old_rule) {
             self.utrs.replace(n, old_rule, new_rule)?;
         } else {
@@ -200,14 +199,14 @@ impl<'a, 'b> TRS<'a, 'b> {
         Ok(self)
     }
 
-    pub fn is_alpha(trs1: &TRS, trs2: &TRS) -> bool {
+    pub fn is_alpha(trs1: &Self, trs2: &Self) -> bool {
         if trs1.len() != trs2.len() || trs1.background != trs2.background {
             return false;
         }
         if let Ok((lex, sig_change)) =
             Lexicon::merge(&trs1.lex, &trs2.lex, MergeStrategy::OperatorsByArityAndName)
         {
-            let reified_trs2 = sig_change.reify_trs(&lex.0.signature, trs2.utrs());
+            let reified_trs2 = sig_change.reify_trs(&lex.lex.sig, trs2.utrs());
             trs1.utrs
                 .rules
                 .iter()
@@ -243,7 +242,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     }
 
     /// pick a single clause
-    fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<(usize, Rule), SampleError> {
+    fn choose_clause<R: Rng>(&self, rng: &mut R) -> Result<(usize, Rule), SampleError<'ctx>> {
         let mut clauses = self.clauses();
         let idx = (0..clauses.len())
             .choose(rng)
@@ -253,7 +252,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     fn contains(&self, rule: &Rule) -> bool {
         self.utrs.get_clause(rule).is_some()
     }
-    fn remove_clauses<R>(&mut self, rules: &[R]) -> Result<(), SampleError>
+    fn remove_clauses<R>(&mut self, rules: &[R]) -> Result<(), SampleError<'ctx>>
     where
         R: Borrow<Rule>,
     {
@@ -264,13 +263,13 @@ impl<'a, 'b> TRS<'a, 'b> {
         }
         Ok(())
     }
-    fn prepend_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
+    fn prepend_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError<'ctx>> {
         self.utrs
             .pushes(rules)
             .map(|_| ())
             .map_err(SampleError::from)
     }
-    pub(crate) fn append_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError> {
+    pub(crate) fn append_clauses(&mut self, rules: Vec<Rule>) -> Result<(), SampleError<'ctx>> {
         self.utrs
             .inserts_idx(self.num_learned_rules(), rules)
             .map(|_| ())
@@ -286,7 +285,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             rules.retain(|rule| {
                 self.background
                     .iter()
-                    .all(|bg| Term::alpha(vec![(&bg.lhs, &rule.lhs)]).is_none())
+                    .all(|bg| Term::alpha(&[(&bg.lhs, &rule.lhs)]).is_none())
             });
         }
         rules.retain(|rule| !rule.is_empty());
@@ -296,13 +295,13 @@ impl<'a, 'b> TRS<'a, 'b> {
         self.utrs.is_deterministic()
     }
 }
-impl<'a, 'b> fmt::Display for TRS<'a, 'b> {
+impl<'ctx, 'b> fmt::Display for TRS<'ctx, 'b> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let trs_str = self
             .utrs
             .rules
             .iter()
-            .map(|r| format!("{};", r.display(&self.lex.0.signature)))
+            .map(|r| format!("{};", r.display(&self.lex.lex.sig)))
             .join("\n");
 
         write!(f, "{}", trs_str)
@@ -311,11 +310,11 @@ impl<'a, 'b> fmt::Display for TRS<'a, 'b> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lexicon, TRS};
-    use polytype::Context as TypeContext;
+    use polytype::atype::{with_ctx, TypeContext};
     use trs::parser::{parse_lexicon, parse_rule, parse_trs};
+    use trs::{Lexicon, TRS};
 
-    fn create_test_lexicon<'b>() -> Lexicon<'b> {
+    fn create_test_lexicon<'ctx, 'b>(ctx: &TypeContext<'b>) -> Lexicon<'b, 'ctx> {
         parse_lexicon(
             &[
                 "C/0: list -> list;",
@@ -336,113 +335,135 @@ mod tests {
                 "9/0: int;",
             ]
             .join(" "),
-            TypeContext::default(),
+            &ctx,
         )
         .expect("parsed lexicon")
     }
 
     #[test]
     pub fn is_alpha_test_0() {
-        let mut lex = create_test_lexicon();
-        let bg = vec![
-            parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
-            parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
-            parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
-            parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
-            parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
-            parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
-            parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
-            parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
-            parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
-        ];
+        with_ctx(32, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let bg = vec![
+                parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
+                parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
+                parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
+                parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
+                parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
+                parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
+                parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
+                parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
+                parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
+            ];
 
-        let mut lex1 = lex.clone();
-        lex1.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(int), tp!(int)]]);
-        let trs1 = parse_trs("F 0 = 1; F 1 = 0;", &mut lex1, true, &bg[..]).expect("parsed trs");
+            let mut lex1 = lex.clone();
+            let t_int = ctx.intern_tcon(ctx.intern_name("int"), &[]);
+            let tp = ctx.arrow(t_int, t_int);
+            lex1.invent_operator(Some("F".to_string()), 0, tp);
+            let trs1 =
+                parse_trs("F 0 = 1; F 1 = 0;", &mut lex1, true, &bg[..]).expect("parsed trs");
 
-        let mut lex2 = lex.clone();
-        lex2.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(int), tp!(int)]]);
-        let trs2 = parse_trs("F 0 = 1; F 1 = 0;", &mut lex2, true, &bg[..]).expect("parsed trs");
+            let mut lex2 = lex.clone();
+            lex2.invent_operator(Some("F".to_string()), 0, tp);
+            let trs2 =
+                parse_trs("F 0 = 1; F 1 = 0;", &mut lex2, true, &bg[..]).expect("parsed trs");
 
-        assert!(TRS::is_alpha(&trs1, &trs2));
-        assert!(TRS::same_shape(&trs1, &trs2));
+            assert!(TRS::is_alpha(&trs1, &trs2));
+            assert!(TRS::same_shape(&trs1, &trs2));
+        })
     }
 
     #[test]
     pub fn is_alpha_test_1() {
-        let mut lex = create_test_lexicon();
-        let bg = vec![
-            parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
-            parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
-            parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
-            parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
-            parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
-            parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
-            parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
-            parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
-            parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
-        ];
+        with_ctx(32, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let bg = vec![
+                parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
+                parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
+                parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
+                parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
+                parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
+                parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
+                parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
+                parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
+                parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
+            ];
 
-        let mut lex1 = lex.clone();
-        lex1.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(int), tp!(int)]]);
-        let trs1 = parse_trs("F 0 = 1; F 1 = 0;", &mut lex1, true, &bg[..]).expect("parsed trs");
+            let mut lex1 = lex.clone();
+            let t_int = ctx.intern_tcon(ctx.intern_name("int"), &[]);
+            let t_bool = ctx.intern_tcon(ctx.intern_name("bool"), &[]);
+            let tp = ctx.arrow(t_int, t_int);
+            let distractor = ctx.arrow(t_bool, t_int);
+            lex1.invent_operator(Some("F".to_string()), 0, tp);
+            let trs1 =
+                parse_trs("F 0 = 1; F 1 = 0;", &mut lex1, true, &bg[..]).expect("parsed trs");
 
-        let mut lex2 = lex.clone();
-        lex2.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(bool), tp!(int)]]);
-        lex2.invent_operator(Some("G".to_string()), 0, &tp![@arrow[tp!(int), tp!(int)]]);
-        let trs2 = parse_trs("G 0 = 1; G 1 = 0;", &mut lex2, true, &bg[..]).expect("parsed trs");
+            let mut lex2 = lex.clone();
+            lex2.invent_operator(Some("F".to_string()), 0, distractor);
+            lex2.invent_operator(Some("G".to_string()), 0, tp);
+            let trs2 =
+                parse_trs("G 0 = 1; G 1 = 0;", &mut lex2, true, &bg[..]).expect("parsed trs");
 
-        assert!(!TRS::is_alpha(&trs1, &trs2));
-        assert!(TRS::same_shape(&trs1, &trs2));
+            assert!(!TRS::is_alpha(&trs1, &trs2));
+            assert!(TRS::same_shape(&trs1, &trs2));
+        })
     }
 
     #[test]
     pub fn is_alpha_test_2() {
-        let mut lex = create_test_lexicon();
-        let bg = vec![
-            parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
-            parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
-            parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
-            parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
-            parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
-            parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
-            parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
-            parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
-            parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
-        ];
+        with_ctx(32, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let bg = vec![
+                parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
+                parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
+                parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
+                parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
+                parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
+                parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
+                parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
+                parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
+                parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
+            ];
 
-        let mut lex1 = lex.clone();
-        lex1.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(int), tp!(int)]]);
-        let trs1 = parse_trs("F 0 = 1; F 1 = 0;", &mut lex1, true, &bg[..]).expect("parsed trs");
+            let mut lex1 = lex.clone();
+            let t_int = ctx.intern_tcon(ctx.intern_name("int"), &[]);
+            let tp = ctx.arrow(t_int, t_int);
+            lex1.invent_operator(Some("F".to_string()), 0, tp);
+            let trs1 =
+                parse_trs("F 0 = 1; F 1 = 0;", &mut lex1, true, &bg[..]).expect("parsed trs");
 
-        let mut lex2 = lex.clone();
-        lex2.invent_operator(Some("F".to_string()), 0, &tp![@arrow[tp!(int), tp!(int)]]);
-        lex2.invent_operator(Some("G".to_string()), 0, &tp![@arrow[tp!(int), tp!(int)]]);
-        let trs2 = parse_trs("G 0 = 1; F 1 = 0;", &mut lex2, true, &bg[..]).expect("parsed trs");
+            let mut lex2 = lex.clone();
+            lex2.invent_operator(Some("F".to_string()), 0, tp);
+            lex2.invent_operator(Some("G".to_string()), 0, tp);
+            let trs2 =
+                parse_trs("G 0 = 1; F 1 = 0;", &mut lex2, true, &bg[..]).expect("parsed trs");
 
-        assert!(!TRS::is_alpha(&trs1, &trs2));
-        assert!(!TRS::same_shape(&trs1, &trs2));
+            assert!(!TRS::is_alpha(&trs1, &trs2));
+            assert!(!TRS::same_shape(&trs1, &trs2));
+        })
     }
 
     #[test]
     pub fn same_shape_test() {
-        let mut lex = create_test_lexicon();
-        let bg = vec![
-            parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
-            parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
-            parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
-            parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
-            parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
-            parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
-            parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
-            parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
-            parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
-        ];
-        let trs1 = parse_trs("C = C;", &mut lex, true, &bg[..]).expect("parsed trs");
-        let trs2 = parse_trs(".(C .(.(CONS .(DIGIT 9)) .(.(CONS .(DIGIT 5)) .(.(CONS .(DIGIT 9)) EMPTY)))) = .(.(CONS .(DIGIT 9)) EMPTY);", &mut lex, true, &bg[..]).expect("parsed trs");
-        assert!(!TRS::same_shape(&trs1, &trs2));
-        let trs1 = parse_trs("4 = 5;", &mut lex, true, &bg[..]).expect("parsed trs");
-        let trs2 = parse_trs("5 = 4;", &mut lex, true, &bg[..]).expect("parsed trs");
-        assert!(TRS::same_shape(&trs1, &trs2));
+        with_ctx(32, |ctx| {
+            let mut lex = create_test_lexicon(&ctx);
+            let bg = vec![
+                parse_rule("ISEMPTY EMPTY = TRUE", &mut lex).expect("parsed rule 1"),
+                parse_rule("ISEMPTY (CONS x_ y_) = FALSE", &mut lex).expect("parsed rule 2"),
+                parse_rule("ISEQUAL x_ x_ = TRUE", &mut lex).expect("parsed rule 3"),
+                parse_rule("ISEQUAL x_ y_ = FALSE", &mut lex).expect("parsed rule 4"),
+                parse_rule("HEAD (CONS x_ y_) = x_", &mut lex).expect("parsed rule 5"),
+                parse_rule("IF TRUE  x_ y_ = x_", &mut lex).expect("parsed rule 6"),
+                parse_rule("IF FALSE x_ y_ = y_", &mut lex).expect("parsed rule 7"),
+                parse_rule("TAIL EMPTY = EMPTY", &mut lex).expect("parsed rule 8"),
+                parse_rule("TAIL (CONS x_ y_) = y_", &mut lex).expect("parsed rule 9"),
+            ];
+            let trs1 = parse_trs("C = C;", &mut lex, true, &bg[..]).expect("parsed trs");
+            let trs2 = parse_trs(".(C .(.(CONS .(DIGIT 9)) .(.(CONS .(DIGIT 5)) .(.(CONS .(DIGIT 9)) EMPTY)))) = .(.(CONS .(DIGIT 9)) EMPTY);", &mut lex, true, &bg[..]).expect("parsed trs");
+            assert!(!TRS::same_shape(&trs1, &trs2));
+            let trs1 = parse_trs("4 = 5;", &mut lex, true, &bg[..]).expect("parsed trs");
+            let trs2 = parse_trs("5 = 4;", &mut lex, true, &bg[..]).expect("parsed trs");
+            assert!(TRS::same_shape(&trs1, &trs2));
+        })
     }
 }

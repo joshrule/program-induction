@@ -1,6 +1,5 @@
 use std::f64::NEG_INFINITY;
-
-use super::{Prior, TRS};
+use trs::{Prior, TRS};
 use utils::{block_generative_logpdf, fail_geometric_logpdf};
 
 impl<'a, 'b> TRS<'a, 'b> {
@@ -17,13 +16,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             } => {
                 let p_num_rules = |k| fail_geometric_logpdf(k, 1.0 - p_rule);
                 self.lex
-                    .logprior_utrs(
-                        &self.utrs,
-                        p_num_rules,
-                        atom_weights,
-                        true,
-                        &mut self.lex.0.ctx.clone(),
-                    )
+                    .logprior_utrs(&self.utrs, p_num_rules, atom_weights, true)
                     .unwrap_or(NEG_INFINITY)
             }
             Prior::BlockGenerative {
@@ -34,13 +27,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             } => {
                 let p_num_rules = |k| block_generative_logpdf(p_null, 1.0 - p_rule, k, n_blocks);
                 self.lex
-                    .logprior_utrs(
-                        &self.utrs,
-                        p_num_rules,
-                        atom_weights,
-                        true,
-                        &mut self.lex.0.ctx.clone(),
-                    )
+                    .logprior_utrs(&self.utrs, p_num_rules, atom_weights, true)
                     .unwrap_or(NEG_INFINITY)
             }
             Prior::StringBlockGenerative {
@@ -62,7 +49,6 @@ impl<'a, 'b> TRS<'a, 'b> {
                         dist,
                         t_max,
                         d_max,
-                        &mut self.lex.0.ctx.clone(),
                     )
                     .unwrap_or(NEG_INFINITY)
             }
