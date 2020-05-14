@@ -33,11 +33,11 @@ pub struct MCTSState {
 }
 
 #[derive(Debug, Clone)]
-pub struct Revision {
+pub struct Revision<'ctx> {
     n: usize,
     trs: TRSHandle,
-    spec: Option<MCTSMoveState>,
-    playout: PlayoutState<HypothesisHandle>,
+    spec: Option<MCTSMoveState<'ctx>>,
+    playout: PlayoutState<'ctx, HypothesisHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,15 +45,15 @@ pub struct Terminal {
     trs: HypothesisHandle,
 }
 
-pub enum StateKind {
+pub enum StateKind<'ctx> {
     Terminal(Terminal),
-    Revision(Revision),
+    Revision(Revision<'ctx>),
 }
 
-pub enum MoveResult<'a, 'b> {
+pub enum MoveResult<'ctx, 'b> {
     Failed,
     Terminal,
-    Revision(Option<TRS<'a, 'b>>, Option<MCTSMoveState>),
+    Revision(Option<TRS<'ctx, 'b>>, Option<MCTSMoveState<'ctx>>),
 }
 
 macro_rules! r#tryo {
@@ -67,14 +67,14 @@ macro_rules! r#tryo {
     };
 }
 
-pub struct TRSMCTS<'a, 'b> {
-    pub lexicon: Lexicon<'b>,
-    pub bg: &'a [Rule],
+pub struct TRSMCTS<'ctx, 'b> {
+    pub lexicon: Lexicon<'ctx, 'b>,
+    pub bg: &'ctx [Rule],
     pub deterministic: bool,
-    pub data: &'a [Datum],
-    pub trss: Vec<TRS<'a, 'b>>,
-    pub hypotheses: Vec<Hypothesis<MCTSObj<'a, 'b>, Datum, MCTSModel<'a, 'b>>>,
-    pub revisions: Vec<Revision>,
+    pub data: &'ctx [Datum],
+    pub trss: Vec<TRS<'ctx, 'b>>,
+    pub hypotheses: Vec<Hypothesis<MCTSObj<'ctx, 'b>, Datum, MCTSModel<'ctx, 'b>>>,
+    pub revisions: Vec<Revision<'ctx>>,
     pub terminals: Vec<Terminal>,
     pub model: ModelParams,
     pub params: MCTSParams,
@@ -111,14 +111,14 @@ pub enum Selection {
     Thompson(u32),
 }
 
-pub struct MCTSObj<'a, 'b> {
-    pub trs: TRS<'a, 'b>,
-    pub meta: Vec<MCTSMove>,
+pub struct MCTSObj<'ctx, 'b> {
+    pub trs: TRS<'ctx, 'b>,
+    pub meta: Vec<MCTSMove<'ctx>>,
     pub meta_prior: f64,
 }
 
-impl<'a, 'b> MCTSObj<'a, 'b> {
-    pub fn new(trs: TRS<'a, 'b>, meta: Vec<MCTSMove>, meta_prior: f64) -> Self {
+impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
+    pub fn new(trs: TRS<'ctx, 'b>, meta: Vec<MCTSMove<'ctx>>, meta_prior: f64) -> Self {
         MCTSObj {
             trs,
             meta,
@@ -218,12 +218,12 @@ pub fn thompson_sample<R: Rng>(
     *source.choose(rng).unwrap()
 }
 
-pub fn compute_path(
+pub fn compute_path<'ctx, 'b>(
     parent: NodeHandle,
-    mv: &MCTSMove,
-    tree: &TreeStore<TRSMCTS>,
+    mv: &MCTSMove<'ctx>,
+    tree: &TreeStore<TRSMCTS<'ctx, 'b>>,
     children: bool,
-) -> (Vec<MCTSMove>, f64) {
+) -> (Vec<MCTSMove<'ctx>>, f64) {
     let path = tree.path_tree(parent);
     let mut moves = path.iter().map(|mh| tree.mv(*mh).mov.clone()).collect_vec();
     moves.push(mv.clone());
@@ -242,6 +242,51 @@ pub fn compute_path(
     (moves, score)
 }
 
+// TODO: Reinstate, but this is a HACK. How can we move it into trs::mcts?
+pub fn rulecontext_fillers<'ctx, 'b>(
+    trs: &TRS<'ctx, 'b>,
+    context: &RuleContext,
+    place: &[usize],
+) -> Vec<Atom> {
+    match context.at(place) {
+        Some(&Context::Hole) => {
+            if let Ok(mut env) = trs.lex.infer_rulecontext(context) {
+                let tp = context
+                    .subcontexts()
+                    .iter()
+                    .zip(&env.tps)
+                    .find(|((_, p), _)| p.as_slice() == place)
+                    .map(|(_, tp)| *tp)
+                    .expect("tp");
+                env.invent = place[0] == 0;
+                let new_atoms = env.enumerate_atoms(tp).collect_vec();
+                new_atoms
+                    .into_iter()
+                    .filter_map(|atom| match atom {
+                        None => {
+                            if place == [0] {
+                                None
+                            } else {
+                                env.new_variable().map(Atom::Variable)
+                            }
+                        }
+                        Some(a) => {
+                            if place == [0] && a.is_variable() {
+                                None
+                            } else {
+                                Some(a)
+                            }
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        }
+        _ => vec![],
+    }
+}
+
 pub struct BestSoFarMoveEvaluator;
 pub struct RescaledByBestMoveEvaluator;
 pub struct RelativeMassMoveEvaluator;
@@ -250,18 +295,18 @@ pub struct ThompsonMoveEvaluator;
 pub struct MCTSStateEvaluator;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum MCTSMoveState {
+pub enum MCTSMoveState<'ctx> {
     SampleRule(RuleContext),
     RegenerateRule(Option<(usize, RuleContext)>),
-    Compose(Vec<Composition>),
-    Recurse(Vec<Recursion>),
-    Variablize(Vec<Variablization>),
+    Compose(Vec<Composition<'ctx>>),
+    Recurse(Vec<Recursion<'ctx>>),
+    Variablize(Vec<Variablization<'ctx>>),
     MemorizeDatum,
     DeleteRule,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum MCTSMove {
+pub enum MCTSMove<'ctx> {
     SampleRule,
     SampleAtom(Atom),
     RegenerateRule,
@@ -269,17 +314,17 @@ pub enum MCTSMove {
     MemorizeAll,
     MemorizeDatum(Option<usize>),
     DeleteRule(Option<usize>),
-    Variablize(Option<Variablization>),
-    Compose(Option<Composition>),
-    Recurse(Option<Recursion>),
+    Variablize(Option<Variablization<'ctx>>),
+    Compose(Option<Composition<'ctx>>),
+    Recurse(Option<Recursion<'ctx>>),
     Generalize,
     AntiUnify,
     Stop,
 }
 
 #[derive(Debug, Clone)]
-pub enum PlayoutState<T: std::fmt::Debug + Copy> {
-    Untried(Vec<MCTSMove>, f64),
+pub enum PlayoutState<'ctx, T: std::fmt::Debug + Copy> {
+    Untried(Vec<MCTSMove<'ctx>>, f64),
     Failed,
     Success(T),
 }
@@ -328,7 +373,7 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for Vec<f64> {
     }
 }
 
-impl MCTSMove {
+impl<'ctx> MCTSMove<'ctx> {
     fn head(&self) -> String {
         match *self {
             MCTSMove::MemorizeAll => "MemorizeAll".to_string(),
@@ -385,7 +430,7 @@ impl MCTSMove {
         }
     }
 }
-impl std::fmt::Display for MCTSMove {
+impl<'ctx> std::fmt::Display for MCTSMove<'ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             MCTSMove::MemorizeAll => write!(f, "MemorizeAll"),
@@ -418,12 +463,12 @@ impl Terminal {
     }
 }
 
-impl Revision {
+impl<'ctx> Revision<'ctx> {
     pub fn new(
         trs: TRSHandle,
-        spec: Option<MCTSMoveState>,
+        spec: Option<MCTSMoveState<'ctx>>,
         n: usize,
-        (path, prior): (Vec<MCTSMove>, f64),
+        (path, prior): (Vec<MCTSMove<'ctx>>, f64),
     ) -> Self {
         Revision {
             trs,
@@ -438,12 +483,12 @@ impl Revision {
         println!("playout: {:?}", self.playout);
         println!("spec: {:?}", self.spec);
     }
-    fn available_moves_inner<'a, 'b>(
-        trs: &TRS<'a, 'b>,
-        spec: &Option<MCTSMoveState>,
+    fn available_moves_inner<'b>(
+        trs: &TRS<'ctx, 'b>,
+        spec: &Option<MCTSMoveState<'ctx>>,
         n: usize,
-        mcts: &TRSMCTS,
-    ) -> Vec<MCTSMove> {
+        mcts: &TRSMCTS<'ctx, 'b>,
+    ) -> Vec<MCTSMove<'ctx>> {
         let mut moves = vec![];
         match spec {
             None => {
@@ -502,8 +547,7 @@ impl Revision {
             Some(MCTSMoveState::SampleRule(ref context))
             | Some(MCTSMoveState::RegenerateRule(Some((_, ref context)))) => {
                 if let Some(place) = context.leftmost_hole() {
-                    trs.lex
-                        .rulecontext_fillers(&context, &place)
+                    rulecontext_fillers(&trs, &context, &place)
                         .into_iter()
                         .map(MCTSMove::SampleAtom)
                         .for_each(|mv| moves.push(mv))
@@ -524,15 +568,15 @@ impl Revision {
         }
         moves
     }
-    pub fn available_moves(&self, mcts: &TRSMCTS) -> Vec<MCTSMove> {
+    pub fn available_moves<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> Vec<MCTSMove<'ctx>> {
         Revision::available_moves_inner(&mcts.trss[self.trs], &self.spec, self.n, mcts)
     }
-    pub fn make_move_inner<'a, 'b>(
-        mv: &MCTSMove,
-        spec: &Option<MCTSMoveState>,
+    pub fn make_move_inner<'b>(
+        mv: &MCTSMove<'ctx>,
+        spec: &Option<MCTSMoveState<'ctx>>,
         data: &[Datum],
-        trs: &TRS<'a, 'b>,
-    ) -> MoveResult<'a, 'b> {
+        trs: &TRS<'ctx, 'b>,
+    ) -> MoveResult<'ctx, 'b> {
         match *mv {
             MCTSMove::Stop => MoveResult::Terminal,
             MCTSMove::Generalize => {
@@ -568,8 +612,7 @@ impl Revision {
                 MoveResult::Revision(Some(trs), None)
             }
             MCTSMove::Variablize(None) => {
-                let types = trs.collect_types();
-                let vs = trs.find_all_variablizations(&types);
+                let vs = trs.find_all_variablizations();
                 if vs.is_empty() {
                     MoveResult::Failed
                 } else {
@@ -578,8 +621,8 @@ impl Revision {
             }
             MCTSMove::Variablize(Some((ref m, ref tp, ref places))) => {
                 let mut clauses = trs.utrs.clauses();
-                clauses[*m] = tryo![trs.apply_variablization_typeless(tp, places, &clauses[*m])];
-                let new_trs = tryo![trs.adopt_solution(&mut clauses.clone())];
+                clauses[*m] = tryo![trs.apply_variablization(tp, places, &clauses[*m])];
+                let new_trs = tryo![trs.adopt_rules(&mut clauses.clone())];
                 MoveResult::Revision(Some(new_trs), None)
             }
             MCTSMove::DeleteRule(None) => {
@@ -672,11 +715,11 @@ impl Revision {
             },
         }
     }
-    pub fn make_move(
+    pub fn make_move<'b>(
         parent: NodeHandle,
-        mv: &MCTSMove,
-        mcts: &mut TRSMCTS,
-        tree: &TreeStore<TRSMCTS>,
+        mv: &MCTSMove<'ctx>,
+        mcts: &mut TRSMCTS<'ctx, 'b>,
+        tree: &TreeStore<TRSMCTS<'ctx, 'b>>,
         handle: RevisionHandle,
     ) -> Option<MCTSState> {
         let trsh = mcts.revisions[handle].trs;
@@ -730,13 +773,13 @@ impl Revision {
         }?;
         Some(mcts.add_state(state))
     }
-    pub fn playout<'a, 'b, R: Rng>(
+    pub fn playout<'b, R: Rng>(
         rh: RevisionHandle,
-        mcts: &mut TRSMCTS<'a, 'b>,
-        start_path: &[MCTSMove],
+        mcts: &mut TRSMCTS<'ctx, 'b>,
+        start_path: &[MCTSMove<'ctx>],
         start_prior: f64,
         rng: &mut R,
-    ) -> Option<(TRS<'a, 'b>, Vec<MCTSMove>, f64)> {
+    ) -> Option<(TRS<'ctx, 'b>, Vec<MCTSMove<'ctx>>, f64)> {
         let trsh = mcts.revisions[rh].trs;
         // TODO: Maybe try backtracking instead of a fixed count?
         for _ in 0..10 {
@@ -792,17 +835,17 @@ impl Revision {
         None
     }
 }
-impl Eq for Revision {}
-impl PartialEq for Revision {
+impl<'ctx> Eq for Revision<'ctx> {}
+impl<'ctx> PartialEq for Revision<'ctx> {
     fn eq(&self, other: &Self) -> bool {
         self.trs == other.trs && self.spec == other.spec
     }
 }
 
-impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
-    type Move = MCTSMove;
+impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
+    type Move = MCTSMove<'ctx>;
     type MoveList = Vec<Self::Move>;
-    fn available_moves(&self, mcts: &TRSMCTS) -> Self::MoveList {
+    fn available_moves(&self, mcts: &TRSMCTS<'ctx, 'b>) -> Self::MoveList {
         match self.handle {
             StateHandle::Terminal(..) => vec![],
             StateHandle::Revision(rh) => mcts.revisions[rh].available_moves(mcts),
@@ -812,8 +855,8 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
         &self,
         parent: NodeHandle,
         mv: &Self::Move,
-        mcts: &mut TRSMCTS<'a, 'b>,
-        tree: &TreeStore<TRSMCTS>,
+        mcts: &mut TRSMCTS<'ctx, 'b>,
+        tree: &TreeStore<TRSMCTS<'ctx, 'b>>,
     ) -> Option<Self> {
         match self.handle {
             StateHandle::Terminal(..) => panic!("cannot move from terminal"),
@@ -822,9 +865,9 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
     }
     fn check_move(
         mh: MoveHandle,
-        mcts: &mut TRSMCTS<'a, 'b>,
-        tree: &TreeStore<TRSMCTS<'a, 'b>>,
-    ) -> MoveCheck<TRSMCTS<'a, 'b>> {
+        mcts: &mut TRSMCTS<'ctx, 'b>,
+        tree: &TreeStore<TRSMCTS<'ctx, 'b>>,
+    ) -> MoveCheck<TRSMCTS<'ctx, 'b>> {
         let ph = tree.mv(mh).parent;
         let ch;
         match tree.mv(mh).child {
@@ -920,7 +963,11 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
             }
         }
     }
-    fn add_moves_for_new_data(&self, moves: &[Self::Move], mcts: &mut TRSMCTS) -> Vec<Self::Move> {
+    fn add_moves_for_new_data(
+        &self,
+        moves: &[Self::Move],
+        mcts: &mut TRSMCTS<'ctx, 'b>,
+    ) -> Vec<Self::Move> {
         self.available_moves(mcts)
             .into_iter()
             .filter(|m| !moves.contains(&m))
@@ -972,7 +1019,7 @@ impl<'a, 'b> State<TRSMCTS<'a, 'b>> for MCTSState {
     }
 }
 
-impl<'a, 'b> MCTS for TRSMCTS<'a, 'b> {
+impl<'ctx, 'b> MCTS for TRSMCTS<'ctx, 'b> {
     type StateEval = MCTSStateEvaluator;
     type MoveEval = ThompsonMoveEvaluator;
     type State = MCTSState;
@@ -984,15 +1031,15 @@ impl<'a, 'b> MCTS for TRSMCTS<'a, 'b> {
     }
 }
 
-impl<'a, 'b> TRSMCTS<'a, 'b> {
+impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     pub fn new(
-        lexicon: Lexicon<'b>,
-        bg: &'a [Rule],
+        lexicon: Lexicon<'ctx, 'b>,
+        bg: &'ctx [Rule],
         deterministic: bool,
-        data: &'a [Datum],
+        data: &'ctx [Datum],
         model: ModelParams,
         params: MCTSParams,
-    ) -> TRSMCTS<'a, 'b> {
+    ) -> TRSMCTS<'ctx, 'b> {
         TRSMCTS {
             lexicon,
             bg,
@@ -1007,13 +1054,13 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
             best: std::f64::NEG_INFINITY,
         }
     }
-    pub fn add_state(&mut self, state: StateKind) -> MCTSState {
+    pub fn add_state(&mut self, state: StateKind<'ctx>) -> MCTSState {
         match state {
             StateKind::Terminal(h) => self.add_terminal(h),
             StateKind::Revision(r) => self.add_revision(r),
         }
     }
-    pub fn add_revision(&mut self, state: Revision) -> MCTSState {
+    pub fn add_revision(&mut self, state: Revision<'ctx>) -> MCTSState {
         self.revisions.push(state);
         let handle = StateHandle::Revision(self.revisions.len() - 1);
         MCTSState { handle }
@@ -1029,7 +1076,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         let handle = StateHandle::Terminal(th);
         MCTSState { handle }
     }
-    pub fn find_trs(&mut self, mut trs: TRS<'a, 'b>) -> TRSHandle {
+    pub fn find_trs(&mut self, mut trs: TRS<'ctx, 'b>) -> TRSHandle {
         trs.utrs.canonicalize(&mut HashMap::new());
         match self.trss.iter().position(|t| TRS::same_shape(&t, &trs)) {
             Some(trsh) => trsh,
@@ -1041,8 +1088,8 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
     }
     pub fn make_hypothesis(
         &mut self,
-        mut trs: TRS<'a, 'b>,
-        (meta, prior): (Vec<MCTSMove>, f64),
+        mut trs: TRS<'ctx, 'b>,
+        (meta, prior): (Vec<MCTSMove<'ctx>>, f64),
     ) -> HypothesisHandle {
         trs.utrs.canonicalize(&mut HashMap::new());
         let object = MCTSObj::new(trs, meta, prior);
@@ -1079,7 +1126,7 @@ impl<'a, 'b> TRSMCTS<'a, 'b> {
         }
         self.hypotheses = hypotheses;
     }
-    pub fn p_path(&self, moves: &[MCTSMove]) -> (Option<TRS<'a, 'b>>, f64) {
+    pub fn p_path(&self, moves: &[MCTSMove<'ctx>]) -> (Option<TRS<'ctx, 'b>>, f64) {
         // Set the root state.
         let mut trs = self.trss[self.revisions[0].trs].clone();
         let mut spec = None;

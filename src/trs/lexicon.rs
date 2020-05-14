@@ -724,48 +724,6 @@ impl<'ctx> Lex<'ctx> {
         }
         &self.tps
     }
-    // TODO: Reinstate, but this is a HACK. How can we move it into trs::mcts?
-    // pub fn rulecontext_fillers(&self, context: &RuleContext, place: &[usize]) -> Vec<Atom> {
-    //     match context.at(place) {
-    //         Some(&Context::Hole) => {
-    //             let mut types = HashMap::new();
-    //             let mut sub = Substitution::default();
-    //             let mut src = self.0.src;
-    //             let mut env = OldEnvironment::from_vars(&context.variables(), &mut src);
-    //             env.invent = true;
-    //             if self
-    //                 .0
-    //                 .infer_rulecontext(context, &mut types, &mut env, &mut src, &mut sub)
-    //                 .is_err()
-    //             {
-    //                 println!("failed to infer {}", context.pretty(&self.0.signature));
-    //                 return vec![];
-    //             }
-    //             env.invent = place[0] == 0;
-    //             self.0
-    //                 .valid_atoms(&types[place], &mut env, &mut src, &mut sub)
-    //                 .into_iter()
-    //                 .filter_map(|atom| match atom {
-    //                     None => {
-    //                         if place == [0] {
-    //                             None
-    //                         } else {
-    //                             env.invent_variable(&mut src).map(Atom::Variable)
-    //                         }
-    //                     }
-    //                     Some(a) => {
-    //                         if place == [0] && a.is_variable() {
-    //                             None
-    //                         } else {
-    //                             Some(a)
-    //                         }
-    //                     }
-    //                 })
-    //                 .collect()
-    //         }
-    //         _ => vec![],
-    //     }
-    // }
 }
 
 impl<'ctx> PartialEq for Lex<'ctx> {

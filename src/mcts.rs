@@ -17,8 +17,8 @@ type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEv
 pub type NodeHandle = usize;
 pub type MoveHandle = usize;
 
-pub trait State<M: MCTS<State = Self>>: Clone + std::hash::Hash + Eq + Sized + Sync {
-    type Move: std::fmt::Display + PartialEq + Clone + Sync + Send;
+pub trait State<M: MCTS<State = Self>>: Clone + std::hash::Hash + Eq + Sized {
+    type Move: std::fmt::Display + PartialEq + Clone;
     type MoveList: IntoIterator<Item = Self::Move>;
     fn available_moves(&self, mcts: &M) -> Self::MoveList;
     fn make_move(
@@ -40,8 +40,8 @@ pub trait NodeStatistic<M: MCTS> {
     fn combine(&mut self, other: &Self);
 }
 
-pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
-    type NodeStatistics: std::fmt::Debug + Serialize + NodeStatistic<M> + Clone + Sync + Sized;
+pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized {
+    type NodeStatistics: std::fmt::Debug + Serialize + NodeStatistic<M> + Clone + Sized;
     fn choose<'a, R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
@@ -53,8 +53,8 @@ pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized + Sync {
         MoveIter: Iterator<Item = &'a MoveInfo<M>>;
 }
 
-pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized + Sync {
-    type StateEvaluation: Copy + Sync + Send + Into<f64>;
+pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized {
+    type StateEvaluation: Copy + Into<f64>;
     fn evaluate<R: Rng>(
         &self,
         state: &M::State,
@@ -64,7 +64,7 @@ pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized + Sync {
     fn reread(&self, state: &M::State, mcts: &mut M) -> Self::StateEvaluation;
 }
 
-pub trait MCTS: Sized + Sync {
+pub trait MCTS: Sized {
     type StateEval: StateEvaluator<Self>;
     type MoveEval: MoveEvaluator<Self>;
     type State: State<Self>;

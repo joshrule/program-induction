@@ -31,13 +31,14 @@
 //! })
 //! ```
 
-// TODO: uncomment me
+// TODO: reinstate
 // pub mod gp;
-// pub mod mcts;
 mod environment;
 mod lexicon;
+pub mod mcts;
 pub mod parser;
 mod rewrite;
+
 pub use self::environment::{AtomEnumeration, Env, SampleParams};
 pub use self::lexicon::{GenerationLimit, Lexicon};
 pub use self::parser::{
