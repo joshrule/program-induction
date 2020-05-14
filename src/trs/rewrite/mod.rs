@@ -9,7 +9,6 @@
 // mod compose;
 // mod generalize;
 // mod recurse;
-// mod variablize;
 mod combine;
 mod delete_rule;
 mod lgg;
@@ -22,6 +21,7 @@ mod move_rule;
 mod regenerate_rule;
 mod sample_rule;
 mod swap_lhs_and_rhs;
+mod variablize;
 
 //pub use self::compose::Composition;
 //pub use self::recurse::Recursion;
@@ -293,6 +293,33 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// Is the `Lexicon` deterministic?
     pub fn is_deterministic(&self) -> bool {
         self.utrs.is_deterministic()
+    }
+    /// Replace the current rules with a new set.
+    pub fn adopt_rules(&self, rules: &mut Vec<Rule>) -> Option<Self> {
+        self.filter_background(rules);
+
+        let mut i = 0;
+        while i < rules.len() {
+            if rules[..i]
+                .iter()
+                .any(|other| Rule::alpha(&other, &rules[i]).is_some())
+            {
+                rules.remove(i);
+            } else if self.is_deterministic()
+                && rules[..i]
+                    .iter()
+                    .any(|other| Term::alpha(&[(&other.lhs, &rules[i].lhs)]).is_some())
+            {
+                return None;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Create a new TRS.
+        let mut trs = self.clone();
+        trs.utrs.rules = rules.to_vec();
+        trs.smart_delete(0, 0).ok()
     }
 }
 impl<'ctx, 'b> fmt::Display for TRS<'ctx, 'b> {
