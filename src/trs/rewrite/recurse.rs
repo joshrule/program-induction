@@ -349,8 +349,8 @@ mod tests {
     use polytype::atype::{with_ctx, TypeContext};
     use std::collections::HashMap;
     use trs::{
-        parser::{parse_lexicon, parse_rule, parse_term, parse_trs},
-        Env, Lexicon, TRS,
+        parser::{parse_lexicon, parse_rule, parse_trs},
+        Lexicon, TRS,
     };
 
     fn create_test_lexicon<'ctx, 'b>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {

@@ -86,9 +86,8 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
 mod tests {
     use itertools::Itertools;
     use polytype::atype::{with_ctx, TypeContext};
-    use std::collections::HashMap;
-    use trs::parser::{parse_lexicon, parse_rule, parse_trs};
-    use trs::{Env, Lexicon, TRS};
+    use trs::parser::{parse_lexicon, parse_trs};
+    use trs::Lexicon;
 
     fn create_test_lexicon<'b, 'ctx>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {
         parse_lexicon(

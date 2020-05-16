@@ -5,12 +5,11 @@ extern crate rand;
 extern crate term_rewriting;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use polytype::atype::{with_ctx, TypeContext, TypeSchema, Variable as TVar};
+use polytype::atype::{with_ctx, TypeContext, Variable as TVar};
 use programinduction::trs::{
     parse_lexicon, parse_rulecontext, parse_term, Env, GenerationLimit, Lexicon, SampleParams,
 };
 use rand::{rngs::StdRng, SeedableRng};
-use std::collections::HashMap;
 use term_rewriting::{RuleContext, Term};
 
 fn create_test_lexicon<'b, 'ctx>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {

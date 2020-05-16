@@ -69,9 +69,9 @@ macro_rules! r#tryo {
 
 pub struct TRSMCTS<'ctx, 'b> {
     pub lexicon: Lexicon<'ctx, 'b>,
-    pub bg: &'ctx [Rule],
+    pub bg: &'b [Rule],
     pub deterministic: bool,
-    pub data: &'ctx [Datum],
+    pub data: &'b [Datum],
     pub trss: Vec<TRS<'ctx, 'b>>,
     pub hypotheses: Vec<Hypothesis<MCTSObj<'ctx, 'b>, Datum, MCTSModel<'ctx, 'b>>>,
     pub revisions: Vec<Revision<'ctx>>,
@@ -1034,9 +1034,9 @@ impl<'ctx, 'b> MCTS for TRSMCTS<'ctx, 'b> {
 impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     pub fn new(
         lexicon: Lexicon<'ctx, 'b>,
-        bg: &'ctx [Rule],
+        bg: &'b [Rule],
         deterministic: bool,
-        data: &'ctx [Datum],
+        data: &'b [Datum],
         model: ModelParams,
         params: MCTSParams,
     ) -> TRSMCTS<'ctx, 'b> {

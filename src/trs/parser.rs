@@ -462,7 +462,7 @@ named_args!(rules<'a>(lex: &mut Lexicon) <CompleteStr<'a>, Vec<Rule>>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polytype::atype::{with_ctx, TypeContext};
+    use polytype::atype::with_ctx;
     use term_rewriting::Signature;
 
     #[test]

@@ -180,8 +180,8 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
 mod tests {
     use polytype::atype::{with_ctx, TypeContext};
     use trs::{
-        parser::{parse_lexicon, parse_rule, parse_trs},
-        Lexicon, TRS,
+        parser::{parse_lexicon, parse_trs},
+        Lexicon,
     };
 
     fn create_test_lexicon<'ctx, 'b>(ctx: &TypeContext<'ctx>) -> Lexicon<'ctx, 'b> {

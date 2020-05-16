@@ -438,7 +438,11 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
     }
     pub fn infer_context(&mut self, context: &Context) -> Result<Ty<'ctx>, TypeError<'ctx>> {
         match *context {
-            Context::Hole => Ok(self.lex.lex.ctx.intern_tvar(TVar(self.src.fresh()))),
+            Context::Hole => {
+                let tp = self.lex.lex.ctx.intern_tvar(TVar(self.src.fresh()));
+                self.tps.push(tp);
+                Ok(tp)
+            }
             Context::Variable(v) => {
                 let tp = self
                     .var_tp(v)?

@@ -155,7 +155,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
             let (types, terms, vars) =
                 TRS::collect_information(&self.lex, &lhs, &lhs_place, rhs_place, clauses, var)?;
             // Infer the type for this place.
-            let return_tp = TRS::compute_place_type(&mut self.lex, &mut env, &types)?;
+            let return_tp = TRS::compute_place_type(&mut env, &types)?;
             // Create the new operator for this place. TODO HACK: make applicative parameterizable.
             let new_op = TRS::new_operator(&mut self.lex, true, &vars, return_tp, &env)?;
             // Create the rules expressing subproblems for this place.
@@ -228,11 +228,10 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         Ok((types, terms, vars))
     }
     fn compute_place_type(
-        lex: &mut Lexicon<'ctx, 'b>,
         env: &mut Env<'ctx, 'b>,
         types: &[Ty<'ctx>],
     ) -> Result<Ty<'ctx>, SampleError<'ctx>> {
-        let tvar = TVar(lex.lex.to_mut().src.fresh());
+        let tvar = TVar(env.src.fresh());
         let return_tp = env.lex.lex.ctx.intern_tvar(tvar);
         for tp in types {
             Type::unify_with_sub(&[(return_tp, tp)], &mut env.sub)
@@ -427,7 +426,7 @@ mod tests {
             let context = Context::from(SituatedAtom::new(Atom::from(op), lex.signature()));
             let tp = lex
                 .infer_context(&context)
-                .map(|mut env| env.tps[0].apply(&env.sub))
+                .map(|env| env.tps[0].apply(&env.sub))
                 .expect("tp");
             assert_eq!(11, op.id());
             assert_eq!(0, op.arity(lex.signature()));
