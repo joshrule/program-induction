@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use mcts::{
     MoveCheck, MoveEvaluator, MoveHandle, MoveInfo, NodeHandle, NodeStatistic, SearchTree, State,
-    StateEvaluator, Stats, TreeStore, MCTS,
+    StateEvaluator, TreeStore, MCTS,
 };
 use rand::{
     distributions::Bernoulli,
@@ -197,12 +197,7 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
     score
 }
 
-pub fn thompson_sample<R: Rng>(
-    parent: &Vec<f64>,
-    child: &Vec<f64>,
-    mcts: &TRSMCTS,
-    rng: &mut R,
-) -> f64 {
+pub fn thompson_sample<R: Rng>(parent: &[f64], child: &[f64], mcts: &TRSMCTS, rng: &mut R) -> f64 {
     let m = match mcts.params.selection {
         Selection::Thompson(m) => m,
         x => panic!("in thompson_sample but Selection is {:?}", x),
@@ -1213,22 +1208,24 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     }
 }
 
-fn unexplored_first<'c, F, M: MCTS, R: Rng, MoveIter>(
+fn unexplored_first<'c, 'ctx, 'b, F, R: Rng, MoveIter>(
     moves: MoveIter,
     nh: NodeHandle,
-    mcts: &M,
-    tree: &TreeStore<M>,
+    mcts: &TRSMCTS<'ctx, 'b>,
+    tree: &TreeStore<TRSMCTS<'ctx, 'b>>,
     selector: F,
     rng: &mut R,
-) -> Option<&'c MoveInfo<M>>
+) -> Option<&'c MoveInfo<TRSMCTS<'ctx, 'b>>>
 where
-    MoveIter: Iterator<Item = &'c MoveInfo<M>>,
-    F: Fn(&Stats<M>, &Stats<M>, &M, &mut R) -> f64,
+    MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'ctx, 'b>>>,
+    F: Fn(&[f64], &[f64], &TRSMCTS, &mut R) -> f64,
 {
     // Split the moves into those with and without children.
     let (childful, childless): (Vec<_>, Vec<_>) = moves.partition(|mv| mv.child.is_some());
     // Take the first childless move, or perform UCT on childed moves.
-    if let Some(mv) = childless.choose(rng) {
+    if let Some(mv) = childless.iter().find(|m| m.mov == MCTSMove::Stop) {
+        Some(mv)
+    } else if let Some(mv) = childless.choose(rng) {
         Some(mv)
     } else {
         childful
@@ -1256,12 +1253,8 @@ where
                 }
             })
             .choose(rng)
-            .map(|(mv, _)| {
-                *mv
-            })
-            .or_else(|| {
-                None
-            })
+            .map(|(mv, _)| *mv)
+            .or_else(|| None)
     }
 }
 
