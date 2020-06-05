@@ -822,6 +822,9 @@ impl<'ctx> Revision<'ctx> {
                 // Choose a move (random policy).
                 let moves_len = moves.len();
                 moves.shuffle(rng);
+                if let Some(idx) = moves.iter().position(|mv| *mv == MCTSMove::Stop) {
+                    moves.swap(0, idx);
+                }
                 for mv in moves {
                     match Revision::make_move_inner(&mv, &spec, &mcts.data, &trs) {
                         MoveResult::Failed => {
