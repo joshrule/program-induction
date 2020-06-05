@@ -71,6 +71,8 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub lexicon: Lexicon<'ctx, 'b>,
     pub bg: &'b [Rule],
     pub deterministic: bool,
+    pub lo: usize,
+    pub hi: usize,
     pub data: &'b [Datum],
     pub trss: Vec<TRS<'ctx, 'b>>,
     pub hypotheses: Vec<Hypothesis<MCTSObj<'ctx, 'b>, Datum, MCTSModel<'ctx, 'b>>>,
@@ -1051,6 +1053,8 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         lexicon: Lexicon<'ctx, 'b>,
         bg: &'b [Rule],
         deterministic: bool,
+        lo: usize,
+        hi: usize,
         data: &'b [Datum],
         model: ModelParams,
         params: MCTSParams,
@@ -1059,6 +1063,8 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             lexicon,
             bg,
             deterministic,
+            lo,
+            hi,
             data,
             model,
             params,
@@ -1131,6 +1137,8 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     }
     pub fn root(&mut self) -> MCTSState {
         let mut trs = TRS::new_unchecked(&self.lexicon, self.deterministic, self.bg, vec![]);
+        trs.utrs.lo = self.lo;
+        trs.utrs.hi = self.hi;
         trs.identify_symbols();
         let state = Revision {
             trs: self.find_trs(trs),
