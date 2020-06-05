@@ -160,15 +160,11 @@ impl<M: MCTS> MCTSManager<M> {
     }
     // Search until the predicate evaluates to `true`.
     pub fn step_until<R: Rng, P: Fn(&M) -> bool>(&mut self, rng: &mut R, predicate: P) {
-        let mut steps = 0;
         while !predicate(&self.tree.mcts) {
             match self.tree.step(rng) {
-                Ok(nh) => {
-                    println!("# step reached {:?}", nh);
-                    steps += 1;
+                Ok(_nh) => {
                 }
                 Err(e) => {
-                    println!("# {}", e);
                     match e {
                         MCTSError::TreeInconsistent
                         | MCTSError::TreeExhausted
@@ -179,7 +175,6 @@ impl<M: MCTS> MCTSManager<M> {
                 }
             }
         }
-        println!("# ended after steps: {}", steps);
     }
     // Take a single search step.
     pub fn step<R: Rng>(&mut self, rng: &mut R) -> Result<Vec<NodeHandle>, MCTSError> {
@@ -391,9 +386,7 @@ impl<M: MCTS> SearchTree<M> {
         &mut self.tree
     }
     pub fn reevaluate_states(&mut self) {
-        println!("#     reevaluating nodes");
         self.reevaluate_nodes();
-        println!("#     updating qs");
         self.recompute_qs();
     }
     /// Iterate over the nodes and copy the evaluation information from the objects.
@@ -559,7 +552,7 @@ impl<M: MCTS> SearchTree<M> {
     fn expand<R: Rng>(&mut self, rng: &mut R) -> Result<(Option<M::State>, MoveHandle), MCTSError> {
         self.can_continue()?;
         let mut nh = self.tree.root;
-        for depth in 0..self.mcts.max_depth() {
+        for _depth in 0..self.mcts.max_depth() {
             // Choose a move. Avoid moves going to pruned nodes.
             let moves = self.tree.nodes[nh]
                 .outgoing
@@ -567,7 +560,6 @@ impl<M: MCTS> SearchTree<M> {
                 .copied()
                 .filter(|mh| self.tree.moves[*mh].pruning == Pruning::None)
                 .map(|mh| &self.tree.moves[mh]);
-            println!("#   got moves");
             // Looks weird, but helps prevent a borrowing issue.
             let mh = self
                 .move_eval
@@ -579,11 +571,9 @@ impl<M: MCTS> SearchTree<M> {
                 // Descend known moves.
                 Some(child_nh) => {
                     nh = child_nh;
-                    println!("#   Child is {} at depth {}.", child_nh, depth + 1);
                 }
                 // Take new moves.
                 None => {
-                    println!("#   No child. Taking the move at depth {}.", depth);
                     let child_state = self.tree.nodes[nh].state.make_move(
                         nh,
                         &mov.mov,
@@ -603,7 +593,6 @@ impl<M: MCTS> SearchTree<M> {
         mov: &Move<M>,
         rng: &mut R,
     ) -> Result<NodeHandle, MCTSError> {
-        println!("#   Updating tree.");
         // Find the move handle.
         let mh = self.tree.nodes[nh]
             .outgoing
@@ -622,7 +611,6 @@ impl<M: MCTS> SearchTree<M> {
                 let entry = self.tree.table.entry(child_state).or_insert_with(|| vec![]);
                 // Prevent cycles: don't add nodes whose state is contained in an ancestor.
                 if ancestors.iter().any(|a| entry.contains(a)) {
-                    println!("#     Cycle detected!");
                     self.hard_prune_tree(mh);
                     Err(MCTSError::MoveCreatedCycle)
                 } else {
@@ -641,7 +629,6 @@ impl<M: MCTS> SearchTree<M> {
         let nh = self.tree.nodes.len();
         let mut outgoing = vec![];
         for mov in s.available_moves(&mut self.mcts) {
-            println!("#     pushing move: {}", mov);
             let handle = self.tree.moves.len();
             let new_move = MoveInfo {
                 handle,
@@ -661,7 +648,6 @@ impl<M: MCTS> SearchTree<M> {
             evaluation,
             stats: <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new(),
         };
-        println!("#     made node {} with {} moves", nh, node.outgoing.len());
         self.tree.nodes.push(node);
         nh
     }
@@ -695,7 +681,6 @@ impl<M: MCTS> SearchTree<M> {
     fn hard_prune_tree(&mut self, src_mh: MoveHandle) {
         let mut stack = vec![src_mh];
         while let Some(mh) = stack.pop() {
-            println!("#       hard pruning {}", mh);
             self.tree.moves[mh].pruning = Pruning::Hard;
             if let Some(nh) = self.tree.moves[mh].child {
                 self.tree.delist(nh);
@@ -719,7 +704,6 @@ impl<M: MCTS> SearchTree<M> {
                         .iter()
                         .all(|mh| self.tree.moves[*mh].pruning != Pruning::None)
                     {
-                        println!("#   soft pruning {}", mh);
                         self.tree.moves[mh].pruning = Pruning::Soft;
                         maybe = self.tree.parent_move(mh);
                     }
@@ -729,10 +713,8 @@ impl<M: MCTS> SearchTree<M> {
     }
     // Bubble search statistics and pruning information back to the root.
     fn backpropagate_tree(&mut self, new_node: NodeHandle) {
-        println!("#   backpropagating from {}.", new_node);
         let mut maybe = Some(new_node);
         while let Some(nh) = maybe.take() {
-            println!("#     dealing with node {}.", nh);
             // Update stats.
             let evaluation = self.tree.nodes[new_node].evaluation;
             self.tree.nodes[nh].stats.update(evaluation);
