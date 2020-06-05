@@ -151,9 +151,7 @@ impl<'a, 'b> ProbabilisticModel for MCTSModel<'a, 'b> {
     type Object = MCTSObj<'a, 'b>;
     type Datum = Datum;
     fn log_prior(&mut self, object: &Self::Object) -> f64 {
-        println!("#       metas: {:?}", object.meta);
         let lprior = object.meta_prior;
-        println!("#       lprior: {}", lprior);
         lprior
     }
     fn single_log_likelihood<DataIter>(
@@ -196,10 +194,6 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
     let exploit = (child.q - best).exp();
     let explore = (parent.n.ln() / child.n).sqrt();
     let score = exploit + explore;
-    println!(
-        "{} + {} = {} ({} {})",
-        exploit, explore, score, child.q, best,
-    );
     score
 }
 
@@ -691,7 +685,6 @@ impl<'ctx> Revision<'ctx> {
                     if let Ok(rule) = Rule::try_from(&new_context) {
                         let mut trs = trs.clone();
                         tryo![trs.append_clauses(vec![rule]).ok()];
-                        println!("#           \"{}\"", trs.to_string().lines().join(" "));
                         MoveResult::Revision(Some(trs), None)
                     } else {
                         let spec = Some(MCTSMoveState::SampleRule(new_context));
@@ -708,7 +701,6 @@ impl<'ctx> Revision<'ctx> {
                         let mut trs = trs.clone();
                         tryo![trs.utrs.remove_idx(*n).ok()];
                         tryo![trs.utrs.insert_idx(*n, rule).ok()];
-                        println!("#           \"{}\"", trs.to_string().lines().join(" "));
                         MoveResult::Revision(Some(trs), None)
                     } else {
                         let spec = Some(MCTSMoveState::RegenerateRule(Some((*n, new_context))));
@@ -727,11 +719,6 @@ impl<'ctx> Revision<'ctx> {
         handle: RevisionHandle,
     ) -> Option<MCTSState> {
         let trsh = mcts.revisions[handle].trs;
-        println!("#   move is {}", mv);
-        println!(
-            "#   trs is \"{}\"",
-            mcts.trss[trsh].to_string().lines().join(" ")
-        );
         let n = mcts.revisions[handle].n;
         let state = match Revision::make_move_inner(
             mv,
@@ -741,19 +728,11 @@ impl<'ctx> Revision<'ctx> {
         ) {
             MoveResult::Failed => None,
             MoveResult::Terminal => {
-                println!(
-                    "#   trs is \"{}\"",
-                    mcts.trss[trsh].to_string().lines().join(" ")
-                );
                 let path = compute_path(parent, mv, tree, false);
                 let hh = mcts.make_hypothesis(mcts.trss[trsh].clone(), path);
                 Some(StateKind::Terminal(Terminal::new(hh)))
             }
             MoveResult::Revision(None, new_spec) => {
-                println!(
-                    "#   trs is \"{}\"",
-                    mcts.trss[trsh].to_string().lines().join(" ")
-                );
                 let new_n = n + (new_spec.is_none() as usize);
                 let children =
                     !Revision::available_moves_inner(&mcts.trss[trsh], &new_spec, new_n, mcts)
@@ -764,7 +743,6 @@ impl<'ctx> Revision<'ctx> {
                 )))
             }
             MoveResult::Revision(Some(trs), new_spec) => {
-                println!("#   trs is \"{}\"", trs.to_string().lines().join(" "));
                 let new_n = n + (new_spec.is_none() as usize);
                 let children =
                     !Revision::available_moves_inner(&trs, &new_spec, new_n, mcts).is_empty();
@@ -794,11 +772,6 @@ impl<'ctx> Revision<'ctx> {
             let mut depth = start_path.len();
             let mut path = start_path.to_vec();
             let mut prior = start_prior;
-            println!("#       trs: {}", trs.to_string().lines().join(" "));
-            println!("#       start_path: {:?}", start_path);
-            println!("#       start_prior: {}", start_prior);
-            println!("#       spec: {:?}", spec);
-            println!("#       n: {}", n);
             while progress && depth < mcts.params.max_depth {
                 progress = false;
                 // Compute the available moves.
@@ -807,20 +780,16 @@ impl<'ctx> Revision<'ctx> {
                 let moves_len = moves.len();
                 moves.shuffle(rng);
                 for mv in moves {
-                    println!("#         {} {}", mv, moves_len);
                     match Revision::make_move_inner(&mv, &spec, &mcts.data, &trs) {
                         MoveResult::Failed => {
-                            println!("#           move failed");
                             continue;
                         }
                         MoveResult::Terminal => {
-                            println!("#           success");
                             path.push(mv.clone());
                             prior -= (moves_len as f64).ln();
                             return Some((trs, path, prior));
                         }
                         MoveResult::Revision(new_trs, new_spec) => {
-                            println!("#           success");
                             path.push(mv.clone());
                             prior -= (moves_len as f64).ln() + 2f64.ln();
                             n += new_spec.is_none() as usize;
@@ -1138,11 +1107,6 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
                 hypothesis.object.trs = trs;
             }
             hypothesis.log_posterior(self.data);
-            println!(
-                "#       {:.4}\t\"{}\"",
-                hypothesis.lposterior,
-                hypothesis.object.trs.to_string().lines().join(" "),
-            );
         }
         self.hypotheses = hypotheses;
     }
@@ -1218,11 +1182,6 @@ where
     let (childful, childless): (Vec<_>, Vec<_>) = moves.partition(|mv| mv.child.is_some());
     // Take the first childless move, or perform UCT on childed moves.
     if let Some(mv) = childless.choose(rng) {
-        println!(
-            "#   There are {} childless. We chose: {}.",
-            childless.len(),
-            mv.mov
-        );
         Some(mv)
     } else {
         childful
@@ -1232,7 +1191,6 @@ where
                 let parent = &tree.node(nh).stats;
                 let child = &tree.node(ch).stats;
                 let score = selector(parent, child, mcts, rng);
-                println!("#     ({}): {:.4} - {}", ch, score, mv.mov,);
                 (mv, score)
             })
             .fold(vec![], |mut acc, x| {
@@ -1252,11 +1210,9 @@ where
             })
             .choose(rng)
             .map(|(mv, _)| {
-                println!("#     we're going with {}", mv.mov);
                 *mv
             })
             .or_else(|| {
-                println!("#     no available moves");
                 None
             })
     }
@@ -1332,35 +1288,19 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         mcts: &mut TRSMCTS<'a, 'b>,
         rng: &mut R,
     ) -> Self::StateEvaluation {
-        println!("#     evaluating");
         let score = match state.handle {
             StateHandle::Terminal(th) => {
-                println!(
-                    "#       node is terminal: {}",
-                    mcts.hypotheses[mcts.terminals[th].trs]
-                        .object
-                        .trs
-                        .to_string()
-                        .lines()
-                        .join(" ")
-                );
                 mcts.hypotheses[mcts.terminals[th].trs].log_posterior(mcts.data);
                 mcts.hypotheses[mcts.terminals[th].trs].lposterior
             }
             StateHandle::Revision(rh) => match mcts.revisions[rh].playout.clone() {
                 PlayoutState::Untried(path, prior) => {
-                    println!("#       playing out");
                     if let Some((trs, path, prior)) = Revision::playout(rh, mcts, &path, prior, rng)
                     {
-                        println!(
-                            "#       simulated: \"{}\"",
-                            trs.to_string().lines().join(" ")
-                        );
                         let hh = mcts.make_hypothesis(trs, (path, prior));
                         mcts.revisions[rh].playout = PlayoutState::Success(hh);
                         mcts.hypotheses[hh].log_posterior(mcts.data)
                     } else {
-                        println!("playout failed");
                         mcts.revisions[rh].playout = PlayoutState::Failed;
                         std::f64::NEG_INFINITY
                     }
