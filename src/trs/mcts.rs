@@ -79,6 +79,8 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub model: ModelParams,
     pub params: MCTSParams,
     pub best: f64,
+    pub search_time: f64,
+    pub trial_start: Option<std::time::Instant>,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -113,14 +115,16 @@ pub enum Selection {
 
 pub struct MCTSObj<'ctx, 'b> {
     pub trs: TRS<'ctx, 'b>,
+    pub time: f64,
     pub meta: Vec<MCTSMove<'ctx>>,
     pub meta_prior: f64,
 }
 
 impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
-    pub fn new(trs: TRS<'ctx, 'b>, meta: Vec<MCTSMove<'ctx>>, meta_prior: f64) -> Self {
+    pub fn new(trs: TRS<'ctx, 'b>, time: f64, meta: Vec<MCTSMove<'ctx>>, meta_prior: f64) -> Self {
         MCTSObj {
             trs,
+            time,
             meta,
             meta_prior,
         }
@@ -1052,7 +1056,18 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             terminals: vec![],
             revisions: vec![],
             best: std::f64::NEG_INFINITY,
+            search_time: 0.0,
+            trial_start: None,
         }
+    }
+    pub fn start_trial(&mut self) {
+        self.trial_start.replace(std::time::Instant::now());
+    }
+    pub fn finish_trial(&mut self) {
+        self.search_time += self
+            .trial_start
+            .map(|ts| ts.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
     }
     pub fn add_state(&mut self, state: StateKind<'ctx>) -> MCTSState {
         match state {
@@ -1091,8 +1106,13 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         mut trs: TRS<'ctx, 'b>,
         (meta, prior): (Vec<MCTSMove<'ctx>>, f64),
     ) -> HypothesisHandle {
+        let time = self.search_time
+            + self
+                .trial_start
+                .map(|ts| ts.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
         trs.utrs.canonicalize(&mut HashMap::new());
-        let object = MCTSObj::new(trs, meta, prior);
+        let object = MCTSObj::new(trs, time, meta, prior);
         let model = MCTSModel::new(self.model);
         let hh = self.hypotheses.len();
         self.hypotheses.push(Hypothesis::new(object, model));
