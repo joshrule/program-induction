@@ -240,21 +240,68 @@ pub fn compute_path<'ctx, 'b>(
     (moves, score)
 }
 
-// TODO: Reinstate, but this is a HACK. How can we move it into trs::mcts?
+/// Generate a list of `Atom`s that can fit into a `RuleContext`'s `Hole`.
+///
+/// # Examples
+///
+/// ```
+/// # extern crate polytype;
+/// # extern crate term_rewriting;
+/// # extern crate programinduction;
+/// # use polytype::atype::{with_ctx, TypeContext, Variable as TVar};
+/// # use term_rewriting::{Atom, Context, SituatedAtom, Variable};
+/// # use programinduction::trs::{Env, Lexicon, TRS, parse_rulecontext, parse_lexicon};
+/// # use programinduction::trs::mcts::rulecontext_fillers;
+/// with_ctx(1024, |ctx| {
+///
+///   let mut lex = parse_lexicon(
+///       &[
+///           "C/0: list -> list;",
+///           "CONS/0: nat -> list -> list;",
+///           "NIL/0: list;",
+///           "DECC/0: nat -> int -> nat;",
+///           "DIGIT/0: int -> nat;",
+///           "+/0: nat -> nat -> nat;",
+///           "-/0: nat -> nat -> nat;",
+///           ">/0: nat -> nat -> bool;",
+///           "TRUE/0: bool; FALSE/0: bool;",
+///           "HEAD/0: list -> nat;",
+///           "TAIL/0: list -> list;",
+///           "EMPTY/0: list -> bool;",
+///           "EQUAL/0: t0. t0 -> t0 -> bool;",
+///           "IF/0: t0. bool -> t0 -> t0 -> t0;",
+///           "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
+///           "0/0: int; 1/0: int; 2/0: int;",
+///           "3/0: int; 4/0: int; 5/0: int;",
+///           "6/0: int; 7/0: int; 8/0: int;",
+///           "9/0: int; NAN/0: nat",
+///       ].join(" "),
+///       &ctx,
+///   ).expect("lex");
+///   let context = parse_rulecontext("v0_ (> (HEAD [!])) = CONS", &mut lex).expect("context");
+///   let place = vec![0, 1, 1, 1];
+///   println!("spot: {}", context.at(&place).expect("hole").pretty(lex.signature()));
+///   let fillers = rulecontext_fillers(&lex, &context, &place);
+///   println!("{}", fillers.len());
+///   for a in fillers {
+///       println!("{}", a.display(lex.signature()));
+///   }
+/// })
+/// ```
 pub fn rulecontext_fillers<'ctx, 'b>(
-    trs: &TRS<'ctx, 'b>,
+    lex: &Lexicon<'ctx, 'b>,
     context: &RuleContext,
     place: &[usize],
 ) -> Vec<Atom> {
     match context.at(place) {
         Some(&Context::Hole) => {
-            if let Ok(mut env) = trs.lex.infer_rulecontext(context) {
+            if let Ok(mut env) = lex.infer_rulecontext(context) {
                 let tp = context
                     .subcontexts()
                     .iter()
                     .zip(&env.tps)
                     .find(|((_, p), _)| p.as_slice() == place)
-                    .map(|(_, tp)| *tp)
+                    .map(|(_, tp)| tp.apply(&env.sub))
                     .expect("tp");
                 env.invent = place[0] == 0;
                 let new_atoms = env.enumerate_atoms(tp).collect_vec();
@@ -545,10 +592,10 @@ impl<'ctx> Revision<'ctx> {
             Some(MCTSMoveState::SampleRule(ref context))
             | Some(MCTSMoveState::RegenerateRule(Some((_, ref context)))) => {
                 if let Some(place) = context.leftmost_hole() {
-                    rulecontext_fillers(&trs, &context, &place)
+                    rulecontext_fillers(&trs.lex, &context, &place)
                         .into_iter()
                         .map(MCTSMove::SampleAtom)
-                        .for_each(|mv| moves.push(mv))
+                        .for_each(|mv| moves.push(mv));
                 }
             }
             Some(MCTSMoveState::RegenerateRule(None)) => {
