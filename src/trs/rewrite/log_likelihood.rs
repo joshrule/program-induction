@@ -56,18 +56,17 @@ impl<'a, 'b> TRS<'a, 'b> {
                 );
                 // walk the trace and weight each output
                 let lps = trace
-                    .root()
                     .iter()
                     .map(|n| {
-                        if UntypedTRS::convert_list_to_string(trace[*n].term(), &mut sig.clone())
+                        if UntypedTRS::convert_list_to_string(trace[n].term(), &mut sig.clone())
                             .is_some()
                         {
                             // (1-a)p
                             // TODO: would be nice to have a generative story here
-                            trace[*n].log_p() + (1.0 - alpha).ln()
+                            trace[n].log_p() + (1.0 - alpha).ln()
                         } else {
                             // ap
-                            trace[*n].log_p() + alpha.ln()
+                            trace[n].log_p() + alpha.ln()
                         }
                     })
                     .collect::<Vec<_>>();
