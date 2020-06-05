@@ -253,25 +253,17 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 Ok(tp)
             }
             Term::Application { op, ref args } => {
-                //println!("head_schema: {}/{:?}", self.op_tp(op)?.0, self.op_tp(op)?.1);
                 let head_type = self
                     .op_tp(op)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src);
-                //println!(
-                //    "head type for {} {}",
-                //    op.display(&self.lex.lex.sig),
-                //    head_type
-                //);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src)
+                    .apply(&self.sub);
                 let arg_types = head_type.args().unwrap();
                 let return_tp = head_type.returns().unwrap_or(&head_type);
-                //println!("return type {}", return_tp);
                 self.tps.push(return_tp);
                 for (a, arg_tp) in args.iter().zip(arg_types) {
                     let st_tp = self.infer_term(a)?;
-                    //println!("unifying {} and {}", arg_tp, st_tp);
                     Type::unify_with_sub(&[(&arg_tp, &st_tp)], &mut self.sub)?;
-                    //println!("success");
                 }
                 Ok(return_tp.apply(&self.sub))
             }
@@ -447,7 +439,8 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let tp = self
                     .var_tp(v)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src)
+                    .apply(&self.sub);
                 self.tps.push(tp);
                 Ok(tp)
             }
@@ -464,7 +457,8 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let head_type = self
                     .op_tp(op)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src)
+                    .apply(&self.sub);
                 let arg_types = head_type.args().unwrap();
                 let return_tp = head_type.returns().unwrap_or(&head_type);
                 self.tps.push(return_tp);
@@ -605,7 +599,6 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         constant: bool,
     ) -> Result<Vec<Ty<'ctx>>, TypeError<'ctx>> {
         let query_tp = schema.instantiate(&self.lex.lex.ctx, &mut self.src);
-        // println!("    checking {} against {}", tp, query_tp);
         let result = if constant {
             Type::unify_with_sub(&[(&query_tp, &tp)], &mut self.sub).map(|_| Vec::new())?
         } else {
