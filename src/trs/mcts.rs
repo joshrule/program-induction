@@ -927,13 +927,12 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
                             None => mcts.trss[mcts.revisions[rh].trs].clone(),
                         };
                         let new_n = n + (new_spec.is_none() as usize);
+                        let children =
+                            !Revision::available_moves_inner(&new_trs, &new_spec, new_n, mcts)
+                                .is_empty();
                         match tree.node(ch).state.handle {
                             StateHandle::Revision(orh) => {
                                 let old_trs = &mcts.trss[mcts.revisions[orh].trs];
-                                let children = !Revision::available_moves_inner(
-                                    &new_trs, &new_spec, new_n, mcts,
-                                )
-                                .is_empty();
                                 if TRS::same_shape(old_trs, &new_trs)
                                     && mcts.revisions[orh].n == new_n
                                     && mcts.revisions[orh].spec == new_spec
@@ -961,10 +960,6 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
                                 }
                             }
                             StateHandle::Terminal(_) => {
-                                let children = !Revision::available_moves_inner(
-                                    &new_trs, &new_spec, new_n, mcts,
-                                )
-                                .is_empty();
                                 let path = compute_path(ph, &tree.mv(mh).mov, tree, children);
                                 let new_trsh = mcts.find_trs(new_trs.clone());
                                 MoveCheck::NewState(
