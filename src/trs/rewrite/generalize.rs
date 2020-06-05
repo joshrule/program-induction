@@ -8,13 +8,24 @@ use trs::{Env, Lexicon};
 impl<'ctx, 'b> TRS<'ctx, 'b> {
     pub fn generalize(&self) -> Result<Self, SampleError<'ctx>> {
         let (lhs_context, clauses) = TRS::find_lhs_context(&self.utrs.rules)?;
-        let (rhs_context, clauses) = TRS::find_rhs_context(&clauses)?;
+        if lhs_context == Context::Hole {
+            return Err(SampleError::OptionsExhausted);
+        }
+        let (rhs_context, mut clauses) = TRS::find_rhs_context(&clauses)?;
+        let mut offset = lhs_context.variables().len() + lhs_context.holes().len();
+        clauses.iter_mut().for_each(|c| {
+            c.canonicalize(&mut HashMap::new());
+            c.offset(offset);
+            offset += c.variables().len();
+        });
         let mut trs = self.clone();
-        let mut new_rules = trs.generalize_clauses(&lhs_context, &rhs_context, &clauses)?;
+        let (mut new_rules, lex) =
+            trs.generalize_clauses(&lhs_context, &rhs_context, &mut clauses, offset)?;
         trs.remove_clauses(&clauses)?;
         let start = trs.len();
         trs.filter_background(&mut new_rules);
         trs.append_clauses(new_rules)?;
+        trs.lex = lex;
         let stop = trs.len();
         Ok(trs.smart_delete(start, stop)?)
     }
@@ -140,12 +151,14 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         &mut self,
         lhs_context: &Context,
         rhs_context: &Context,
-        clauses: &[Rule],
-    ) -> Result<Vec<Rule>, SampleError<'ctx>> {
+        clauses: &mut [Rule],
+        offset: usize,
+    ) -> Result<(Vec<Rule>, Lexicon<'ctx, 'b>), SampleError<'ctx>> {
         // Create the LHS.
         let (lhs, lhs_place, var) =
             TRS::fill_hole_with_variable(&lhs_context).ok_or(SampleError::Subterm)?;
         let mut env = self.lex.infer_term(&lhs)?;
+        env.add_variables(offset - lhs.variables().len());
         env.invent = false;
         // Fill the RHS context and create subproblem rules.
         let mut rhs = rhs_context.clone();
@@ -153,23 +166,27 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         for rhs_place in &rhs_context.holes() {
             // Collect term, type, and variable information from each clause.
             let (types, terms, vars) =
-                TRS::collect_information(&self.lex, &lhs, &lhs_place, rhs_place, clauses, var)?;
+                TRS::collect_information(&mut env, &lhs, &lhs_place, rhs_place, clauses, var)?;
             // Infer the type for this place.
             let return_tp = TRS::compute_place_type(&mut env, &types)?;
-            // Create the new operator for this place. TODO HACK: make applicative parameterizable.
-            let new_op = TRS::new_operator(&mut self.lex, true, &vars, return_tp, &env)?;
+            // Create the new operator for this place. TODO: make applicative parameterizable.
+            let new_op = TRS::new_operator(&mut env, true, &vars, return_tp)?;
             // Create the rules expressing subproblems for this place.
             for (lhs_term, rhs_term) in &terms {
-                let new_rule = TRS::new_rule(&self.lex, new_op, lhs_term, rhs_term, var, &vars)?;
+                let mut new_rule = TRS::new_rule(&env.lex, new_op, lhs_term, rhs_term, var, &vars)?;
+                new_rule.canonicalize(&mut HashMap::new());
                 new_rules.push(new_rule);
             }
             // Fill the hole at this place in the RHS.
-            rhs = TRS::fill_next_hole(&self.lex, &rhs, rhs_place, new_op, vars)?;
+            rhs = TRS::fill_next_hole(&env.lex, &rhs, rhs_place, new_op, vars)?;
         }
         let rhs_term = Term::try_from(&rhs).map_err(|_| SampleError::Subterm)?;
         // Create the generalized rule.
-        new_rules.push(Rule::new(lhs, vec![rhs_term]).ok_or(SampleError::Subterm)?);
-        Ok(new_rules)
+        let mut master_rule = Rule::new(lhs, vec![rhs_term]).ok_or(SampleError::Subterm)?;
+        master_rule.canonicalize(&mut HashMap::new());
+        new_rules.push(master_rule);
+        env.lex.lex.to_mut().src = env.src;
+        Ok((new_rules, env.lex))
     }
     fn fill_next_hole(
         lex: &Lexicon<'ctx, 'b>,
@@ -192,38 +209,41 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
     }
     #[allow(clippy::type_complexity)]
     fn collect_information<'c>(
-        lex: &Lexicon<'ctx, 'b>,
+        env: &mut Env<'ctx, 'b>,
         lhs: &Term,
         lhs_place: &[usize],
         rhs_place: &[usize],
-        clauses: &'c [Rule],
+        clauses: &'c mut [Rule],
         var: Variable,
-    ) -> Result<(Vec<Ty<'ctx>>, Vec<(&'c Term, Term)>, Vec<Variable>), SampleError<'ctx>> {
+    ) -> Result<(Vec<Ty<'ctx>>, Vec<(&'c Term, &'c Term)>, Vec<Variable>), SampleError<'ctx>> {
         let mut terms = vec![];
         let mut types = vec![];
         let mut vars = vec![var];
-        for clause in clauses {
-            let rhs = clause.rhs().ok_or(SampleError::Subterm)?;
-            let lhs_subterm = clause.lhs.at(lhs_place).ok_or(SampleError::Subterm)?;
-            let rhs_subterm = rhs.at(rhs_place).ok_or(SampleError::Subterm)?;
-            let env = lex.infer_term(&rhs)?;
-            let map: HashMap<_, _> = rhs
+        for clause in clauses.iter_mut() {
+            let n = env.tps.len();
+            env.infer_term(&clause.rhs[0])?;
+            let map: HashMap<_, _> = clause.rhs[0]
                 .subterms()
                 .into_iter()
-                .zip(&env.tps)
-                .map(|((_, p), tp)| (p, *tp))
+                .zip(env.tps.iter().skip(n))
+                .map(|((_, p), tp)| (p, tp.apply(&env.sub)))
                 .collect();
             types.push(map[rhs_place]);
-            let alpha = Term::pmatch(&[(&lhs, &clause.lhs)]).ok_or(SampleError::Subterm)?;
-            for &var in &rhs_subterm.variables() {
-                let var_term = Term::Variable(var);
-                if let Some((&k, _)) = alpha.0.iter().find(|(_, v)| **v == var_term) {
-                    vars.push(k)
-                } else {
-                    return Err(SampleError::Subterm);
+            {
+                let alpha = Term::pmatch(&[(&lhs, &clause.lhs)]).ok_or(SampleError::Subterm)?;
+                let rhs_subterm = clause.rhs[0].at(rhs_place).ok_or(SampleError::Subterm)?;
+                for &var in &rhs_subterm.variables() {
+                    if let Some((&k, _)) = alpha.0.iter().find(|(_, v)| **v == Term::Variable(var))
+                    {
+                        vars.push(k)
+                    } else {
+                        return Err(SampleError::Subterm);
+                    }
                 }
             }
-            terms.push((lhs_subterm, rhs_subterm.clone()));
+            let rhs_subterm = clause.rhs[0].at(rhs_place).ok_or(SampleError::Subterm)?;
+            let lhs_subterm = clause.lhs.at(lhs_place).ok_or(SampleError::Subterm)?;
+            terms.push((lhs_subterm, rhs_subterm));
         }
         Ok((types, terms, vars))
     }
@@ -234,6 +254,8 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         let tvar = TVar(env.src.fresh());
         let return_tp = env.lex.lex.ctx.intern_tvar(tvar);
         for tp in types {
+            let tp = tp.apply(&env.sub);
+            let return_tp = return_tp.apply(&env.sub);
             Type::unify_with_sub(&[(return_tp, tp)], &mut env.sub)
                 .map_err(|_| SampleError::Subterm)?;
         }
@@ -254,11 +276,10 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
     }
     // Create a new `Operator` whose type is consistent with `Vars`.
     fn new_operator(
-        lex: &mut Lexicon<'ctx, 'b>,
+        env: &mut Env<'ctx, 'b>,
         applicative: bool,
         vars: &[Variable],
         return_tp: Ty<'ctx>,
-        env: &Env<'ctx, 'b>,
     ) -> Result<Operator, SampleError<'ctx>> {
         // Construct the name.
         let name = None;
@@ -268,14 +289,12 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         let mut tp = return_tp;
         for &var in vars.iter().rev() {
             let schema: Schema<'ctx> = env.vars.get(var.0).ok_or(SampleError::Subterm)?;
-            tp = env.lex.lex.ctx.arrow(
-                schema.instantiate(&env.lex.lex.ctx, &mut lex.lex.to_mut().src),
-                tp,
-            );
+            let ctx = env.lex.lex.ctx;
+            tp = ctx.arrow(schema.instantiate(&ctx, &mut env.src), tp);
         }
         tp = tp.apply(&env.sub);
         // Create the new variable.
-        Ok(lex.invent_operator(name, arity, &tp))
+        Ok(env.lex.invent_operator(name, arity, &tp))
     }
     // Create a new rule setting up a generalization subproblem.
     fn new_rule(
@@ -409,7 +428,7 @@ mod tests {
     #[test]
     fn new_operator_test() {
         with_ctx(1024, |ctx| {
-            let mut lex = create_test_lexicon(&ctx);
+            let lex = create_test_lexicon(&ctx);
             let applicative = true;
             let vars = &[Variable(0), Variable(1)];
             let list = ctx.intern_name("list");
@@ -422,14 +441,15 @@ mod tests {
             env.new_variable(); // Add v1_.
             env.sub.add(TVar(dummy + 1), t_int);
             env.sub.add(TVar(dummy + 2), t_list);
-            let op = TRS::new_operator(&mut lex, applicative, vars, t_list, &env).expect("op");
-            let context = Context::from(SituatedAtom::new(Atom::from(op), lex.signature()));
-            let tp = lex
+            let op = TRS::new_operator(&mut env, applicative, vars, t_list).expect("op");
+            let context = Context::from(SituatedAtom::new(Atom::from(op), env.lex.signature()));
+            let tp = env
+                .lex
                 .infer_context(&context)
                 .map(|env| env.tps[0].apply(&env.sub))
                 .expect("tp");
             assert_eq!(11, op.id());
-            assert_eq!(0, op.arity(lex.signature()));
+            assert_eq!(0, op.arity(env.lex.signature()));
             assert_eq!("int → list → list", tp.to_string());
         })
     }
@@ -470,11 +490,17 @@ mod tests {
             )
             .expect("parsed trs");
             let (lhs_context, clauses) = TRS::find_lhs_context(&trs.utrs.rules).unwrap();
-            let (rhs_context, clauses) = TRS::find_rhs_context(&clauses).unwrap();
-            let rules = trs
-                .generalize_clauses(&lhs_context, &rhs_context, &clauses)
+            let (rhs_context, mut clauses) = TRS::find_rhs_context(&clauses).unwrap();
+            let mut offset = lhs_context.variables().len() + lhs_context.holes().len();
+            clauses.iter_mut().for_each(|c| {
+                c.canonicalize(&mut HashMap::new());
+                c.offset(offset);
+                offset += c.variables().len();
+            });
+            let (rules, lex) = trs
+                .generalize_clauses(&lhs_context, &rhs_context, &mut clauses, offset)
                 .unwrap();
-            let sig = trs.lex.signature();
+            let sig = lex.signature();
             let rule_string = rules.iter().map(|r| r.pretty(sig)).join("\n");
             let expected = [
                 "op11 1 = 2",
