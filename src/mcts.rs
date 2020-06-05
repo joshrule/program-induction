@@ -162,17 +162,14 @@ impl<M: MCTS> MCTSManager<M> {
     pub fn step_until<R: Rng, P: Fn(&M) -> bool>(&mut self, rng: &mut R, predicate: P) {
         while !predicate(&self.tree.mcts) {
             match self.tree.step(rng) {
-                Ok(_nh) => {
-                }
-                Err(e) => {
-                    match e {
-                        MCTSError::TreeInconsistent
-                        | MCTSError::TreeExhausted
-                        | MCTSError::TreeAtMaxStates
-                        | MCTSError::TreeAtMaxDepth => break,
-                        MCTSError::MoveFailed | MCTSError::MoveCreatedCycle => (),
-                    }
-                }
+                Ok(_nh) => {}
+                Err(e) => match e {
+                    MCTSError::TreeInconsistent
+                    | MCTSError::TreeExhausted
+                    | MCTSError::TreeAtMaxStates
+                    | MCTSError::TreeAtMaxDepth => break,
+                    MCTSError::MoveFailed | MCTSError::MoveCreatedCycle => (),
+                },
             }
         }
     }
