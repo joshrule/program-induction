@@ -731,8 +731,7 @@ impl<'ctx> Revision<'ctx> {
                         tryo![trs.append_clauses(vec![rule]).ok()];
                         MoveResult::Revision(Some(trs), None)
                     } else {
-                        let spec = Some(MCTSMoveState::SampleRule(new_context));
-                        MoveResult::Revision(None, spec)
+                        MoveResult::Revision(None, Some(MCTSMoveState::SampleRule(new_context)))
                     }
                 }
                 Some(MCTSMoveState::RegenerateRule(Some((n, ref context)))) => {
