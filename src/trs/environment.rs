@@ -598,7 +598,9 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         schema: Schema<'ctx>,
         constant: bool,
     ) -> Result<Vec<Ty<'ctx>>, TypeError<'ctx>> {
-        let query_tp = schema.instantiate(&self.lex.lex.ctx, &mut self.src);
+        let query_tp = schema
+            .instantiate(&self.lex.lex.ctx, &mut self.src)
+            .apply(&self.sub);
         let result = if constant {
             Type::unify_with_sub(&[(&query_tp, &tp)], &mut self.sub).map(|_| Vec::new())?
         } else {
