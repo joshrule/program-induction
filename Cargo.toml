@@ -17,6 +17,7 @@ rustdoc-args = ["--html-in-header", ".cargo/registry/src/github.com-1ecc6299db9e
 
 [dependencies]
 crossbeam-channel = "0.3"
+generational-arena = { version = "0.2", features = ["serde"] }
 itertools = "0.8"
 lazy_static = "1.3"
 maplit = "1.0"

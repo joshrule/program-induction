@@ -6,6 +6,7 @@
 // - Find States via Hash rather than Eq.
 // - ask for moves & states to be Debug for easier debugging.
 // - Create a recycling pool for moves & nodes.
+use generational_arena::{Arena, Index};
 use rand::Rng;
 use serde::Serialize;
 use serde_json::Value;
@@ -14,8 +15,10 @@ use std::collections::HashMap;
 pub type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
 type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEvaluation;
-pub type NodeHandle = usize;
 pub type MoveHandle = usize;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct NodeHandle(Index);
 
 pub trait State<M: MCTS<State = Self>>: Clone + std::hash::Hash + Eq + Sized {
     type Move: std::fmt::Display + PartialEq + Clone;
@@ -89,7 +92,7 @@ pub struct SearchTree<M: MCTS> {
 
 pub struct TreeStore<M: MCTS> {
     root: NodeHandle,
-    nodes: Vec<Node<M>>,
+    nodes: Arena<Node<M>>,
     moves: Vec<MoveInfo<M>>,
     table: HashMap<M::State, Vec<NodeHandle>>,
 }
@@ -182,6 +185,18 @@ impl<M: MCTS> MCTSManager<M> {
     }
     pub fn tree_mut(&mut self) -> &mut SearchTree<M> {
         &mut self.tree
+    }
+}
+
+impl<M: MCTS> std::ops::Index<NodeHandle> for Arena<Node<M>> {
+    type Output = Node<M>;
+    fn index(&self, index: NodeHandle) -> &Self::Output {
+        &self[index.0]
+    }
+}
+impl<M: MCTS> std::ops::IndexMut<NodeHandle> for Arena<Node<M>> {
+    fn index_mut(&mut self, index: NodeHandle) -> &mut Self::Output {
+        &mut self[index.0]
     }
 }
 
@@ -288,40 +303,43 @@ impl<M: MCTS> TreeStore<M> {
 impl<M: MCTS> SearchTree<M> {
     pub fn new<R: Rng>(
         mut mcts: M,
-        root: M::State,
+        root_state: M::State,
         state_eval: M::StateEval,
         move_eval: M::MoveEval,
         rng: &mut R,
     ) -> Self {
-        let evaluation = state_eval.evaluate(&root, &mut mcts, rng);
-        let moves: Vec<_> = root
+        let evaluation = state_eval.evaluate(&root_state, &mut mcts, rng);
+        let mut table = HashMap::new();
+        let mut nodes = Arena::new();
+        let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
+        stats.update(evaluation);
+        let root_node = Node {
+            state: root_state.clone(),
+            incoming: None,
+            outgoing: vec![],
+            stats,
+            evaluation,
+        };
+        let root = NodeHandle(nodes.insert(root_node));
+        let moves: Vec<_> = root_state
             .available_moves(&mut mcts)
             .into_iter()
             .enumerate()
             .map(|(i, mov)| MoveInfo {
                 handle: i,
-                parent: 0,
+                parent: root,
                 mov,
                 child: None,
                 pruning: Pruning::None,
             })
             .collect();
-        let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
-        stats.update(evaluation);
-        let root_node = Node {
-            state: root.clone(),
-            incoming: None,
-            outgoing: (0..moves.len()).collect(),
-            stats,
-            evaluation,
-        };
-        let mut table = HashMap::new();
-        table.insert(root, vec![0]);
+        (0..moves.len()).for_each(|i| nodes[root].outgoing.push(i));
+        table.insert(root_state, vec![root]);
         let tree = TreeStore {
             moves,
             table,
-            root: 0,
-            nodes: vec![root_node],
+            root,
+            nodes,
         };
         SearchTree {
             mcts,
@@ -350,10 +368,9 @@ impl<M: MCTS> SearchTree<M> {
             .tree
             .nodes
             .iter()
-            .enumerate()
-            .map(|(i, n)| {
+            .map(|(h, n)| {
                 json!({
-                    "handle": i,
+                    "handle": h,
                     "state": n.state.describe_self(&self.mcts),
                     "in": n.incoming,
                     "out": n.outgoing,
@@ -390,7 +407,7 @@ impl<M: MCTS> SearchTree<M> {
     }
     /// Iterate over the nodes and copy the evaluation information from the objects.
     pub fn reevaluate_nodes(&mut self) {
-        for node in self.tree.nodes.iter_mut() {
+        for (_, node) in self.tree.nodes.iter_mut() {
             node.evaluation = self.state_eval.reread(&node.state, &mut self.mcts);
         }
     }
@@ -645,10 +662,18 @@ impl<M: MCTS> SearchTree<M> {
             }
         }
     }
-    fn make_node<R: Rng>(&mut self, s: <M>::State, rng: &mut R) -> NodeHandle {
-        let nh = self.tree.nodes.len();
-        let mut outgoing = vec![];
-        for mov in s.available_moves(&mut self.mcts) {
+    fn make_node<R: Rng>(&mut self, state: <M>::State, rng: &mut R) -> NodeHandle {
+        let evaluation = self.state_eval.evaluate(&state, &mut self.mcts, rng);
+        let moves = state.available_moves(&mut self.mcts);
+        let node = Node {
+            state,
+            incoming: None,
+            outgoing: vec![],
+            evaluation,
+            stats: <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new(),
+        };
+        let nh = NodeHandle(self.tree.nodes.insert(node));
+        for mov in moves {
             let handle = self.tree.moves.len();
             let new_move = MoveInfo {
                 handle,
@@ -658,17 +683,8 @@ impl<M: MCTS> SearchTree<M> {
                 pruning: Pruning::None,
             };
             self.tree.moves.push(new_move);
-            outgoing.push(handle);
+            self.tree.nodes[nh].outgoing.push(handle);
         }
-        let evaluation = self.state_eval.evaluate(&s, &mut self.mcts, rng);
-        let node = Node {
-            state: s,
-            incoming: None,
-            outgoing,
-            evaluation,
-            stats: <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new(),
-        };
-        self.tree.nodes.push(node);
         nh
     }
     /// Prunes a `MoveInfo<M>` from the tree.

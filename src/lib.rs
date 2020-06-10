@@ -99,6 +99,7 @@
 //! [`unit`]: https://doc.rust-lang.org/std/primitive.unit.html
 
 extern crate crossbeam_channel;
+extern crate generational_arena;
 extern crate itertools;
 #[macro_use]
 extern crate lazy_static;
