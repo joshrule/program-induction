@@ -724,8 +724,6 @@ impl<M: MCTS> SearchTree<M> {
     fn hard_prune_tree(&mut self, src_mh: MoveHandle) {
         let mut stack = vec![src_mh];
         while let Some(mh) = stack.pop() {
-            self.tree.moves[mh].pruning = Pruning::Hard;
-            self.tree.moves[mh].child = None;
             if let Some(nh) = self.tree.moves[mh].child {
                 self.tree.delist(nh);
                 for &omh in &self.tree.nodes[nh].outgoing {
@@ -733,10 +731,14 @@ impl<M: MCTS> SearchTree<M> {
                         stack.push(omh);
                     }
                 }
-                self.tree.nodes[nh].incoming = None;
-                self.tree.nodes[nh].outgoing.clear();
-                self.tree.nodes[nh].stats =
-                    <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
+                self.tree.nodes.remove(nh.0);
+            }
+            // Remove all but the src_mh, which is marked pruned.
+            if mh != src_mh {
+                self.tree.moves.remove(mh.0);
+            } else {
+                self.tree.moves[mh].pruning = Pruning::Hard;
+                self.tree.moves[mh].child = None;
             }
         }
     }
