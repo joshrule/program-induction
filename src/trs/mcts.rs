@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use mcts::{
-    MoveCheck, MoveEvaluator, MoveHandle, MoveInfo, NodeHandle, NodeStatistic, SearchTree, State,
+    MoveCheck, MoveEvaluator, MoveHandle, NodeHandle, NodeStatistic, SearchTree, State,
     StateEvaluator, TreeStore, MCTS,
 };
 use rand::{
@@ -1213,34 +1213,38 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     }
 }
 
-fn unexplored_first<'c, 'ctx, 'b, F, R: Rng, MoveIter>(
+fn unexplored_first<'ctx, 'b, F, R: Rng, MoveIter>(
     moves: MoveIter,
     nh: NodeHandle,
     mcts: &TRSMCTS<'ctx, 'b>,
     tree: &TreeStore<TRSMCTS<'ctx, 'b>>,
     selector: F,
     rng: &mut R,
-) -> Option<&'c MoveInfo<TRSMCTS<'ctx, 'b>>>
+) -> Option<MoveHandle>
 where
-    MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'ctx, 'b>>>,
+    MoveIter: Iterator<Item = MoveHandle>,
     F: Fn(&[f64], &[f64], &TRSMCTS, &mut R) -> f64,
 {
     // Split the moves into those with and without children.
-    let (childful, childless): (Vec<_>, Vec<_>) = moves.partition(|mv| mv.child.is_some());
+    let (childful, childless): (Vec<_>, Vec<_>) =
+        moves.partition(|mh| tree.mv(*mh).child.is_some());
     // Take the first childless move, or perform UCT on childed moves.
-    if let Some(mv) = childless.iter().find(|m| m.mov == MCTSMove::Stop) {
-        Some(mv)
-    } else if let Some(mv) = childless.choose(rng) {
-        Some(mv)
+    if let Some(mh) = childless
+        .iter()
+        .find(|mh| tree.mv(**mh).mov == MCTSMove::Stop)
+    {
+        Some(*mh)
+    } else if let Some(mh) = childless.choose(rng) {
+        Some(*mh)
     } else {
         childful
             .into_iter()
-            .map(|mv| {
-                let ch = mv.child.expect("INVARIANT: partition failed us");
+            .map(|mh| {
+                let ch = tree.mv(mh).child.expect("INVARIANT: partition failed us");
                 let parent = &tree.node(nh).stats;
                 let child = &tree.node(ch).stats;
                 let score = selector(parent, child, mcts, rng);
-                (mv, score)
+                (mh, score)
             })
             .fold(vec![], |mut acc, x| {
                 if acc.is_empty() {
@@ -1297,15 +1301,15 @@ where
 
 impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for ThompsonMoveEvaluator {
     type NodeStatistics = Vec<f64>;
-    fn choose<'c, R: Rng, MoveIter>(
+    fn choose<R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
         nh: NodeHandle,
         tree: &SearchTree<TRSMCTS<'a, 'b>>,
         rng: &mut R,
-    ) -> Option<&'c MoveInfo<TRSMCTS<'a, 'b>>>
+    ) -> Option<MoveHandle>
     where
-        MoveIter: Iterator<Item = &'c MoveInfo<TRSMCTS<'a, 'b>>>,
+        MoveIter: Iterator<Item = MoveHandle>,
     {
         unexplored_first(moves, nh, tree.mcts(), tree.tree(), thompson_sample, rng)
     }

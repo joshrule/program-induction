@@ -15,10 +15,12 @@ use std::collections::HashMap;
 pub type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
 type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEvaluation;
-pub type MoveHandle = usize;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct NodeHandle(Index);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct MoveHandle(Index);
 
 pub trait State<M: MCTS<State = Self>>: Clone + std::hash::Hash + Eq + Sized {
     type Move: std::fmt::Display + PartialEq + Clone;
@@ -51,9 +53,9 @@ pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized {
         node: NodeHandle,
         tree: &SearchTree<M>,
         rng: &mut R,
-    ) -> Option<&'a MoveInfo<M>>
+    ) -> Option<MoveHandle>
     where
-        MoveIter: Iterator<Item = &'a MoveInfo<M>>;
+        MoveIter: Iterator<Item = MoveHandle>;
 }
 
 pub trait StateEvaluator<M: MCTS<StateEval = Self>>: Sized {
@@ -93,7 +95,7 @@ pub struct SearchTree<M: MCTS> {
 pub struct TreeStore<M: MCTS> {
     root: NodeHandle,
     nodes: Arena<Node<M>>,
-    moves: Vec<MoveInfo<M>>,
+    moves: Arena<MoveInfo<M>>,
     table: HashMap<M::State, Vec<NodeHandle>>,
 }
 
@@ -106,7 +108,6 @@ pub struct Node<M: MCTS> {
 }
 
 pub struct MoveInfo<M: MCTS> {
-    handle: MoveHandle,
     pub parent: NodeHandle,
     pub child: Option<NodeHandle>,
     pub mov: Move<M>,
@@ -194,8 +195,22 @@ impl<M: MCTS> std::ops::Index<NodeHandle> for Arena<Node<M>> {
         &self[index.0]
     }
 }
+
 impl<M: MCTS> std::ops::IndexMut<NodeHandle> for Arena<Node<M>> {
     fn index_mut(&mut self, index: NodeHandle) -> &mut Self::Output {
+        &mut self[index.0]
+    }
+}
+
+impl<M: MCTS> std::ops::Index<MoveHandle> for Arena<MoveInfo<M>> {
+    type Output = MoveInfo<M>;
+    fn index(&self, index: MoveHandle) -> &Self::Output {
+        &self[index.0]
+    }
+}
+
+impl<M: MCTS> std::ops::IndexMut<MoveHandle> for Arena<MoveInfo<M>> {
+    fn index_mut(&mut self, index: MoveHandle) -> &mut Self::Output {
         &mut self[index.0]
     }
 }
@@ -311,6 +326,7 @@ impl<M: MCTS> SearchTree<M> {
         let evaluation = state_eval.evaluate(&root_state, &mut mcts, rng);
         let mut table = HashMap::new();
         let mut nodes = Arena::new();
+        let mut moves = Arena::new();
         let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
         stats.update(evaluation);
         let root_node = Node {
@@ -321,19 +337,18 @@ impl<M: MCTS> SearchTree<M> {
             evaluation,
         };
         let root = NodeHandle(nodes.insert(root_node));
-        let moves: Vec<_> = root_state
+        let mhs = root_state
             .available_moves(&mut mcts)
             .into_iter()
-            .enumerate()
-            .map(|(i, mov)| MoveInfo {
-                handle: i,
+            .map(|mov| MoveInfo {
                 parent: root,
                 mov,
                 child: None,
                 pruning: Pruning::None,
             })
+            .map(|mv| MoveHandle(moves.insert(mv)))
             .collect();
-        (0..moves.len()).for_each(|i| nodes[root].outgoing.push(i));
+        nodes[root].outgoing = mhs;
         table.insert(root_state, vec![root]);
         let tree = TreeStore {
             moves,
@@ -353,10 +368,9 @@ impl<M: MCTS> SearchTree<M> {
             .tree
             .moves
             .iter()
-            .enumerate()
-            .map(|(i, mv)| {
+            .map(|(mh, mv)| {
                 json!({
-                    "handle": i,
+                    "handle": mh,
                     "parent": mv.parent,
                     "child": mv.child,
                     "move": self.tree.nodes[mv.parent].state.describe_move(&mv.mov, &self.mcts, mv.pruning == Pruning::Hard),
@@ -442,7 +456,7 @@ impl<M: MCTS> SearchTree<M> {
         // 1. Create a new table.
         self.tree.table = HashMap::new();
         // 2. Iterate over all moves and reset pruning. We do this because some moves may depend on global state.
-        for mv in self.tree.moves.iter_mut() {
+        for (_, mv) in self.tree.moves.iter_mut() {
             mv.pruning = Pruning::None;
         }
         // 3. Process the root (assuming root state is correct).
@@ -541,16 +555,14 @@ impl<M: MCTS> SearchTree<M> {
             self.hard_prune_tree(mh);
         }
         for mov in new_moves {
-            let handle = self.tree.moves.len();
             let new_move: MoveInfo<M> = MoveInfo {
-                handle,
                 parent: nh,
                 child: None,
                 mov,
                 pruning: Pruning::None,
             };
-            self.tree.moves.push(new_move);
-            self.tree.nodes[nh].outgoing.push(handle);
+            let mh = MoveHandle(self.tree.moves.insert(new_move));
+            self.tree.nodes[nh].outgoing.push(mh);
         }
     }
     /// Take a single search step.
@@ -595,14 +607,11 @@ impl<M: MCTS> SearchTree<M> {
                 .outgoing
                 .iter()
                 .copied()
-                .filter(|mh| self.tree.moves[*mh].pruning == Pruning::None)
-                .map(|mh| &self.tree.moves[mh]);
-            // Looks weird, but helps prevent a borrowing issue.
+                .filter(|mh| self.tree.moves[*mh].pruning == Pruning::None);
             let mh = self
                 .move_eval
                 .choose(moves, nh, &self, rng)
-                .expect("INVARIANT: active nodes must have moves")
-                .handle;
+                .expect("INVARIANT: active nodes must have moves");
             let mov = &self.tree.moves[mh];
             match mov.child {
                 // Descend known moves.
@@ -674,16 +683,14 @@ impl<M: MCTS> SearchTree<M> {
         };
         let nh = NodeHandle(self.tree.nodes.insert(node));
         for mov in moves {
-            let handle = self.tree.moves.len();
             let new_move = MoveInfo {
-                handle,
                 mov,
                 parent: nh,
                 child: None,
                 pruning: Pruning::None,
             };
-            self.tree.moves.push(new_move);
-            self.tree.nodes[nh].outgoing.push(handle);
+            let mh = MoveHandle(self.tree.moves.insert(new_move));
+            self.tree.nodes[nh].outgoing.push(mh);
         }
         nh
     }
