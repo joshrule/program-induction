@@ -87,6 +87,7 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub best: f64,
     pub search_time: f64,
     pub trial_start: Option<std::time::Instant>,
+    pub count: usize,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -122,15 +123,23 @@ pub enum Selection {
 pub struct MCTSObj<'ctx, 'b> {
     pub trs: TRS<'ctx, 'b>,
     pub time: f64,
+    pub count: usize,
     pub meta: Vec<MCTSMove<'ctx>>,
     pub meta_prior: f64,
 }
 
 impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
-    pub fn new(trs: TRS<'ctx, 'b>, time: f64, meta: Vec<MCTSMove<'ctx>>, meta_prior: f64) -> Self {
+    pub fn new(
+        trs: TRS<'ctx, 'b>,
+        time: f64,
+        count: usize,
+        meta: Vec<MCTSMove<'ctx>>,
+        meta_prior: f64,
+    ) -> Self {
         MCTSObj {
             trs,
             time,
+            count,
             meta,
             meta_prior,
         }
@@ -1089,6 +1098,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             best: std::f64::NEG_INFINITY,
             search_time: 0.0,
             trial_start: None,
+            count: 0,
         }
     }
     pub fn start_trial(&mut self) {
@@ -1142,8 +1152,10 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
                 .trial_start
                 .map(|ts| ts.elapsed().as_secs_f64())
                 .unwrap_or(0.0);
+        let count = self.count;
+        self.count += 1;
         trs.utrs.canonicalize(&mut HashMap::new());
-        let object = MCTSObj::new(trs, time, meta, prior);
+        let object = MCTSObj::new(trs, time, count, meta, prior);
         let model = MCTSModel::new(self.model);
         HypothesisHandle(self.hypotheses.insert(Hypothesis::new(object, model)))
     }
