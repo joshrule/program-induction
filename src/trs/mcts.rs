@@ -28,7 +28,6 @@ macro_rules! r#tryo {
     };
 }
 
-type TerminalHandle = usize;
 type Hyp<'ctx, 'b> = Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>;
 
 #[derive(Copy, Debug, PartialEq, Eq, Clone, Hash)]
@@ -59,6 +58,9 @@ pub struct HypothesisHandle(Index);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct RevisionHandle(Index);
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct TerminalHandle(Index);
+
 pub enum StateKind<'ctx, 'b> {
     Terminal(Terminal),
     Revision(Revision<'ctx, 'b>),
@@ -80,7 +82,7 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub root: Option<MCTSState>,
     pub hypotheses: Arena<Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>>,
     pub revisions: Arena<Revision<'ctx, 'b>>,
-    pub terminals: Vec<Terminal>,
+    pub terminals: Arena<Terminal>,
     pub model: ModelParams,
     pub params: MCTSParams,
     pub best: f64,
@@ -183,6 +185,19 @@ impl<'ctx, 'b> std::ops::Index<RevisionHandle> for Arena<Revision<'ctx, 'b>> {
 
 impl<'ctx, 'b> std::ops::IndexMut<RevisionHandle> for Arena<Revision<'ctx, 'b>> {
     fn index_mut(&mut self, index: RevisionHandle) -> &mut Self::Output {
+        &mut self[index.0]
+    }
+}
+
+impl std::ops::Index<TerminalHandle> for Arena<Terminal> {
+    type Output = Terminal;
+    fn index(&self, index: TerminalHandle) -> &Self::Output {
+        &self[index.0]
+    }
+}
+
+impl std::ops::IndexMut<TerminalHandle> for Arena<Terminal> {
+    fn index_mut(&mut self, index: TerminalHandle) -> &mut Self::Output {
         &mut self[index.0]
     }
 }
@@ -1103,7 +1118,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             params,
             root: None,
             hypotheses: Arena::new(),
-            terminals: vec![],
+            terminals: Arena::new(),
             revisions: Arena::new(),
             best: std::f64::NEG_INFINITY,
             search_time: 0.0,
@@ -1132,14 +1147,9 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         )))
     }
     pub fn add_terminal(&mut self, state: Terminal) -> MCTSState {
-        let th = match self.terminals.iter().position(|t| *t == state) {
-            Some(th) => th,
-            None => {
-                self.terminals.push(state);
-                self.terminals.len() - 1
-            }
-        };
-        MCTSState(StateHandle::Terminal(th))
+        MCTSState(StateHandle::Terminal(TerminalHandle(
+            self.terminals.insert(state),
+        )))
     }
     pub fn find_trs(trs: &mut TRS<'ctx, 'b>) {
         trs.utrs.canonicalize(&mut HashMap::new());
