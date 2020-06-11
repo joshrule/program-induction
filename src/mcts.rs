@@ -163,10 +163,11 @@ impl<M: MCTS> MCTSManager<M> {
         MCTSManager { tree }
     }
     // Search until the predicate evaluates to `true`.
-    pub fn step_until<R: Rng, P: Fn(&M) -> bool>(&mut self, rng: &mut R, predicate: P) {
+    pub fn step_until<R: Rng, P: Fn(&M) -> bool>(&mut self, rng: &mut R, predicate: P) -> usize {
+        let mut steps = 0;
         while !predicate(&self.tree.mcts) {
             match self.tree.step(rng) {
-                Ok(_nh) => {}
+                Ok(_nh) => steps += 1,
                 Err(e) => match e {
                     MCTSError::TreeInconsistent
                     | MCTSError::TreeExhausted
@@ -176,6 +177,7 @@ impl<M: MCTS> MCTSManager<M> {
                 },
             }
         }
+        steps
     }
     // Take a single search step.
     pub fn step<R: Rng>(&mut self, rng: &mut R) -> Result<Vec<NodeHandle>, MCTSError> {
