@@ -11,7 +11,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         threshold: usize,
     ) -> Result<Vec<TRS<'ctx, 'b>>, SampleError<'ctx>> {
         TRS::merge(parent1, parent2)?
-            .smart_delete(0, 0)?
+            .smart_delete(0, 0)
             .delete_rules(rng, threshold)
     }
     fn merge(

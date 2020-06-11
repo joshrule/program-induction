@@ -27,7 +27,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         trs.append_clauses(new_rules)?;
         trs.lex = lex;
         let stop = trs.len();
-        Ok(trs.smart_delete(start, stop)?)
+        Ok(trs.smart_delete(start, stop))
     }
     fn find_lhs_context(clauses: &[Rule]) -> Result<(Context, Vec<Rule>), SampleError<'ctx>> {
         TRS::find_shared_context(clauses, |c| c.lhs.clone(), 1)

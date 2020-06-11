@@ -318,7 +318,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         // Create a new TRS.
         let mut trs = self.clone();
         trs.utrs.rules = rules.to_vec();
-        trs.smart_delete(0, 0).ok()
+        Some(trs.smart_delete(0, 0))
     }
 }
 impl<'ctx, 'b> fmt::Display for TRS<'ctx, 'b> {

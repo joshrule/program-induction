@@ -64,49 +64,99 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
     }
 
     /// Delete rules from the rewrite system whose LHS matches a prior rule's.
-    pub fn smart_delete(
-        &self,
-        mut start: usize,
-        mut stop: usize,
-    ) -> Result<Self, SampleError<'ctx>> {
-        let mut rules = &self.utrs.rules[..];
-        if rules.is_empty() {
-            Err(SampleError::OptionsExhausted)
-        } else {
-            let mut new_rules: Vec<Rule> = Vec::with_capacity(rules.len());
-            while !rules.is_empty() {
-                let mut new_rule = rules[0].clone();
-                let n = new_rules
-                    .iter()
-                    .map(|r| r.lhs.variables().iter().map(|v| v.id()).max().unwrap_or(0))
-                    .max()
-                    .map(|n| n + 1)
-                    .unwrap_or(0);
-                new_rule.offset(n);
-                if (start == 0 && stop > 0)
-                    || (start > 0
-                        && rules
-                            .iter()
-                            .skip(1)
-                            .all(|rule| Term::pmatch(&[(&rule.lhs, &new_rule.lhs)]).is_none()))
-                    || new_rules
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[macro_use] extern crate polytype;
+    /// # extern crate programinduction;
+    /// # extern crate term_rewriting;
+    /// # extern crate rand;
+    /// # use programinduction::trs::{parse_lexicon, parse_trs};
+    /// # use rand::thread_rng;
+    /// # use term_rewriting::Signature;
+    /// # use polytype::{Source, atype::{with_ctx, TypeSchema, TypeContext}};
+    /// with_ctx(10, |ctx: TypeContext<'_>| {
+    ///     let mut rng = thread_rng();
+    ///     let mut lex = parse_lexicon(
+    ///         "A/2: term -> term -> term; B/1: term -> term; C/0: term;",
+    ///         &ctx,
+    ///     ).expect("lex");
+    ///
+    ///     let trs1 = parse_trs(
+    ///         "A(v0_ v1_) = v0_; A(v0_ C) = v0_; A(C C) = C;",
+    ///         &mut lex,
+    ///         true,
+    ///         &[]
+    ///     ).expect("trs1");
+    ///     let trs2 = trs1.smart_delete(1, 2);
+    ///
+    ///     assert_eq!(trs2.to_string(), "A(v0_ C) = v0_;");
+    ///
+    ///     let trs1 = parse_trs(
+    ///         "A(v0_ v1_) = v0_; A(v0_ C) = v0_; A(C C) = C;",
+    ///         &mut lex,
+    ///         true,
+    ///         &[]
+    ///     ).expect("trs1");
+    ///     let trs2 = trs1.smart_delete(0, 0);
+    ///
+    ///     assert_eq!(trs2.to_string(), "A(v0_ v1_) = v0_;");
+    /// })
+    /// ```
+    pub fn smart_delete(mut self, start: usize, stop: usize) -> Self {
+        let self_len = self.len();
+        let mut rules = std::mem::replace(&mut self.utrs.rules, Vec::with_capacity(self_len));
+        rules.reverse();
+        for i in 0..rules.len() {
+            let mut rule = rules.pop().expect("rule");
+            let saved = match (start <= i, i < stop) {
+                (false, true) => {
+                    let n = self
+                        .utrs
+                        .rules
                         .iter()
-                        .all(|rule: &Rule| Term::pmatch(&[(&rule.lhs, &new_rule.lhs)]).is_none())
-                {
-                    // in safe zone or outside safe zone with useful rule
-                    new_rule.canonicalize(&mut HashMap::new());
-                    new_rules.push(new_rule);
+                        .chain(rules.iter().rev().take(stop - i).skip(start - 1 - i))
+                        .map(|r| r.lhs.variables().iter().map(|v| v.id()).max().unwrap_or(0))
+                        .max()
+                        .map(|n| n + 1)
+                        .unwrap_or(0);
+                    rule.offset(n);
+                    rules
+                        .iter()
+                        .rev()
+                        .take(stop - i)
+                        .skip(start - 1 - i)
+                        .all(|safe| Term::pmatch(&[(&rule.lhs, &safe.lhs)]).is_none())
+                        && self
+                            .utrs
+                            .rules
+                            .iter()
+                            .all(|chosen| Term::pmatch(&[(&chosen.lhs, &rule.lhs)]).is_none())
                 }
-                start = 1.max(start) - 1;
-                stop = 1.max(stop) - 1;
-                rules = &rules[1..];
+                (true, true) => true,
+                (true, false) => {
+                    let n = self
+                        .utrs
+                        .rules
+                        .iter()
+                        .map(|r| r.lhs.variables().iter().map(|v| v.id()).max().unwrap_or(0))
+                        .max()
+                        .map(|n| n + 1)
+                        .unwrap_or(0);
+                    rule.offset(n);
+                    self.utrs
+                        .rules
+                        .iter()
+                        .all(|chosen: &Rule| Term::pmatch(&[(&chosen.lhs, &rule.lhs)]).is_none())
+                }
+                _ => unreachable!(),
+            };
+            if saved {
+                rule.canonicalize(&mut HashMap::new());
+                self.utrs.rules.push(rule)
             }
-            Ok(TRS::new_unchecked(
-                &self.lex,
-                self.is_deterministic(),
-                self.background,
-                new_rules,
-            ))
         }
+        self
     }
 }

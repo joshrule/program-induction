@@ -40,8 +40,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
                 );
                 trs.remove_clauses(&old_rules).ok()?;
                 trs.prepend_clauses(new_rules).ok()?;
-                let trs = trs.smart_delete(0, n).ok()?;
-                Some(trs)
+                Some(trs.smart_delete(0, n))
             }
         }
     }
