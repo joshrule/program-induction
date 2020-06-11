@@ -522,10 +522,12 @@ impl<M: MCTS> SearchTree<M> {
                     }
                 };
                 // Soft prune or extend stack.
-                if self.tree.nodes[ch].outgoing.is_empty() {
-                    self.soft_prune_tree(mh);
-                } else {
-                    stack.extend_from_slice(&self.tree.nodes[ch].outgoing)
+                if let Some(node) = self.tree.nodes.get(ch.0) {
+                    if node.outgoing.is_empty() {
+                        self.soft_prune_tree(mh);
+                    } else {
+                        stack.extend_from_slice(&node.outgoing)
+                    }
                 }
             }
         }
