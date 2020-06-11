@@ -1,3 +1,4 @@
+use generational_arena::{Arena, Index};
 use itertools::Itertools;
 use mcts::{
     MoveCheck, MoveEvaluator, MoveHandle, NodeHandle, NodeStatistic, SearchTree, State,
@@ -18,8 +19,11 @@ use utils::logsumexp;
 
 type RevisionHandle = usize;
 type TerminalHandle = usize;
-type HypothesisHandle = usize;
 type TRSHandle = usize;
+type Hyp<'ctx, 'b> = Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct HypothesisHandle(Index);
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum StateHandle {
@@ -75,7 +79,7 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub hi: usize,
     pub data: &'b [&'b Datum],
     pub trss: Vec<TRS<'ctx, 'b>>,
-    pub hypotheses: Vec<Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>>,
+    pub hypotheses: Arena<Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>>,
     pub revisions: Vec<Revision<'ctx>>,
     pub terminals: Vec<Terminal>,
     pub model: ModelParams,
@@ -146,6 +150,19 @@ impl<'a, 'b> MCTSModel<'a, 'b> {
             evals: HashMap::new(),
             phantom: std::marker::PhantomData,
         }
+    }
+}
+
+impl<'ctx, 'b> std::ops::Index<HypothesisHandle> for Arena<Hyp<'ctx, 'b>> {
+    type Output = Hyp<'ctx, 'b>;
+    fn index(&self, index: HypothesisHandle) -> &Self::Output {
+        &self[index.0]
+    }
+}
+
+impl<'ctx, 'b> std::ops::IndexMut<HypothesisHandle> for Arena<Hyp<'ctx, 'b>> {
+    fn index_mut(&mut self, index: HypothesisHandle) -> &mut Self::Output {
+        &mut self[index.0]
     }
 }
 
@@ -1066,7 +1083,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             model,
             params,
             trss: vec![],
-            hypotheses: vec![],
+            hypotheses: Arena::new(),
             terminals: vec![],
             revisions: vec![],
             best: std::f64::NEG_INFINITY,
@@ -1128,9 +1145,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         trs.utrs.canonicalize(&mut HashMap::new());
         let object = MCTSObj::new(trs, time, meta, prior);
         let model = MCTSModel::new(self.model);
-        let hh = self.hypotheses.len();
-        self.hypotheses.push(Hypothesis::new(object, model));
-        hh
+        HypothesisHandle(self.hypotheses.insert(Hypothesis::new(object, model)))
     }
     pub fn root(&mut self) -> MCTSState {
         let mut trs = TRS::new_unchecked(&self.lexicon, self.deterministic, self.bg, vec![]);
@@ -1146,8 +1161,8 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         self.add_revision(state)
     }
     pub fn update_hypotheses(&mut self) {
-        let mut hypotheses = std::mem::replace(&mut self.hypotheses, vec![]);
-        for hypothesis in hypotheses.iter_mut() {
+        let mut hypotheses = std::mem::replace(&mut self.hypotheses, Arena::new());
+        for (_, hypothesis) in hypotheses.iter_mut() {
             let (new_trs, new_prior) = self.p_path(&hypothesis.object.meta);
             hypothesis.object.meta_prior = new_prior;
             if let Some(trs) = new_trs {
