@@ -9,8 +9,8 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// [`log_likelihood`]: struct.TRS.html#method.log_likelihood
     pub fn log_posterior(
         &self,
-        data: &[Datum],
-        evals: &mut HashMap<Datum, f64>,
+        data: &[&'b Datum],
+        evals: &mut HashMap<&'b Datum, f64>,
         t: f64,
         params: ModelParams,
     ) -> f64 {

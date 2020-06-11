@@ -11,8 +11,8 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// [`term_rewriting::Trace`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/trace/struct.Trace.html
     pub fn log_likelihood(
         &self,
-        data: &[Datum],
-        evals: &mut HashMap<Datum, f64>,
+        data: &[&'b Datum],
+        evals: &mut HashMap<&'b Datum, f64>,
         likelihood: Likelihood,
     ) -> f64 {
         data.iter()
@@ -21,7 +21,7 @@ impl<'a, 'b> TRS<'a, 'b> {
             .map(|(i, datum)| {
                 let weight = likelihood.decay.powi(i as i32);
                 let ll = evals
-                    .entry(datum.clone())
+                    .entry(datum)
                     .or_insert_with(|| self.single_log_likelihood(datum, likelihood));
                 weight.ln() + *ll
             })

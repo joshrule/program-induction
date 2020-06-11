@@ -73,9 +73,9 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub deterministic: bool,
     pub lo: usize,
     pub hi: usize,
-    pub data: &'b [Datum],
+    pub data: &'b [&'b Datum],
     pub trss: Vec<TRS<'ctx, 'b>>,
-    pub hypotheses: Vec<Hypothesis<MCTSObj<'ctx, 'b>, Datum, MCTSModel<'ctx, 'b>>>,
+    pub hypotheses: Vec<Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>>,
     pub revisions: Vec<Revision<'ctx>>,
     pub terminals: Vec<Terminal>,
     pub model: ModelParams,
@@ -135,7 +135,7 @@ impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
 
 pub struct MCTSModel<'a, 'b> {
     params: ModelParams,
-    evals: HashMap<Datum, f64>,
+    evals: HashMap<&'b Datum, f64>,
     phantom: std::marker::PhantomData<TRS<'a, 'b>>,
 }
 
@@ -151,7 +151,7 @@ impl<'a, 'b> MCTSModel<'a, 'b> {
 
 impl<'a, 'b> ProbabilisticModel for MCTSModel<'a, 'b> {
     type Object = MCTSObj<'a, 'b>;
-    type Datum = Datum;
+    type Datum = &'b Datum;
     fn log_prior(&mut self, object: &Self::Object) -> f64 {
         let lprior = object.meta_prior;
         lprior
@@ -165,12 +165,12 @@ impl<'a, 'b> ProbabilisticModel for MCTSModel<'a, 'b> {
             .trs
             .single_log_likelihood(data, self.params.likelihood)
     }
-    fn log_likelihood(&mut self, object: &Self::Object, data: &[Datum]) -> f64 {
+    fn log_likelihood(&mut self, object: &Self::Object, data: &[Self::Datum]) -> f64 {
         object
             .trs
             .log_likelihood(data, &mut self.evals, self.params.likelihood)
     }
-    fn log_posterior(&mut self, object: &Self::Object, data: &[Datum]) -> (f64, f64, f64) {
+    fn log_posterior(&mut self, object: &Self::Object, data: &[Self::Datum]) -> (f64, f64, f64) {
         let lprior = self.log_prior(object);
         let llikelihood = self.log_likelihood(object, data);
         let lposterior = lprior * self.params.p_temp + llikelihood * self.params.l_temp;
@@ -616,7 +616,7 @@ impl<'ctx> Revision<'ctx> {
     pub fn make_move_inner<'b>(
         mv: &MCTSMove<'ctx>,
         spec: &Option<MCTSMoveState<'ctx>>,
-        data: &[Datum],
+        data: &[&'b Datum],
         trs: &TRS<'ctx, 'b>,
     ) -> MoveResult<'ctx, 'b> {
         match *mv {
@@ -766,7 +766,7 @@ impl<'ctx> Revision<'ctx> {
         let state = match Revision::make_move_inner(
             mv,
             &mcts.revisions[handle].spec,
-            &mcts.data,
+            mcts.data,
             &mcts.trss[trsh],
         ) {
             MoveResult::Failed => None,
@@ -1052,7 +1052,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         deterministic: bool,
         lo: usize,
         hi: usize,
-        data: &'b [Datum],
+        data: &'b [&'b Datum],
         model: ModelParams,
         params: MCTSParams,
     ) -> TRSMCTS<'ctx, 'b> {
