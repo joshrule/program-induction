@@ -48,7 +48,7 @@ pub trait NodeStatistic<M: MCTS> {
 
 pub trait MoveEvaluator<M: MCTS<MoveEval = Self>>: Sized {
     type NodeStatistics: std::fmt::Debug + Serialize + NodeStatistic<M> + Clone + Sized;
-    fn choose<'a, R: Rng, MoveIter>(
+    fn choose<R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
         node: NodeHandle,
@@ -341,7 +341,7 @@ impl<M: MCTS> SearchTree<M> {
         };
         let root = NodeHandle(nodes.insert(root_node));
         let mhs = root_state
-            .available_moves(&mut mcts)
+            .available_moves(&mcts)
             .into_iter()
             .map(|mov| MoveInfo {
                 parent: root,
@@ -493,7 +493,7 @@ impl<M: MCTS> SearchTree<M> {
                             .tree
                             .table
                             .entry(self.tree.nodes[ch].state.clone())
-                            .or_insert_with(|| vec![]);
+                            .or_insert_with(Vec::new);
                         entry.push(ch);
                     }
                     // If the move gives a new state:
@@ -506,7 +506,7 @@ impl<M: MCTS> SearchTree<M> {
                         // Update the tree's state.
                         self.tree.nodes[ch].state = new_state.clone();
                         // Hard prune if adding the child would create a cycle, else update.
-                        let entry = self.tree.table.entry(new_state).or_insert_with(|| vec![]);
+                        let entry = self.tree.table.entry(new_state).or_insert_with(Vec::new);
                         if ancestors.iter().any(|a| entry.contains(a)) {
                             self.hard_prune_tree(mh);
                             if let Some(parent_mh) = self.tree.parent_move(mh) {
@@ -519,7 +519,7 @@ impl<M: MCTS> SearchTree<M> {
                                 .tree
                                 .table
                                 .entry(self.tree.nodes[ch].state.clone())
-                                .or_insert_with(|| vec![]);
+                                .or_insert_with(Vec::new);
                             entry.push(ch);
                         }
                     }
@@ -659,7 +659,7 @@ impl<M: MCTS> SearchTree<M> {
             Some(child_state) => {
                 let ancestors = self.tree.ancestors_tree(nh);
                 let ch = self.make_node(child_state.clone(), rng);
-                let entry = self.tree.table.entry(child_state).or_insert_with(|| vec![]);
+                let entry = self.tree.table.entry(child_state).or_insert_with(Vec::new);
                 // Prevent cycles: don't add nodes whose state is contained in an ancestor.
                 if ancestors.iter().any(|a| entry.contains(a)) {
                     self.hard_prune_tree(mh);
@@ -678,7 +678,7 @@ impl<M: MCTS> SearchTree<M> {
     }
     fn make_node<R: Rng>(&mut self, state: <M>::State, rng: &mut R) -> NodeHandle {
         let evaluation = self.state_eval.evaluate(&state, &mut self.mcts, rng);
-        let moves = state.available_moves(&mut self.mcts);
+        let moves = state.available_moves(&self.mcts);
         let node = Node {
             state,
             incoming: None,

@@ -206,8 +206,7 @@ impl<'a, 'b> ProbabilisticModel for MCTSModel<'a, 'b> {
     type Object = MCTSObj<'a, 'b>;
     type Datum = &'b Datum;
     fn log_prior(&mut self, object: &Self::Object) -> f64 {
-        let lprior = object.meta_prior;
-        lprior
+        object.meta_prior
     }
     fn single_log_likelihood<DataIter>(
         &mut self,
@@ -248,8 +247,7 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
     let best = mcts.best;
     let exploit = (child.q - best).exp();
     let explore = (parent.n.ln() / child.n).sqrt();
-    let score = exploit + explore;
-    score
+    exploit + explore
 }
 
 pub fn thompson_sample<R: Rng>(parent: &[f64], child: &[f64], mcts: &TRSMCTS, rng: &mut R) -> f64 {
@@ -488,7 +486,7 @@ impl<'ctx> MCTSMove<'ctx> {
     }
     fn pretty(&self, lex: &Lexicon) -> String {
         match *self {
-            MCTSMove::MemorizeAll => format!("MemorizeAll"),
+            MCTSMove::MemorizeAll => "MemorizeAll".to_string(),
             MCTSMove::MemorizeDatum(Some(n)) => format!("MemorizeDatum({})", n),
             MCTSMove::SampleAtom(atom) => format!("SampleAtom({})", atom.display(lex.signature())),
             MCTSMove::RegenerateThisRule(n, ref c) => {
@@ -717,7 +715,7 @@ impl<'ctx, 'b> Revision<'ctx, 'b> {
             MCTSMove::Variablize(Some((ref m, ref tp, ref places))) => {
                 let mut clauses = trs.utrs.clauses();
                 clauses[*m] = tryo![trs.apply_variablization(tp, places, &clauses[*m])];
-                let new_trs = tryo![trs.adopt_rules(&mut clauses.clone())];
+                let new_trs = tryo![trs.adopt_rules(&mut clauses)];
                 MoveResult::Revision(Some(new_trs), None)
             }
             MCTSMove::DeleteRule(None) => {
@@ -747,7 +745,7 @@ impl<'ctx, 'b> Revision<'ctx, 'b> {
                     return MoveResult::Failed;
                 }
                 tryo![trs.append_clauses(new_data).ok()];
-                return MoveResult::Revision(Some(trs), None);
+                MoveResult::Revision(Some(trs), None)
             }
             MCTSMove::MemorizeDatum(None) => {
                 MoveResult::Revision(None, Some(MCTSMoveState::MemorizeDatum))
@@ -1105,6 +1103,7 @@ impl<'ctx, 'b> MCTS for TRSMCTS<'ctx, 'b> {
 }
 
 impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         lexicon: Lexicon<'ctx, 'b>,
         bg: &'b [Rule],

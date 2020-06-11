@@ -64,7 +64,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         Env {
             lex: lex.clone(),
             invent,
-            src: src.unwrap_or_else(|| Source::default()),
+            src: src.unwrap_or_else(Source::default),
             vars: Vec::with_capacity(32),
             tps: Vec::with_capacity(32),
             sub: Substitution::with_capacity(lex.lex.ctx, 32),
@@ -80,7 +80,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         let mut env = Env {
             lex: lex.clone(),
             invent,
-            src: src.unwrap_or_else(|| Source::default()),
+            src: src.unwrap_or_else(Source::default),
             vars: Vec::with_capacity(32),
             tps: Vec::with_capacity(32),
             sub: Substitution::with_capacity(lex.lex.ctx, 32),
@@ -99,13 +99,13 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
             self.fvs.len(),
         )
     }
-    pub fn rollback(&mut self, Snapshot(i, _r, v, s, t, f): Snapshot) {
-        self.invent = i;
+    pub fn rollback(&mut self, Snapshot(invent, _r, var, sub, tps, fvs): Snapshot) {
+        self.invent = invent;
         //self.src = r;
-        self.vars.truncate(v);
-        self.sub.rollback(s);
-        self.tps.truncate(t);
-        self.fvs.truncate(f);
+        self.vars.truncate(var);
+        self.sub.rollback(sub);
+        self.tps.truncate(tps);
+        self.fvs.truncate(fvs);
     }
     pub fn add_variables(&mut self, n: usize) {
         for _ in 0..n {
@@ -211,7 +211,6 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         // List all the options.
         let mut options = self
             .enumerate_atoms(tp)
-            .into_iter()
             .filter(|atom| match atom {
                 Some(Atom::Variable(_)) | None => params.variable,
                 Some(_) => true,

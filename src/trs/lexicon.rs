@@ -154,15 +154,15 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
         for op in &sig.operators() {
             let id = op.id();
             if id >= lex1.lex.ops.len() {
-                let (mut schema, arity) = lex2.lex.ops[*inv_map[&id]].clone();
-                change.reify_typeschema(&mut schema, &lex1.lex.ctx);
+                let (schema, arity) = lex2.lex.ops[*inv_map[&id]];
+                change.reify_typeschema(&schema, &lex1.lex.ctx);
                 ops.push((schema, arity));
             }
         }
         // 4. Create and return a new Lexicon from parts.
         let mut lex = Lex {
             ops,
-            sig: sig,
+            sig,
             src,
             fvs: vec![],
             tps: HashMap::new(),
@@ -557,7 +557,7 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///
     /// [`TypeSchema`]: https://docs.rs/polytype/~6.0/polytype/enum.TypeSchema.html
     /// [`RuleContext`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/struct.RuleContext.html
-    pub fn infer_rulecontext<'b>(
+    pub fn infer_rulecontext(
         &self,
         context: &RuleContext,
     ) -> Result<Env<'ctx, 'lex>, TypeError<'ctx>> {
@@ -687,7 +687,7 @@ impl<'ctx> Lex<'ctx> {
         let lex_vars = self.free_vars();
         let schema = tp.generalize(&lex_vars, &self.ctx);
         let mut free_vars = schema.free_vars();
-        let type_entry = self.tps.entry(schema).or_insert_with(|| vec![]);
+        let type_entry = self.tps.entry(schema).or_insert_with(Vec::new);
         type_entry.push(op);
         self.ops.push((schema, arity as usize));
         self.fvs.append(&mut free_vars);
@@ -716,10 +716,7 @@ impl<'ctx> Lex<'ctx> {
     fn recompute_types(&mut self) -> &HashMap<Schema<'ctx>, Vec<Operator>> {
         self.tps = HashMap::new();
         for op in self.sig.operators() {
-            let entry = self
-                .tps
-                .entry(self.ops[op.id()].0)
-                .or_insert_with(|| vec![]);
+            let entry = self.tps.entry(self.ops[op.id()].0).or_insert_with(Vec::new);
             entry.push(op);
         }
         &self.tps
