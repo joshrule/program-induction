@@ -17,23 +17,31 @@ use trs::{
 };
 use utils::logsumexp;
 
+macro_rules! r#tryo {
+    ($expr:expr) => {
+        match $expr {
+            std::option::Option::Some(val) => val,
+            std::option::Option::None => {
+                return $crate::trs::mcts::MoveResult::Failed;
+            }
+        }
+    };
+}
+
 type RevisionHandle = usize;
 type TerminalHandle = usize;
 type TRSHandle = usize;
 type Hyp<'ctx, 'b> = Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct HypothesisHandle(Index);
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct MCTSState {
+    handle: StateHandle,
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum StateHandle {
     Revision(RevisionHandle),
     Terminal(TerminalHandle),
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub struct MCTSState {
-    handle: StateHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +57,9 @@ pub struct Terminal {
     trs: HypothesisHandle,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct HypothesisHandle(Index);
+
 pub enum StateKind<'ctx> {
     Terminal(Terminal),
     Revision(Revision<'ctx>),
@@ -58,17 +69,6 @@ pub enum MoveResult<'ctx, 'b> {
     Failed,
     Terminal,
     Revision(Option<TRS<'ctx, 'b>>, Option<MCTSMoveState<'ctx>>),
-}
-
-macro_rules! r#tryo {
-    ($expr:expr) => {
-        match $expr {
-            std::option::Option::Some(val) => val,
-            std::option::Option::None => {
-                return $crate::trs::mcts::MoveResult::Failed;
-            }
-        }
-    };
 }
 
 pub struct TRSMCTS<'ctx, 'b> {
@@ -128,6 +128,22 @@ pub struct MCTSObj<'ctx, 'b> {
     pub meta_prior: f64,
 }
 
+pub struct MCTSModel<'a, 'b> {
+    params: ModelParams,
+    evals: HashMap<&'b Datum, f64>,
+    phantom: std::marker::PhantomData<TRS<'a, 'b>>,
+}
+
+impl<'a, 'b> MCTSModel<'a, 'b> {
+    pub fn new(params: ModelParams) -> Self {
+        MCTSModel {
+            params,
+            evals: HashMap::new(),
+            phantom: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
     pub fn new(
         trs: TRS<'ctx, 'b>,
@@ -142,22 +158,6 @@ impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
             count,
             meta,
             meta_prior,
-        }
-    }
-}
-
-pub struct MCTSModel<'a, 'b> {
-    params: ModelParams,
-    evals: HashMap<&'b Datum, f64>,
-    phantom: std::marker::PhantomData<TRS<'a, 'b>>,
-}
-
-impl<'a, 'b> MCTSModel<'a, 'b> {
-    pub fn new(params: ModelParams) -> Self {
-        MCTSModel {
-            params,
-            evals: HashMap::new(),
-            phantom: std::marker::PhantomData,
         }
     }
 }
