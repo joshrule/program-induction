@@ -37,6 +37,7 @@ pub trait State<M: MCTS<State = Self>>: Clone + std::hash::Hash + Eq + Sized {
     fn check_move(mh: MoveHandle, mcts: &mut M, tree: &TreeStore<M>) -> MoveCheck<M>;
     fn describe_self(&self, mcts: &M) -> Value;
     fn describe_move(&self, mv: &Self::Move, mcts: &M, failed: bool) -> Value;
+    fn discard(&self, mcts: &mut M);
 }
 
 pub trait NodeStatistic<M: MCTS> {
@@ -735,6 +736,7 @@ impl<M: MCTS> SearchTree<M> {
                         stack.push(omh);
                     }
                 }
+                self.tree.nodes[nh].state.discard(&mut self.mcts);
                 self.tree.nodes.remove(nh.0);
             }
             // Remove all but the src_mh, which is marked pruned.
