@@ -112,6 +112,9 @@ pub struct QN {
 pub struct QNMean(QN);
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub struct QNN(QN);
+
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub struct QNMax(QN);
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -250,18 +253,48 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
     exploit + explore
 }
 
-pub fn thompson_sample<R: Rng>(parent: &[f64], child: &[f64], mcts: &TRSMCTS, rng: &mut R) -> f64 {
-    let m = match mcts.params.selection {
-        Selection::Thompson(m) => m,
-        x => panic!("in thompson_sample but Selection is {:?}", x),
+pub fn thompson_sample<R: Rng>(
+    parent: NodeHandle,
+    child: NodeHandle,
+    tree: &TreeStore<TRSMCTS>,
+    mcts: &TRSMCTS,
+    rng: &mut R,
+) -> f64 {
+    let mut source = {
+        let a = match mcts.params.selection {
+            Selection::Thompson(a) => a,
+            x => panic!("in thompson_sample but Selection is {:?}", x),
+        };
+        let b = tree.node(child).stats.0.n as u32;
+        if Bernoulli::from_ratio(b, a + b).unwrap().sample(rng) {
+            child
+        } else {
+            parent
+        }
     };
-    let n = child.len() as u32;
-    let source = if Bernoulli::from_ratio(n, m + n).unwrap().sample(rng) {
-        child
-    } else {
-        parent
-    };
-    *source.choose(rng).unwrap()
+    let mut source_node = tree.node(source);
+    let mut n = rng.gen_range(0, source_node.stats.0.n as usize);
+    let mut outgoing = &source_node.outgoing;
+    let mut idx = 0;
+    while n != 0 {
+        match tree.mv(outgoing[idx]).child {
+            None => idx += 1,
+            Some(target) => {
+                let target_node = tree.node(target);
+                if n > target_node.stats.0.n as usize {
+                    idx += 1;
+                    n -= target_node.stats.0.n as usize;
+                } else {
+                    source = target;
+                    source_node = target_node;
+                    outgoing = &source_node.outgoing;
+                    idx = 0;
+                    n -= 1;
+                }
+            }
+        }
+    }
+    tree.node(source).evaluation.into()
 }
 
 pub fn compute_path<'ctx, 'b>(
@@ -436,6 +469,19 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNMean {
     fn combine(&mut self, other: &Self) {
         self.0.q = logsumexp(&[self.0.q, other.0.q]);
     }
+}
+
+impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNN {
+    fn new() -> Self {
+        QNN(QN {
+            q: std::f64::NEG_INFINITY,
+            n: 0.0,
+        })
+    }
+    fn update(&mut self, _evaluation: f64) {
+        self.0.n += 1.0;
+    }
+    fn combine(&mut self, _other: &Self) {}
 }
 
 impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNMax {
@@ -1300,7 +1346,7 @@ fn unexplored_first<'ctx, 'b, F, R: Rng, MoveIter>(
 ) -> Option<MoveHandle>
 where
     MoveIter: Iterator<Item = MoveHandle>,
-    F: Fn(&[f64], &[f64], &TRSMCTS, &mut R) -> f64,
+    F: Fn(NodeHandle, NodeHandle, &TreeStore<TRSMCTS<'ctx, 'b>>, &TRSMCTS<'ctx, 'b>, &mut R) -> f64,
 {
     // Split the moves into those with and without children.
     let (childful, childless): (Vec<_>, Vec<_>) =
@@ -1318,9 +1364,7 @@ where
             .into_iter()
             .map(|mh| {
                 let ch = tree.mv(mh).child.expect("INVARIANT: partition failed us");
-                let parent = &tree.node(nh).stats;
-                let child = &tree.node(ch).stats;
-                let score = selector(parent, child, mcts, rng);
+                let score = selector(nh, ch, tree, mcts, rng);
                 (mh, score)
             })
             .fold(vec![], |mut acc, x| {
@@ -1377,7 +1421,7 @@ where
 //}
 
 impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for ThompsonMoveEvaluator {
-    type NodeStatistics = Vec<f64>;
+    type NodeStatistics = QNN;
     fn choose<R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
