@@ -227,6 +227,14 @@ impl<M: MCTS> TreeStore<M> {
     pub fn mv(&self, mh: MoveHandle) -> &MoveInfo<M> {
         &self.moves[mh]
     }
+    /// Return the number of DAG nodes.
+    pub fn dag_size(&self) -> usize {
+        self.table.len()
+    }
+    /// Return the number of DAG nodes.
+    pub fn tree_size(&self) -> usize {
+        self.nodes.len()
+    }
     /// Find the paths to equivalent nodes.
     pub fn paths_dag(&self, nh: NodeHandle) -> Vec<Vec<MoveHandle>> {
         self.table[&self.nodes[nh].state]
