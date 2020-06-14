@@ -334,10 +334,11 @@ impl<M: MCTS> SearchTree<M> {
         move_eval: M::MoveEval,
         rng: &mut R,
     ) -> Self {
-        let evaluation = state_eval.evaluate(&root_state, &mut mcts, rng);
         let mut table = HashMap::new();
         let mut nodes = Arena::new();
         let mut moves = Arena::new();
+
+        let evaluation = state_eval.evaluate(&root_state, &mut mcts, rng);
         let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
         stats.update(evaluation);
         let root_node = Node {
@@ -373,6 +374,38 @@ impl<M: MCTS> SearchTree<M> {
             move_eval,
             tree,
         }
+    }
+    fn set_root<R: Rng>(&mut self, root_state: M::State, rng: &mut R) {
+        let evaluation = self.state_eval.evaluate(&root_state, &mut self.mcts, rng);
+        let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
+        stats.update(evaluation);
+        let root_node = Node {
+            state: root_state.clone(),
+            incoming: None,
+            outgoing: vec![],
+            stats,
+            evaluation,
+        };
+        let root = NodeHandle(self.tree.nodes.insert(root_node));
+        let mhs = root_state
+            .available_moves(&self.mcts)
+            .into_iter()
+            .map(|mov| MoveInfo {
+                parent: root,
+                mov,
+                child: None,
+                pruning: Pruning::None,
+            })
+            .map(|mv| MoveHandle(self.tree.moves.insert(mv)))
+            .collect();
+        self.tree.nodes[root].outgoing = mhs;
+        self.tree.table.insert(root_state, vec![root]);
+    }
+    pub fn reset<R: Rng>(&mut self, root_state: M::State, rng: &mut R) {
+        self.tree.table.clear();
+        self.tree.nodes.clear();
+        self.tree.moves.clear();
+        self.set_root(root_state, rng);
     }
     pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {
         let moves = self

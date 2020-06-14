@@ -1197,6 +1197,13 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     pub fn rm_hypothesis(&mut self, hh: HypothesisHandle) {
         self.hypotheses.remove(hh.0);
     }
+    pub fn clear(&mut self) {
+        self.hypotheses.clear();
+        self.terminals.clear();
+        self.revisions.clear();
+        self.best = std::f64::NEG_INFINITY;
+        self.root = None;
+    }
     pub fn root(&mut self) -> MCTSState {
         let mut trs = TRS::new_unchecked(&self.lexicon, self.deterministic, self.bg, vec![]);
         trs.utrs.lo = self.lo;
