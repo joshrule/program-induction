@@ -303,7 +303,7 @@ pub fn thompson_sample<R: Rng>(
             }
         }
     }
-    tree.node(source).evaluation.into()
+    tree.node(source).evaluation
 }
 
 pub fn compute_path<'ctx, 'b>(
