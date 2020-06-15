@@ -369,40 +369,34 @@ pub fn compute_path<'ctx, 'b>(
 ///       &ctx,
 ///   ).expect("lex");
 ///   let context = parse_rulecontext("v0_ (> (HEAD [!])) = CONS", &mut lex).expect("context");
-///   let place = vec![0, 1, 1, 1];
-///   println!("spot: {}", context.at(&place).expect("hole").pretty(lex.signature()));
-///   let fillers = rulecontext_fillers(&lex, &context, &place);
+///   let fillers = rulecontext_fillers(&lex, &context);
 ///   println!("{}", fillers.len());
 ///   for a in fillers {
 ///       println!("{}", a.display(lex.signature()));
 ///   }
 /// })
 /// ```
-pub fn rulecontext_fillers<'ctx, 'b>(
-    lex: &Lexicon<'ctx, 'b>,
-    context: &RuleContext,
-    place: &[usize],
-) -> Vec<Atom> {
-    match context.at(place) {
-        Some(&Context::Hole) => {
+pub fn rulecontext_fillers<'ctx, 'b>(lex: &Lexicon<'ctx, 'b>, context: &RuleContext) -> Vec<Atom> {
+    match context.leftmost_hole() {
+        Some(place) => {
             if let Ok(mut env) = lex.infer_rulecontext(context) {
                 let tp = context
-                    .subcontexts()
-                    .iter()
+                    .preorder()
                     .zip(&env.tps)
-                    .find(|((_, p), _)| p.as_slice() == place)
+                    .find(|(t, _)| t.is_hole())
                     .map(|(_, tp)| tp.apply(&env.sub))
                     .expect("tp");
                 env.invent = place[0] == 0;
-                let new_atoms = env.enumerate_atoms(tp).collect_vec();
-                new_atoms
-                    .into_iter()
+                let mut invent = false;
+                let mut atoms = env
+                    .enumerate_atoms(tp)
                     .filter_map(|atom| match atom {
                         None => {
                             if place == [0] {
                                 None
                             } else {
-                                env.new_variable().map(Atom::Variable)
+                                invent = true;
+                                None
                             }
                         }
                         Some(a) => {
@@ -413,7 +407,13 @@ pub fn rulecontext_fillers<'ctx, 'b>(
                             }
                         }
                     })
-                    .collect()
+                    .collect_vec();
+                if invent {
+                    if let Some(atom) = env.new_variable().map(Atom::Variable) {
+                        atoms.push(atom);
+                    }
+                }
+                atoms
             } else {
                 vec![]
             }
@@ -694,12 +694,10 @@ impl<'ctx, 'b> Revision<'ctx, 'b> {
             }
             Some(MCTSMoveState::SampleRule(ref context))
             | Some(MCTSMoveState::RegenerateRule(Some((_, ref context)))) => {
-                if let Some(place) = context.leftmost_hole() {
-                    rulecontext_fillers(&trs.lex, &context, &place)
-                        .into_iter()
-                        .map(MCTSMove::SampleAtom)
-                        .for_each(|mv| moves.push(mv));
-                }
+                rulecontext_fillers(&trs.lex, &context)
+                    .into_iter()
+                    .map(MCTSMove::SampleAtom)
+                    .for_each(|mv| moves.push(mv));
             }
             Some(MCTSMoveState::RegenerateRule(None)) => {
                 for (i, rule) in trs.utrs.rules.iter().enumerate() {
