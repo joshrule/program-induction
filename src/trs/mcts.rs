@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::{cmp::Ordering, collections::HashMap, convert::TryFrom};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom};
 use trs::{
-    Composition, Datum, Hypothesis, Lexicon, ModelParams, ProbabilisticModel, Recursion,
+    Composition, Datum, Eval, Hypothesis, Lexicon, ModelParams, ProbabilisticModel, Recursion,
     Variablization, TRS,
 };
 use utils::logsumexp;
@@ -134,7 +134,7 @@ pub struct MCTSObj<'ctx, 'b> {
 
 pub struct MCTSModel<'a, 'b> {
     params: ModelParams,
-    evals: HashMap<&'b Datum, f64>,
+    evals: HashMap<&'b Datum, Eval>,
     phantom: std::marker::PhantomData<TRS<'a, 'b>>,
 }
 
@@ -145,6 +145,14 @@ impl<'a, 'b> MCTSModel<'a, 'b> {
             evals: HashMap::new(),
             phantom: std::marker::PhantomData,
         }
+    }
+    pub fn generalizes(&self, data: &[Datum]) -> bool {
+        data.iter().all(|datum| {
+            self.evals
+                .get(datum)
+                .map(|eval| eval.generalizes())
+                .unwrap_or(false)
+        })
     }
 }
 
@@ -219,6 +227,7 @@ impl<'a, 'b> ProbabilisticModel for MCTSModel<'a, 'b> {
         object
             .trs
             .single_log_likelihood(data, self.params.likelihood)
+            .likelihood()
     }
     fn log_likelihood(&mut self, object: &Self::Object, data: &[Self::Datum]) -> f64 {
         object

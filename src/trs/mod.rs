@@ -139,6 +139,11 @@ pub enum Datum {
     Partial(Term),
 }
 
+pub enum Eval {
+    Full(f64),
+    Partial(f64, bool),
+}
+
 impl Datum {
     pub fn is_full(&self) -> bool {
         match self {
@@ -150,6 +155,21 @@ impl Datum {
         match self {
             Datum::Partial(_) => true,
             _ => false,
+        }
+    }
+}
+
+impl Eval {
+    pub fn likelihood(&self) -> f64 {
+        match *self {
+            Eval::Full(x) => x,
+            Eval::Partial(x, _) => x,
+        }
+    }
+    pub fn generalizes(&self) -> bool {
+        match *self {
+            Eval::Full(_) => true,
+            Eval::Partial(_, x) => x,
         }
     }
 }
@@ -199,7 +219,7 @@ where
     M: ProbabilisticModel<Object = O, Datum = D>,
 {
     pub object: O,
-    model: M,
+    pub model: M,
     pub lprior: f64,
     pub llikelihood: f64,
     pub lposterior: f64,

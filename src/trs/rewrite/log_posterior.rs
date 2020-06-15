@@ -1,5 +1,5 @@
 use std::{collections::HashMap, f64::NEG_INFINITY};
-use trs::{rewrite::TRS, Datum, ModelParams};
+use trs::{rewrite::TRS, Datum, Eval, ModelParams};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// Combine [`log_prior`] and [`log_likelihood`], failing early if the
@@ -10,7 +10,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     pub fn log_posterior(
         &self,
         data: &[&'b Datum],
-        evals: &mut HashMap<&'b Datum, f64>,
+        evals: &mut HashMap<&'b Datum, Eval>,
         t: f64,
         params: ModelParams,
     ) -> f64 {
