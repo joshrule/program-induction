@@ -75,7 +75,7 @@ pub enum MoveState<'ctx, 'b> {
     SampleRule(RuleContext, Env<'ctx, 'b>, Vec<Ty<'ctx>>),
     RegenerateRule(RegenerateRuleState<'ctx, 'b>),
     Compose(Vec<Composition<'ctx>>),
-    Recurse(Vec<Recursion<'ctx>>),
+    Recurse,
     Variablize(Vec<Variablization<'ctx>>),
     MemorizeDatum,
     DeleteRule,
@@ -784,9 +784,10 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 .iter()
                 .cloned()
                 .for_each(|composition| moves.push(Move::Compose(Some(composition)))),
-            Some(MoveState::Recurse(ref recursions)) => recursions
-                .iter()
-                .cloned()
+            Some(MoveState::Recurse) => self
+                .trs
+                .find_all_recursions()
+                .into_iter()
                 .for_each(|recursion| moves.push(Move::Recurse(Some(recursion)))),
             Some(MoveState::MemorizeDatum) => {
                 (0..mcts.data.len())
@@ -875,14 +876,9 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.label = StateLabel::CompleteRevision;
             }
             Move::Recurse(None) => {
-                let recursions = self.trs.find_all_recursions();
-                if recursions.is_empty() {
-                    self.label = StateLabel::Failed;
-                } else {
-                    self.path.push((mv.clone(), n));
-                    self.label = StateLabel::PartialRevision;
-                    self.spec.replace(MoveState::Recurse(recursions));
-                }
+                self.path.push((mv.clone(), n));
+                self.label = StateLabel::PartialRevision;
+                self.spec.replace(MoveState::Recurse);
             }
             Move::Recurse(Some(ref recursion)) => {
                 self.trs = tryo![self, self.trs.recurse_by(recursion)];
