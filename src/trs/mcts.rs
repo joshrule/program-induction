@@ -1047,7 +1047,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             self.spec = None;
                             self.label = StateLabel::CompleteRevision;
                         } else {
-                            let tp = arg_tps[0];
+                            let tp = arg_tps[0].apply(&env.sub);
                             let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                             new_arg_tps.extend_from_slice(&arg_tps[1..]);
                             self.path.push((mv.clone(), n));
@@ -1080,7 +1080,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             self.spec = None;
                             self.label = StateLabel::CompleteRevision;
                         } else {
-                            let tp = arg_tps[0];
+                            let tp = arg_tps[0].apply(&env.sub);
                             let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                             new_arg_tps.extend_from_slice(&arg_tps[1..]);
                             self.path.push((mv.clone(), n));
