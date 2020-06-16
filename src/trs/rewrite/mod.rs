@@ -294,7 +294,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         self.utrs.is_deterministic()
     }
     /// Replace the current rules with a new set.
-    pub fn adopt_rules(&self, rules: &mut Vec<Rule>) -> Option<Self> {
+    pub fn adopt_rules(mut self, rules: &mut Vec<Rule>) -> Option<Self> {
         self.filter_background(rules);
 
         let mut i = 0;
@@ -316,9 +316,8 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         }
 
         // Create a new TRS.
-        let mut trs = self.clone();
-        trs.utrs.rules = rules.to_vec();
-        Some(trs.smart_delete(0, 0))
+        self.utrs.rules = rules.to_vec();
+        Some(self.smart_delete(0, 0))
     }
 }
 impl<'ctx, 'b> fmt::Display for TRS<'ctx, 'b> {

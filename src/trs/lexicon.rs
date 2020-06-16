@@ -318,11 +318,10 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
         env.add_variables(context.variables().len());
         env.infer_context(&context)?;
         let mut arg_types = context
-            .subcontexts()
-            .iter()
+            .preorder()
             .zip(&env.tps)
-            .filter(|((c, _), _)| c.is_hole())
-            .map(|((_, _), t)| *t)
+            .filter(|(c, _)| c.is_hole())
+            .map(|(_, t)| *t)
             .collect_vec();
         env.sample_term(context, &mut arg_types, params, rng)
     }
@@ -494,11 +493,10 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
         env.add_variables(context.variables().len());
         env.infer_rulecontext(&context)?;
         let mut arg_types = context
-            .subcontexts()
-            .iter()
+            .preorder()
             .zip(&env.tps)
-            .filter(|((c, _), _)| c.is_hole())
-            .map(|((_, _), t)| *t)
+            .filter(|(c, _)| c.is_hole())
+            .map(|(_, t)| *t)
             .collect_vec();
         env.sample_rule(&context, &mut arg_types, params, rng)
     }

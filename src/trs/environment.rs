@@ -25,7 +25,7 @@ pub struct AtomEnumeration<'ctx, 'lex, 'atom> {
 }
 
 /// A Typing Environment.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Env<'ctx, 'lex> {
     pub lex: Lexicon<'ctx, 'lex>,
     pub invent: bool,
@@ -107,6 +107,9 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         self.tps.truncate(tps);
         self.fvs.truncate(fvs);
     }
+    pub fn new_type_variable(&mut self) -> Ty<'ctx> {
+        self.lex.lex.ctx.intern_tvar(TVar(self.src.fresh()))
+    }
     pub fn add_variables(&mut self, n: usize) {
         for _ in 0..n {
             let tvar = TVar(self.src.fresh());
@@ -166,7 +169,11 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
             Atom::Variable(v) => self.var_tp(v),
         }
     }
-    fn check_atom(&mut self, tp: Ty<'ctx>, atom: Atom) -> Result<Vec<Ty<'ctx>>, SampleError<'ctx>> {
+    pub(crate) fn check_atom(
+        &mut self,
+        tp: Ty<'ctx>,
+        atom: Atom,
+    ) -> Result<Vec<Ty<'ctx>>, SampleError<'ctx>> {
         // println!("  tp: {}", tp);
         //for (i, v) in self.vars.iter().enumerate() {
         //    println!("  - {} *-> {}", i, v);
