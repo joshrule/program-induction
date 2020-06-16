@@ -74,9 +74,9 @@ pub struct MCTSStateEvaluator;
 pub enum MoveState<'ctx, 'b> {
     SampleRule(RuleContext, Env<'ctx, 'b>, Vec<Ty<'ctx>>),
     RegenerateRule(RegenerateRuleState<'ctx, 'b>),
-    Compose(Vec<Composition<'ctx>>),
+    Compose,
     Recurse,
-    Variablize(Vec<Variablization<'ctx>>),
+    Variablize,
     MemorizeDatum,
     DeleteRule,
 }
@@ -776,13 +776,15 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     }
                 }
             }
-            Some(MoveState::Variablize(ref vs)) => vs
-                .iter()
-                .cloned()
+            Some(MoveState::Variablize) => self
+                .trs
+                .find_all_variablizations()
+                .into_iter()
                 .for_each(|v| moves.push(Move::Variablize(Some(v)))),
-            Some(MoveState::Compose(ref compositions)) => compositions
-                .iter()
-                .cloned()
+            Some(MoveState::Compose) => self
+                .trs
+                .find_all_compositions()
+                .into_iter()
                 .for_each(|composition| moves.push(Move::Compose(Some(composition)))),
             Some(MoveState::Recurse) => self
                 .trs
@@ -859,14 +861,9 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.label = StateLabel::CompleteRevision;
             }
             Move::Compose(None) => {
-                let compositions = self.trs.find_all_compositions();
-                if compositions.is_empty() {
-                    self.label = StateLabel::Failed;
-                } else {
-                    self.path.push((mv.clone(), n));
-                    self.label = StateLabel::PartialRevision;
-                    self.spec.replace(MoveState::Compose(compositions));
-                }
+                self.path.push((mv.clone(), n));
+                self.label = StateLabel::PartialRevision;
+                self.spec.replace(MoveState::Compose);
             }
             Move::Compose(Some(ref composition)) => {
                 self.trs = tryo![self, self.trs.compose_by(composition)];
@@ -888,14 +885,9 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.label = StateLabel::CompleteRevision;
             }
             Move::Variablize(None) => {
-                let vs = self.trs.find_all_variablizations();
-                if vs.is_empty() {
-                    self.label = StateLabel::Failed;
-                } else {
-                    self.path.push((mv.clone(), n));
-                    self.label = StateLabel::PartialRevision;
-                    self.spec.replace(MoveState::Variablize(vs));
-                }
+                self.path.push((mv.clone(), n));
+                self.label = StateLabel::PartialRevision;
+                self.spec.replace(MoveState::Variablize);
             }
             Move::Variablize(Some((ref m, ref tp, ref places))) => {
                 let mut clauses = self.trs.utrs.clauses();
