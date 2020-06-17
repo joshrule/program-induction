@@ -642,11 +642,11 @@ impl<'ctx, 'lex, 'atom> Iterator for AtomEnumeration<'ctx, 'lex, 'atom> {
             let schema = self.env.vars[self.var];
             self.var += 1;
             let snapshot = self.env.snapshot();
-            if self.env.check_schema(self.tp, schema, true).is_ok() {
-                self.env.rollback(snapshot);
+            let fit = self.env.check_schema(self.tp, schema, true).is_ok();
+            self.env.rollback(snapshot);
+            if fit {
                 return Some(Some(Atom::Variable(Variable(self.var - 1))));
             }
-            self.env.rollback(snapshot);
         }
         if self.env.invent && !self.invented {
             self.invented = true;
