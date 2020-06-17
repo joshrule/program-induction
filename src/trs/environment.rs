@@ -174,7 +174,6 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         tp: Ty<'ctx>,
         atom: Atom,
     ) -> Result<Vec<Ty<'ctx>>, SampleError<'ctx>> {
-        let tp = tp.apply(&self.sub);
         let (schema, constant) = match atom {
             Atom::Operator(op) => {
                 let (schema, arity) = self.lex.lex.ops[op.id()];
@@ -190,7 +189,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         tp: Ty<'ctx>,
     ) -> AtomEnumeration<'ctx, 'lex, 'atom> {
         AtomEnumeration {
-            tp: tp.apply(&self.sub),
+            tp,
             results: smallvec![],
             op: 0,
             var: 0,
@@ -234,8 +233,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let tp = self
                     .var_tp(v)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src)
-                    .apply(&self.sub);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src);
                 self.tps.push(tp);
                 Ok(tp)
             }
@@ -243,8 +241,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let tp = self
                     .op_tp(op)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src)
-                    .apply(&self.sub);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src);
                 self.tps.push(tp);
                 Ok(tp)
             }
@@ -252,8 +249,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let head_type = self
                     .op_tp(op)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src)
-                    .apply(&self.sub);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src);
                 let arg_types = head_type.args().unwrap();
                 let return_tp = head_type.returns().unwrap_or(&head_type);
                 self.tps.push(return_tp);
@@ -261,7 +257,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                     let st_tp = self.infer_term(a)?;
                     Type::unify_with_sub(&[(&arg_tp, &st_tp)], &mut self.sub)?;
                 }
-                Ok(return_tp.apply(&self.sub))
+                Ok(return_tp)
             }
         }
     }
@@ -435,8 +431,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let tp = self
                     .var_tp(v)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src)
-                    .apply(&self.sub);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src);
                 self.tps.push(tp);
                 Ok(tp)
             }
@@ -444,8 +439,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let tp = self
                     .op_tp(op)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src)
-                    .apply(&self.sub);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src);
                 self.tps.push(tp);
                 Ok(tp)
             }
@@ -453,8 +447,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                 let head_type = self
                     .op_tp(op)?
                     .0
-                    .instantiate(&self.lex.lex.ctx, &mut self.src)
-                    .apply(&self.sub);
+                    .instantiate(&self.lex.lex.ctx, &mut self.src);
                 let arg_types = head_type.args().unwrap();
                 let return_tp = head_type.returns().unwrap_or(&head_type);
                 self.tps.push(return_tp);
@@ -462,7 +455,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                     let st_tp = self.infer_context(a)?;
                     Type::unify_with_sub(&[(&arg_tp, &st_tp)], &mut self.sub)?;
                 }
-                Ok(return_tp.apply(&self.sub))
+                Ok(return_tp)
             }
         }
     }
@@ -594,9 +587,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         schema: Schema<'ctx>,
         constant: bool,
     ) -> Result<Vec<Ty<'ctx>>, TypeError<'ctx>> {
-        let query_tp = schema
-            .instantiate(&self.lex.lex.ctx, &mut self.src)
-            .apply(&self.sub);
+        let query_tp = schema.instantiate(&self.lex.lex.ctx, &mut self.src);
         let result = if constant {
             Type::unify_with_sub(&[(&query_tp, &tp)], &mut self.sub).map(|_| Vec::new())?
         } else {

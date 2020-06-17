@@ -436,8 +436,7 @@ pub fn rulecontext_fillers<'ctx, 'b>(
             let lhs_hole = place[0] == 0;
             let full_lhs_hole = place == [0];
             env.invent = lhs_hole && !full_lhs_hole;
-            let tp = arg_types[0].apply(&env.sub);
-            env.enumerate_atoms(tp)
+            env.enumerate_atoms(arg_types[0])
                 .filter_map(|atom| match atom {
                     None if full_lhs_hole => None,
                     Some(a) if full_lhs_hole && a.is_variable() => None,
@@ -1006,7 +1005,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                                     .preorder()
                                     .zip(&env.tps)
                                     .find(|(t, _)| t.is_hole())
-                                    .map(|(_, tp)| tp.apply(&env.sub))
+                                    .map(|(_, tp)| *tp)
                                     .expect("tp");
                                 let arg_tps = vec![tp];
                                 self.spec.replace(MoveState::RegenerateRule(
@@ -1047,7 +1046,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             self.spec = None;
                             self.label = StateLabel::CompleteRevision;
                         } else {
-                            let tp = arg_tps[0].apply(&env.sub);
+                            let tp = arg_tps[0];
                             let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                             new_arg_tps.extend_from_slice(&arg_tps[1..]);
                             self.path.push((mv.clone(), n));
@@ -1080,7 +1079,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             self.spec = None;
                             self.label = StateLabel::CompleteRevision;
                         } else {
-                            let tp = arg_tps[0].apply(&env.sub);
+                            let tp = arg_tps[0];
                             let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                             new_arg_tps.extend_from_slice(&arg_tps[1..]);
                             self.path.push((mv.clone(), n));
