@@ -174,15 +174,7 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
         tp: Ty<'ctx>,
         atom: Atom,
     ) -> Result<Vec<Ty<'ctx>>, SampleError<'ctx>> {
-        // println!("  tp: {}", tp);
-        //for (i, v) in self.vars.iter().enumerate() {
-        //    println!("  - {} *-> {}", i, v);
-        //}
-        //for (k, v) in self.sub.iter() {
-        //    println!("  - {} |-> {}", k.0, v);
-        //}
         let tp = tp.apply(&self.sub);
-        // println!("  tp after apply: {}", tp);
         let (schema, constant) = match atom {
             Atom::Operator(op) => {
                 let (schema, arity) = self.lex.lex.ops[op.id()];
@@ -190,8 +182,6 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
             }
             Atom::Variable(var) => (self.vars[var.id()], true),
         };
-        //println!("  schema : {}", schema);
-        //println!("  constant : {}", constant);
         self.check_schema(&tp, schema, constant)
             .map_err(SampleError::from)
     }
@@ -740,12 +730,10 @@ impl<'ctx, 'lex, 'atom> Iterator for AtomEnumeration<'ctx, 'lex, 'atom> {
 //     type Item = Rule;
 //     fn next(&mut self) -> Option<Self::Item> {
 //         while let Some((partial, (lsize, rsize), arg_types, ss)) = self.stack.pop() {
-//             println!("looking at {}", partial.pretty(&self.env.lex.lex.sig));
 //             match Rule::try_from(&partial) {
 //                 Ok(rule) => return Some(rule),
 //                 Err(hole_place) => {
 //                     self.env.rollback(ss);
-//                     println!("hole_place {:?}", hole_place);
 //                     self.env.add_variables(
 //                         partial
 //                             .variables()
@@ -758,45 +746,27 @@ impl<'ctx, 'lex, 'atom> Iterator for AtomEnumeration<'ctx, 'lex, 'atom> {
 //                     let ss = self.env.snapshot();
 //                     let lhs_hole = hole_place[0] == 0;
 //                     self.env.invent = self.invent && lhs_hole && hole_place != [0];
-//                     println!("self.env.invent: {}", self.env.invent);
-//                     println!("arg types");
-//                     for arg in &arg_types {
-//                         println!("- {}", arg);
-//                     }
 //                     for opt_atom in self
 //                         .env
 //                         .enumerate_atoms(arg_types[0].apply(&self.env.sub))
 //                         .collect_vec()
 //                     {
 //                         self.env.rollback(ss);
-//                         println!("considering {:?}", opt_atom);
 //                         let atom = opt_atom
 //                             .or_else(|| self.env.new_variable().map(Atom::Variable))
 //                             .unwrap();
-//                         println!("that is {}", atom.display(&self.env.lex.lex.sig));
 //                         let subcontext =
 //                             Context::from(SituatedAtom::new(atom, &self.env.lex.lex.sig));
-//                         println!("that is {}", subcontext.pretty(&self.env.lex.lex.sig));
 //                         let new_size = if lhs_hole {
 //                             (lsize + subcontext.size() - 1, rsize)
 //                         } else {
 //                             (lsize, rsize + subcontext.size() - 1)
 //                         };
-//                         println!("new_size {:?}", new_size);
 //                         if self.limit.is_okay(&[new_size.0, new_size.1]) {
-//                             println!("size is okay");
 //                             if let Ok(mut new_arg_types) = self.env.check_atom(&arg_types[0], atom)
 //                             {
-//                                 println!("atom checks out against {}", &arg_types[0]);
 //                                 let new_context = partial.replace(&hole_place, subcontext).unwrap();
-//                                 println!(
-//                                     "new_context {}",
-//                                     new_context.pretty(&self.env.lex.lex.sig)
-//                                 );
 //                                 new_arg_types.extend_from_slice(&arg_types[1..]);
-//                                 for na in &new_arg_types {
-//                                     println!("  >> {}", na);
-//                                 }
 //                                 self.stack.push((new_context, new_size, new_arg_types, ss));
 //                             }
 //                         }
