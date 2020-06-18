@@ -408,7 +408,7 @@ impl<M: MCTS> SearchTree<M> {
         self.tree.moves.clear();
         self.set_root(root_state, rng);
     }
-    pub fn prune_except_top<R: Rng>(&mut self, n: usize, rng: &mut R) {
+    pub fn prune_except_top<R: Rng>(&mut self, n: usize, root_state: M::State, rng: &mut R) {
         let mut paths = Vec::with_capacity(n);
         for (idx, _) in self.tree.nodes.iter().sorted_by(|a, b| {
             a.1.evaluation
@@ -443,7 +443,6 @@ impl<M: MCTS> SearchTree<M> {
             })
             .collect_vec();
         // Reset the tree.
-        let root_state = self.tree.nodes[self.tree.root].state;
         self.reset(root_state, rng);
         // Take the series of moves specified by each path.
         for path in &moves {
