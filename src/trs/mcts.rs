@@ -959,8 +959,8 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::DeleteRule);
             }
-            Move::DeleteRule(Some(n)) => {
-                tryo![self, self.trs.utrs.remove_idx(n).ok()];
+            Move::DeleteRule(Some(r)) => {
+                tryo![self, self.trs.utrs.remove_idx(r).ok()];
                 self.n += 1;
                 self.path.push((mv.clone(), n));
                 self.spec = None;
@@ -995,7 +995,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::MemorizeDatum);
             }
-            Move::MemorizeDatum(Some(n)) => match data[n] {
+            Move::MemorizeDatum(Some(r)) => match data[r] {
                 Datum::Partial(_) => panic!("can't memorize partial data"),
                 Datum::Full(ref rule) => {
                     tryo![self, self.trs.append_clauses(vec![rule.clone()]).ok()];
