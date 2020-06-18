@@ -5,16 +5,13 @@ use mcts::{
     TreeStore, MCTS,
 };
 use polytype::atype::Ty;
-use rand::{
-    distributions::Bernoulli,
-    prelude::{Distribution, Rng, SliceRandom},
-};
+use rand::prelude::{Rng, SliceRandom};
 use serde_json::Value;
 use std::{cmp::Ordering, collections::HashMap, convert::TryFrom};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
 use trs::{
     Composition, Datum, Env, Eval, Hypothesis, Lexicon, ModelParams, ProbabilisticModel, Recursion,
-    Variablization, TRS,
+    Schedule, Variablization, TRS,
 };
 use utils::logsumexp;
 
@@ -68,6 +65,7 @@ pub struct BestSoFarMoveEvaluator;
 pub struct RescaledByBestMoveEvaluator;
 pub struct RelativeMassMoveEvaluator;
 pub struct ThompsonMoveEvaluator;
+pub struct MaxThompsonMoveEvaluator;
 pub struct MCTSStateEvaluator;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -160,11 +158,18 @@ pub struct QNN(QN);
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub struct QNMax(QN);
 
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct VNMax {
+    pub scores: Vec<f64>,
+    pub n: f64,
+}
+
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Selection {
     RelativeMassUCT,
     BestSoFarUCT,
     Thompson(u32),
+    MaxThompson { schedule: Schedule, n_top: usize },
 }
 
 pub struct MCTSObj<'ctx, 'b> {
@@ -314,49 +319,73 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
     exploit + explore
 }
 
-pub fn thompson_sample<R: Rng>(
-    parent: NodeHandle,
+pub fn max_thompson_sample<R: Rng>(
+    _parent: NodeHandle,
     child: NodeHandle,
     tree: &TreeStore<TRSMCTS>,
     mcts: &TRSMCTS,
     rng: &mut R,
 ) -> f64 {
-    let mut source = {
-        let a = match mcts.params.selection {
-            Selection::Thompson(a) => a,
-            x => panic!("in thompson_sample but Selection is {:?}", x),
-        };
-        let b = tree.node(child).stats.0.n as u32;
-        if Bernoulli::from_ratio(b, a + b).unwrap().sample(rng) {
-            child
-        } else {
-            parent
+    match mcts.params.selection {
+        Selection::MaxThompson { schedule, .. } => {
+            let node = tree.node(child);
+            let temp = schedule.temperature(node.stats.n as f64);
+            //println!("temp: {} from {}", temp, node.stats.n);
+            //println!("weights: {:?}", node.stats.scores);
+            let raw_score = *node
+                .stats
+                .scores
+                .choose_weighted(rng, |x| (x / temp).exp())
+                .unwrap_or(&std::f64::NEG_INFINITY);
+            raw_score / temp
         }
-    };
-    let mut source_node = tree.node(source);
-    let mut n = rng.gen_range(0, source_node.stats.0.n as usize);
-    let mut outgoing = &source_node.outgoing;
-    let mut idx = 0;
-    while n != 0 {
-        match tree.mv(outgoing[idx]).child {
-            None => idx += 1,
-            Some(target) => {
-                let target_node = tree.node(target);
-                if n > target_node.stats.0.n as usize {
-                    idx += 1;
-                    n -= target_node.stats.0.n as usize;
-                } else {
-                    source = target;
-                    source_node = target_node;
-                    outgoing = &source_node.outgoing;
-                    idx = 0;
-                    n -= 1;
-                }
-            }
-        }
+        x => panic!("in max_thompson_sample but Selection is {:?}", x),
     }
-    tree.node(source).evaluation
 }
+
+//pub fn thompson_sample<R: Rng>(
+//    parent: NodeHandle,
+//    child: NodeHandle,
+//    tree: &TreeStore<TRSMCTS>,
+//    mcts: &TRSMCTS,
+//    rng: &mut R,
+//) -> f64 {
+//    let mut source = {
+//        let a = match mcts.params.selection {
+//            Selection::Thompson(a) => a,
+//            x => panic!("in thompson_sample but Selection is {:?}", x),
+//        };
+//        let b = tree.node(child).stats.0.n as u32;
+//        if Bernoulli::from_ratio(b, a + b).unwrap().sample(rng) {
+//            child
+//        } else {
+//            parent
+//        }
+//    };
+//    let mut source_node = tree.node(source);
+//    let mut n = rng.gen_range(0, source_node.stats.0.n as usize);
+//    let mut outgoing = &source_node.outgoing;
+//    let mut idx = 0;
+//    while n != 0 {
+//        match tree.mv(outgoing[idx]).child {
+//            None => idx += 1,
+//            Some(target) => {
+//                let target_node = tree.node(target);
+//                if n > target_node.stats.0.n as usize {
+//                    idx += 1;
+//                    n -= target_node.stats.0.n as usize;
+//                } else {
+//                    source = target;
+//                    source_node = target_node;
+//                    outgoing = &source_node.outgoing;
+//                    idx = 0;
+//                    n -= 1;
+//                }
+//            }
+//        }
+//    }
+//    tree.node(source).evaluation
+//}
 
 pub fn compute_path<'ctx, 'b>(
     parent: NodeHandle,
@@ -444,6 +473,30 @@ pub fn rulecontext_fillers<'ctx, 'b>(
                 })
                 .collect_vec()
         }
+    }
+}
+
+impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for VNMax {
+    fn new() -> Self {
+        VNMax {
+            scores: Vec::with_capacity(11),
+            n: 0.0,
+        }
+    }
+    fn update(&mut self, evaluation: f64) {
+        self.scores.push(evaluation);
+        if self.scores.len() >= self.scores.capacity() {
+            self.scores
+                .sort_by(|a, b| a.partial_cmp(b).expect("No NAN"));
+            self.scores.reverse();
+            while self.scores.len() >= self.scores.capacity() {
+                self.scores.pop();
+            }
+        }
+        self.n += 1.0;
+    }
+    fn combine(&mut self, _other: &Self) {
+        unimplemented!();
     }
 }
 
@@ -1098,7 +1151,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
 
 impl<'ctx, 'b> MCTS for TRSMCTS<'ctx, 'b> {
     type StateEval = MCTSStateEvaluator;
-    type MoveEval = ThompsonMoveEvaluator;
+    type MoveEval = MaxThompsonMoveEvaluator;
     type State = MCTSState;
     fn max_depth(&self) -> usize {
         self.params.max_depth
@@ -1368,8 +1421,24 @@ where
 //    }
 //}
 
-impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for ThompsonMoveEvaluator {
-    type NodeStatistics = QNN;
+//impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for ThompsonMoveEvaluator {
+//    type NodeStatistics = QNN;
+//    fn choose<R: Rng, MoveIter>(
+//        &self,
+//        moves: MoveIter,
+//        nh: NodeHandle,
+//        tree: &SearchTree<TRSMCTS<'a, 'b>>,
+//        rng: &mut R,
+//    ) -> Option<MoveHandle>
+//    where
+//        MoveIter: Iterator<Item = MoveHandle>,
+//    {
+//        unexplored_first(moves, nh, tree.mcts(), tree.tree(), thompson_sample, rng)
+//    }
+//}
+
+impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MaxThompsonMoveEvaluator {
+    type NodeStatistics = VNMax;
     fn choose<R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
@@ -1380,7 +1449,14 @@ impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for ThompsonMoveEvaluator {
     where
         MoveIter: Iterator<Item = MoveHandle>,
     {
-        unexplored_first(moves, nh, tree.mcts(), tree.tree(), thompson_sample, rng)
+        unexplored_first(
+            moves,
+            nh,
+            tree.mcts(),
+            tree.tree(),
+            max_thompson_sample,
+            rng,
+        )
     }
 }
 

@@ -174,7 +174,7 @@ impl Eval {
     }
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Schedule {
     // Don't anneal at all.
     #[serde(alias = "none")]
@@ -182,9 +182,18 @@ pub enum Schedule {
     // Don't anneal - just use this temperature.
     #[serde(alias = "constant")]
     Constant(f64),
+    // Use a linear cooling schedule.
+    #[serde(alias = "linear")]
+    Linear(f64, f64),
     // Use a logarithmic cooling schedule.
     #[serde(alias = "logarithmic")]
     Logarithmic(f64),
+    // Use an exponential cooling schedule.
+    #[serde(alias = "exponential")]
+    Exponential(f64, f64),
+    // Use an inverse cooling schedule.
+    #[serde(alias = "inverse")]
+    Inverse(f64, f64),
 }
 
 impl Schedule {
@@ -192,7 +201,10 @@ impl Schedule {
         match *self {
             Schedule::None => 1.0,
             Schedule::Constant(c) => c,
+            Schedule::Linear(t0, eta) => t0 - eta * t,
             Schedule::Logarithmic(c) => c / (1.0 + t).ln(),
+            Schedule::Exponential(t0, alpha) => t0 * alpha.powf(t),
+            Schedule::Inverse(t0, eta) => t0 / (1.0 + eta * t),
         }
     }
 }
