@@ -410,8 +410,6 @@ impl<M: MCTS> SearchTree<M> {
     }
     pub fn prune_except_top<R: Rng>(&mut self, n: usize, rng: &mut R) {
         let mut paths = Vec::with_capacity(n);
-        println!("n nodes: {}", self.tree.nodes.len());
-        println!("n moves: {}", self.tree.moves.len());
         for (idx, _) in self.tree.nodes.iter().sorted_by(|a, b| {
             a.1.evaluation
                 .into()
@@ -436,9 +434,6 @@ impl<M: MCTS> SearchTree<M> {
             }
         }
         // Convert the paths to moves.
-        for path in &paths {
-            println!("- {}", path.iter().map(|mh| format!("{:?}", mh)).join(", "))
-        }
         let moves = paths
             .into_iter()
             .map(|path| {
@@ -454,8 +449,6 @@ impl<M: MCTS> SearchTree<M> {
         for path in &moves {
             self.follow_path(path, rng).ok();
         }
-        println!("new n nodes: {}", self.tree.nodes.len());
-        println!("new n moves: {}", self.tree.moves.len());
     }
     // TODO: reinstate
     //pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {

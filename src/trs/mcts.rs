@@ -675,7 +675,7 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
             label: StateLabel::CompleteRevision,
         }
     }
-    fn valid_data(data: &Self::Data, mcts: &TRSMCTS<'ctx, 'b>) -> bool {
+    fn valid_data(data: &Self::Data, _mcts: &TRSMCTS<'ctx, 'b>) -> bool {
         data.label != StateLabel::Failed
     }
     fn available_moves(&self, data: &mut Self::Data, mcts: &TRSMCTS<'ctx, 'b>) -> Self::MoveList {
