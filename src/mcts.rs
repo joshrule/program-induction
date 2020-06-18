@@ -5,6 +5,7 @@
 // TODO:
 // - ask for states to be Debug for easier debugging.
 use generational_arena::{Arena, Index};
+use itertools::Itertools;
 use rand::Rng;
 use serde::Serialize;
 use serde_json::Value;
@@ -26,8 +27,9 @@ pub trait State<M: MCTS<State = Self>>: Copy + std::hash::Hash + Eq + Sized {
     type Move: std::fmt::Display + PartialEq + Clone;
     type MoveList: IntoIterator<Item = Self::Move>;
     fn root_data(mcts: &M) -> Self::Data;
+    fn valid_data(data: &Self::Data, mcts: &M) -> bool;
     fn available_moves(&self, data: &mut Self::Data, mcts: &M) -> Self::MoveList;
-    fn make_move(&self, data: &mut Self::Data, mov: &Self::Move, n: usize, mcts: &mut M);
+    fn make_move(&self, data: &mut Self::Data, mov: &Self::Move, n: usize, mcts: &M);
     fn make_state(data: &Self::Data, mcts: &mut M) -> Option<Self>;
     fn describe_self(&self, data: &Self::Data, mcts: &M) -> Value;
     fn describe_move(&self, data: &Self::Data, mv: &Self::Move, mcts: &M, failed: bool) -> Value;
@@ -406,6 +408,55 @@ impl<M: MCTS> SearchTree<M> {
         self.tree.moves.clear();
         self.set_root(root_state, rng);
     }
+    pub fn prune_except_top<R: Rng>(&mut self, n: usize, rng: &mut R) {
+        let mut paths = Vec::with_capacity(n);
+        println!("n nodes: {}", self.tree.nodes.len());
+        println!("n moves: {}", self.tree.moves.len());
+        for (idx, _) in self.tree.nodes.iter().sorted_by(|a, b| {
+            a.1.evaluation
+                .into()
+                .partial_cmp(&b.1.evaluation.into())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            // Find the best valid path not contained in the set.
+            if NodeHandle(idx) != self.tree.root
+                && paths
+                    .iter()
+                    .flatten()
+                    .all(|x: &MoveHandle| self.tree.moves[*x].child != Some(NodeHandle(idx)))
+            {
+                let path = self.tree.path_tree(NodeHandle(idx));
+                if self.valid_path(&path) {
+                    paths.push(path);
+                    // Stop when you have n paths.
+                    if paths.len() == n {
+                        break;
+                    }
+                }
+            }
+        }
+        // Convert the paths to moves.
+        for path in &paths {
+            println!("- {}", path.iter().map(|mh| format!("{:?}", mh)).join(", "))
+        }
+        let moves = paths
+            .into_iter()
+            .map(|path| {
+                path.into_iter()
+                    .map(|mh| self.tree.moves[mh].mov.clone())
+                    .collect_vec()
+            })
+            .collect_vec();
+        // Reset the tree.
+        let root_state = self.tree.nodes[self.tree.root].state;
+        self.reset(root_state, rng);
+        // Take the series of moves specified by each path.
+        for path in &moves {
+            self.follow_path(path, rng).ok();
+        }
+        println!("new n nodes: {}", self.tree.nodes.len());
+        println!("new n moves: {}", self.tree.moves.len());
+    }
     // TODO: reinstate
     //pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {
     //    let moves = self
@@ -611,7 +662,66 @@ impl<M: MCTS> SearchTree<M> {
     //    }
     //}
     /// Take a single search step.
+    fn valid_path(&self, path: &[MoveHandle]) -> bool {
+        let mut nh = self.tree.root;
+        let mut data = M::State::root_data(&self.mcts);
+        for mh in path {
+            let mv = &self.tree.moves[*mh];
+            let n = self.tree.nodes[mv.parent].outgoing.len();
+            self.tree.nodes[nh]
+                .state
+                .make_move(&mut data, &mv.mov, n, &self.mcts);
+            match mv.child {
+                // Descend known moves.
+                Some(child_nh) => {
+                    if M::State::valid_data(&data, &self.mcts) {
+                        nh = child_nh;
+                    } else {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        true
+    }
+    pub fn follow_path<R: Rng>(&mut self, path: &[Move<M>], rng: &mut R) -> Result<(), MCTSError> {
+        let mut nh = self.tree.root;
+        let mut data = M::State::root_data(&self.mcts);
+        for mv in path {
+            self.can_continue()?;
+            let mh = *self.tree.nodes[nh]
+                .outgoing
+                .iter()
+                .find(|mh| self.tree.moves[**mh].mov == *mv)
+                .ok_or(MCTSError::MoveFailed)?;
+            match self.expand_node(nh, mh, &mut data)? {
+                None => nh = self.tree.moves[mh].child.expect("inconsistent tree"),
+                Some(child_state) => {
+                    let parent_state = &self.tree.nodes[self.tree.moves[mh].parent].state;
+                    let parents = self.tree.table[parent_state].clone();
+                    for ph in parents {
+                        self.update_tree(
+                            Some(child_state.clone()),
+                            &mut data.clone(),
+                            ph,
+                            &mv,
+                            rng,
+                        )
+                        .ok()
+                        .map(|ch| {
+                            nh = ch;
+                            self.backpropagate_tree(ch);
+                            self.soft_prune_tree(mh);
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn step<R: Rng>(&mut self, rng: &mut R) -> Result<Vec<NodeHandle>, MCTSError> {
+        self.can_continue()?;
         let (child_state, child_data, mh) = self.expand(rng)?;
         let parent_state = &self.tree.nodes[self.tree.moves[mh].parent].state;
         let mov = &self.tree.moves[mh].mov.clone();
@@ -640,6 +750,23 @@ impl<M: MCTS> SearchTree<M> {
             Err(MCTSError::TreeExhausted)
         } else {
             Ok(())
+        }
+    }
+    // Expand the search tree by taking a single move.
+    fn expand_node(
+        &mut self,
+        nh: NodeHandle,
+        mh: MoveHandle,
+        data: &mut Data<M>,
+    ) -> Result<Option<M::State>, MCTSError> {
+        let n = self.tree.nodes[nh].outgoing.len();
+        let mv = &self.tree.moves[mh];
+        self.tree.nodes[nh]
+            .state
+            .make_move(data, &mv.mov, n, &mut self.mcts);
+        match mv.child {
+            Some(_) => Ok(None),
+            None => Ok(M::State::make_state(&data, &mut self.mcts)),
         }
     }
     // Expand the search tree by taking a single move.

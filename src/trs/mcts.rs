@@ -675,6 +675,9 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
             label: StateLabel::CompleteRevision,
         }
     }
+    fn valid_data(data: &Self::Data, mcts: &TRSMCTS<'ctx, 'b>) -> bool {
+        data.label != StateLabel::Failed
+    }
     fn available_moves(&self, data: &mut Self::Data, mcts: &TRSMCTS<'ctx, 'b>) -> Self::MoveList {
         match *self {
             MCTSState::Terminal(_) => vec![],
@@ -686,7 +689,7 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
         data: &mut Self::Data,
         mv: &Self::Move,
         n: usize,
-        mcts: &mut TRSMCTS<'ctx, 'b>,
+        mcts: &TRSMCTS<'ctx, 'b>,
     ) {
         match *self {
             MCTSState::Terminal(_) => panic!("cannot move from terminal"),
