@@ -203,7 +203,7 @@ impl<'a, 'b> MCTSModel<'a, 'b> {
             phantom: std::marker::PhantomData,
         }
     }
-    pub fn generalizes(&self, data: &[Datum]) -> bool {
+    pub fn generalizes(&self, data: &[&Datum]) -> bool {
         data.iter().all(|datum| {
             self.evals
                 .get(datum)
@@ -233,7 +233,18 @@ impl<'ctx> MCTSObj<'ctx> {
             generalizes,
         }
     }
+    pub fn play<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> Option<TRS<'ctx, 'b>> {
+        // Create default state.
+        let mut state = MCTSState::root_data(mcts);
+        // Make each move, failing if necessary.
+        for mv in &self.moves {
+            // Note: providing bogus count, since we don't care.
+            state.make_move(mv, 1, mcts.data);
+            if let StateLabel::Failed = state.label {
+                return None;
+            }
         }
+        Some(state.trs)
     }
 }
 
