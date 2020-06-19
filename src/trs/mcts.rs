@@ -121,7 +121,7 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub hi: usize,
     pub data: &'b [&'b Datum],
     pub root: Option<MCTSState>,
-    pub hypotheses: Arena<Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>>,
+    pub hypotheses: Arena<Box<Hyp<'ctx, 'b>>>,
     pub revisions: Arena<Revision>,
     pub terminals: Arena<Terminal>,
     pub model: ModelParams,
@@ -231,14 +231,14 @@ impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
     }
 }
 
-impl<'ctx, 'b> std::ops::Index<HypothesisHandle> for Arena<Hyp<'ctx, 'b>> {
+impl<'ctx, 'b> std::ops::Index<HypothesisHandle> for Arena<Box<Hyp<'ctx, 'b>>> {
     type Output = Hyp<'ctx, 'b>;
     fn index(&self, index: HypothesisHandle) -> &Self::Output {
         &self[index.0]
     }
 }
 
-impl<'ctx, 'b> std::ops::IndexMut<HypothesisHandle> for Arena<Hyp<'ctx, 'b>> {
+impl<'ctx, 'b> std::ops::IndexMut<HypothesisHandle> for Arena<Box<Hyp<'ctx, 'b>>> {
     fn index_mut(&mut self, index: HypothesisHandle) -> &mut Self::Output {
         &mut self[index.0]
     }
@@ -1260,7 +1260,10 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         );
         let object = MCTSObj::new(trs, time, count, meta, prior);
         let model = MCTSModel::new(self.model);
-        HypothesisHandle(self.hypotheses.insert(Hypothesis::new(object, model)))
+        HypothesisHandle(
+            self.hypotheses
+                .insert(Box::new(Hypothesis::new(object, model))),
+        )
     }
     pub fn rm_hypothesis(&mut self, hh: HypothesisHandle) {
         self.hypotheses.remove(hh.0);
