@@ -96,9 +96,9 @@ pub enum Move<'ctx> {
     RegenerateThisPlace(Option<usize>),
     MemorizeDatum(Option<usize>),
     DeleteRule(Option<usize>),
-    Variablize(Option<Variablization<'ctx>>),
-    Compose(Option<Composition<'ctx>>),
-    Recurse(Option<Recursion<'ctx>>),
+    Variablize(Option<Box<Variablization<'ctx>>>),
+    Compose(Option<Box<Composition<'ctx>>>),
+    Recurse(Option<Box<Recursion<'ctx>>>),
     MemorizeAll,
     Generalize,
     AntiUnify,
@@ -587,22 +587,20 @@ impl<'ctx> Move<'ctx> {
             Move::RegenerateThisRule(n) => format!("RegenerateThisRule({})", n),
             Move::RegenerateThisPlace(n) => format!("RegenerateThisPlace({:?})", n),
             Move::DeleteRule(Some(n)) => format!("DeleteRule({})", n),
-            Move::Variablize(Some((ref n, ref t, ref ps))) => {
-                format!("Variablize({}, {}, {:?})", n, t, ps)
-            }
-            Move::Compose(Some((ref t, ref p1, ref p2, ref tp))) => format!(
+            Move::Variablize(Some(ref v)) => format!("Variablize({}, {}, {:?})", v.0, v.1, v.2),
+            Move::Compose(Some(ref c)) => format!(
                 "Compose({}, {:?}, {:?}, {})",
-                t.pretty(lex.signature()),
-                p1,
-                p2,
-                tp
+                c.0.pretty(lex.signature()),
+                c.1,
+                c.2,
+                c.3,
             ),
-            Move::Recurse(Some((ref t, ref p1, ref p2, ref tp))) => format!(
+            Move::Recurse(Some(ref r)) => format!(
                 "Recurse({}, {:?}, {:?}, {})",
-                t.pretty(lex.signature()),
-                p1,
-                p2,
-                tp
+                r.0.pretty(lex.signature()),
+                r.1,
+                r.2,
+                r.3,
             ),
             Move::Variablize(None) => "Variablize".to_string(),
             Move::DeleteRule(None) => "DeleteRule".to_string(),
@@ -623,9 +621,7 @@ impl<'ctx> std::fmt::Display for Move<'ctx> {
         match *self {
             Move::MemorizeAll => write!(f, "MemorizeAll"),
             Move::MemorizeDatum(Some(n)) => write!(f, "MemorizeDatum({})", n),
-            Move::Variablize(Some((ref n, ref t, ref ps))) => {
-                write!(f, "Variablize({}, {}, {:?})", n, t, ps)
-            }
+            Move::Variablize(Some(ref v)) => write!(f, "Variablize({}, {}, {:?})", v.0, v.1, v.2),
             Move::SampleAtom(atom) => write!(f, "SampleAtom({:?})", atom),
             Move::RegenerateThisRule(n) => write!(f, "RegenerateThisRule({})", n),
             Move::RegenerateThisPlace(n) => write!(f, "RegenerateThisPlace({:?})", n),
@@ -835,17 +831,17 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 .trs
                 .find_all_variablizations()
                 .into_iter()
-                .for_each(|v| moves.push(Move::Variablize(Some(v)))),
+                .for_each(|v| moves.push(Move::Variablize(Some(Box::new(v))))),
             Some(MoveState::Compose) => self
                 .trs
                 .find_all_compositions()
                 .into_iter()
-                .for_each(|composition| moves.push(Move::Compose(Some(composition)))),
+                .for_each(|composition| moves.push(Move::Compose(Some(Box::new(composition))))),
             Some(MoveState::Recurse) => self
                 .trs
                 .find_all_recursions()
                 .into_iter()
-                .for_each(|recursion| moves.push(Move::Recurse(Some(recursion)))),
+                .for_each(|recursion| moves.push(Move::Recurse(Some(Box::new(recursion))))),
             Some(MoveState::MemorizeDatum) => {
                 (0..mcts.data.len())
                     .filter(|idx| match mcts.data[*idx] {
@@ -944,11 +940,11 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::Variablize);
             }
-            Move::Variablize(Some((ref m, ref tp, ref places))) => {
+            Move::Variablize(Some(ref v)) => {
                 let mut clauses = self.trs.utrs.clauses();
-                clauses[*m] = tryo![
+                clauses[v.0] = tryo![
                     self,
-                    self.trs.apply_variablization(tp, places, &clauses[*m])
+                    self.trs.apply_variablization(&v.1, &v.2, &clauses[v.0])
                 ];
                 // TODO: remove clone
                 self.trs = tryo![self, self.trs.clone().adopt_rules(&mut clauses)];
