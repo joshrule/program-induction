@@ -6,7 +6,7 @@ use mcts::{
 };
 use polytype::atype::Ty;
 use rand::prelude::{Rng, SliceRandom};
-use serde_json::Value;
+//use serde_json::Value;
 use std::{cmp::Ordering, collections::HashMap, convert::TryFrom};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
 use trs::{
@@ -557,64 +557,64 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for Vec<f64> {
     }
 }
 
-impl<'ctx> Move<'ctx> {
-    fn head(&self) -> String {
-        match *self {
-            Move::MemorizeAll => "MemorizeAll".to_string(),
-            Move::SampleAtom(_) => "SampleAtom".to_string(),
-            Move::RegenerateThisRule(..) => "RegenerateThisRule".to_string(),
-            Move::RegenerateThisPlace(..) => "RegenerateThisPlace".to_string(),
-            Move::Variablize(_) => "Variablize".to_string(),
-            Move::DeleteRule(_) => "DeleteRule".to_string(),
-            Move::MemorizeDatum(_) => "MemorizeDatum".to_string(),
-            Move::SampleRule => "SampleRule".to_string(),
-            Move::RegenerateRule => "RegenerateRule".to_string(),
-            Move::Generalize => "Generalize".to_string(),
-            Move::AntiUnify => "AntiUnify".to_string(),
-            Move::Compose(_) => "Compose".to_string(),
-            Move::Recurse(_) => "Recurse".to_string(),
-            Move::Stop => "Stop".to_string(),
-        }
-    }
-    fn pretty(&self, lex: &Lexicon) -> String {
-        match *self {
-            Move::MemorizeAll => "MemorizeAll".to_string(),
-            Move::MemorizeDatum(Some(n)) => format!("MemorizeDatum({})", n),
-            Move::SampleAtom(atom) => format!(
-                "SampleAtom({:?})",
-                atom.map(|atom| atom.display(lex.signature()))
-            ),
-            Move::RegenerateThisRule(n) => format!("RegenerateThisRule({})", n),
-            Move::RegenerateThisPlace(n) => format!("RegenerateThisPlace({:?})", n),
-            Move::DeleteRule(Some(n)) => format!("DeleteRule({})", n),
-            Move::Variablize(Some(ref v)) => format!("Variablize({}, {}, {:?})", v.0, v.1, v.2),
-            Move::Compose(Some(ref c)) => format!(
-                "Compose({}, {:?}, {:?}, {})",
-                c.0.pretty(lex.signature()),
-                c.1,
-                c.2,
-                c.3,
-            ),
-            Move::Recurse(Some(ref r)) => format!(
-                "Recurse({}, {:?}, {:?}, {})",
-                r.0.pretty(lex.signature()),
-                r.1,
-                r.2,
-                r.3,
-            ),
-            Move::Variablize(None) => "Variablize".to_string(),
-            Move::DeleteRule(None) => "DeleteRule".to_string(),
-            Move::MemorizeDatum(None) => "MemorizeDatum".to_string(),
-            Move::SampleRule => "SampleRule".to_string(),
-            Move::RegenerateRule => "RegenerateRule".to_string(),
-            Move::Generalize => "Generalize".to_string(),
-            Move::AntiUnify => "AntiUnify".to_string(),
-            Move::Compose(None) => "Compose".to_string(),
-            Move::Recurse(None) => "Recurse".to_string(),
-            Move::Stop => "Stop".to_string(),
-        }
-    }
-}
+//impl<'ctx> Move<'ctx> {
+//    fn head(&self) -> String {
+//        match *self {
+//            Move::MemorizeAll => "MemorizeAll".to_string(),
+//            Move::SampleAtom(_) => "SampleAtom".to_string(),
+//            Move::RegenerateThisRule(..) => "RegenerateThisRule".to_string(),
+//            Move::RegenerateThisPlace(..) => "RegenerateThisPlace".to_string(),
+//            Move::Variablize(_) => "Variablize".to_string(),
+//            Move::DeleteRule(_) => "DeleteRule".to_string(),
+//            Move::MemorizeDatum(_) => "MemorizeDatum".to_string(),
+//            Move::SampleRule => "SampleRule".to_string(),
+//            Move::RegenerateRule => "RegenerateRule".to_string(),
+//            Move::Generalize => "Generalize".to_string(),
+//            Move::AntiUnify => "AntiUnify".to_string(),
+//            Move::Compose(_) => "Compose".to_string(),
+//            Move::Recurse(_) => "Recurse".to_string(),
+//            Move::Stop => "Stop".to_string(),
+//        }
+//    }
+//    fn pretty(&self, lex: &Lexicon) -> String {
+//        match *self {
+//            Move::MemorizeAll => "MemorizeAll".to_string(),
+//            Move::MemorizeDatum(Some(n)) => format!("MemorizeDatum({})", n),
+//            Move::SampleAtom(atom) => format!(
+//                "SampleAtom({:?})",
+//                atom.map(|atom| atom.display(lex.signature()))
+//            ),
+//            Move::RegenerateThisRule(n) => format!("RegenerateThisRule({})", n),
+//            Move::RegenerateThisPlace(n) => format!("RegenerateThisPlace({:?})", n),
+//            Move::DeleteRule(Some(n)) => format!("DeleteRule({})", n),
+//            Move::Variablize(Some(ref v)) => format!("Variablize({}, {}, {:?})", v.0, v.1, v.2),
+//            Move::Compose(Some(ref c)) => format!(
+//                "Compose({}, {:?}, {:?}, {})",
+//                c.0.pretty(lex.signature()),
+//                c.1,
+//                c.2,
+//                c.3,
+//            ),
+//            Move::Recurse(Some(ref r)) => format!(
+//                "Recurse({}, {:?}, {:?}, {})",
+//                r.0.pretty(lex.signature()),
+//                r.1,
+//                r.2,
+//                r.3,
+//            ),
+//            Move::Variablize(None) => "Variablize".to_string(),
+//            Move::DeleteRule(None) => "DeleteRule".to_string(),
+//            Move::MemorizeDatum(None) => "MemorizeDatum".to_string(),
+//            Move::SampleRule => "SampleRule".to_string(),
+//            Move::RegenerateRule => "RegenerateRule".to_string(),
+//            Move::Generalize => "Generalize".to_string(),
+//            Move::AntiUnify => "AntiUnify".to_string(),
+//            Move::Compose(None) => "Compose".to_string(),
+//            Move::Recurse(None) => "Recurse".to_string(),
+//            Move::Stop => "Stop".to_string(),
+//        }
+//    }
+//}
 
 impl<'ctx> std::fmt::Display for Move<'ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -709,54 +709,54 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
             StateLabel::CompleteRevision => Some(mcts.add_revision(Revision::new())),
         }
     }
-    fn describe_self(&self, data: &Self::Data, mcts: &TRSMCTS) -> Value {
-        match *self {
-            MCTSState::Terminal(th) => {
-                let hh = mcts.terminals[th].trs;
-                let trs = &mcts.hypotheses[hh].object.trs;
-                let trs_string = trs.utrs.pretty(trs.lex.signature());
-                json!({
-                    "type": "terminal",
-                    "trs": trs_string,
-                })
-            }
-            MCTSState::Revision(rh) => {
-                let trs_string = data.trs.utrs.pretty(data.trs.lex.signature());
-                let playout_string = match mcts.revisions[rh].playout {
-                    PlayoutState::Failed => "failed".to_string(),
-                    PlayoutState::Untried => "untried".to_string(),
-                    PlayoutState::Success(hh) => {
-                        let playout = &mcts.hypotheses[hh].object.trs;
-                        playout.utrs.pretty(playout.lex.signature())
-                    }
-                };
-                json!({
-                    "type": "revision",
-                    "n": data.n,
-                    "trs": trs_string,
-                    "playout": playout_string,
-                })
-            }
-        }
-    }
-    fn describe_move(
-        &self,
-        data: &Self::Data,
-        mv: &Self::Move,
-        _mcts: &TRSMCTS,
-        failed: bool,
-    ) -> Value {
-        match *self {
-            MCTSState::Terminal(_) => Value::Null,
-            MCTSState::Revision(_) => {
-                if failed {
-                    Value::String(mv.head())
-                } else {
-                    Value::String(mv.pretty(&data.trs.lex))
-                }
-            }
-        }
-    }
+    //fn describe_self(&self, data: &Self::Data, mcts: &TRSMCTS) -> Value {
+    //    match *self {
+    //        MCTSState::Terminal(th) => {
+    //            let hh = mcts.terminals[th].trs;
+    //            let trs = &mcts.hypotheses[hh].object.trs;
+    //            let trs_string = trs.utrs.pretty(trs.lex.signature());
+    //            json!({
+    //                "type": "terminal",
+    //                "trs": trs_string,
+    //            })
+    //        }
+    //        MCTSState::Revision(rh) => {
+    //            let trs_string = data.trs.utrs.pretty(data.trs.lex.signature());
+    //            let playout_string = match mcts.revisions[rh].playout {
+    //                PlayoutState::Failed => "failed".to_string(),
+    //                PlayoutState::Untried => "untried".to_string(),
+    //                PlayoutState::Success(hh) => {
+    //                    let playout = &mcts.hypotheses[hh].object.trs;
+    //                    playout.utrs.pretty(playout.lex.signature())
+    //                }
+    //            };
+    //            json!({
+    //                "type": "revision",
+    //                "n": data.n,
+    //                "trs": trs_string,
+    //                "playout": playout_string,
+    //            })
+    //        }
+    //    }
+    //}
+    //fn describe_move(
+    //    &self,
+    //    data: &Self::Data,
+    //    mv: &Self::Move,
+    //    _mcts: &TRSMCTS,
+    //    failed: bool,
+    //) -> Value {
+    //    match *self {
+    //        MCTSState::Terminal(_) => Value::Null,
+    //        MCTSState::Revision(_) => {
+    //            if failed {
+    //                Value::String(mv.head())
+    //            } else {
+    //                Value::String(mv.pretty(&data.trs.lex))
+    //            }
+    //        }
+    //    }
+    //}
     fn discard(&self, mcts: &mut TRSMCTS<'ctx, 'b>) {
         mcts.rm_state(self)
     }

@@ -8,7 +8,7 @@ use generational_arena::{Arena, Index};
 use itertools::Itertools;
 use rand::Rng;
 use serde::Serialize;
-use serde_json::Value;
+//use serde_json::Value;
 use std::collections::HashMap;
 
 pub type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
@@ -31,9 +31,9 @@ pub trait State<M: MCTS<State = Self>>: Copy + std::hash::Hash + Eq + Sized {
     fn available_moves(&self, data: &mut Self::Data, mcts: &M) -> Self::MoveList;
     fn make_move(&self, data: &mut Self::Data, mov: &Self::Move, n: usize, mcts: &M);
     fn make_state(data: &Self::Data, mcts: &mut M) -> Option<Self>;
-    fn describe_self(&self, data: &Self::Data, mcts: &M) -> Value;
-    fn describe_move(&self, data: &Self::Data, mv: &Self::Move, mcts: &M, failed: bool) -> Value;
     fn discard(&self, mcts: &mut M);
+    //fn describe_self(&self, data: &Self::Data, mcts: &M) -> Value;
+    //fn describe_move(&self, data: &Self::Data, mv: &Self::Move, mcts: &M, failed: bool) -> Value;
 }
 
 pub trait NodeStatistic<M: MCTS> {
