@@ -70,7 +70,7 @@ pub struct MCTSStateEvaluator;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum MoveState<'ctx, 'b> {
-    SampleRule(RuleContext, Env<'ctx, 'b>, Vec<Ty<'ctx>>),
+    SampleRule(Box<RuleContext>, Box<Env<'ctx, 'b>>, Vec<Ty<'ctx>>),
     RegenerateRule(RegenerateRuleState<'ctx, 'b>),
     Compose,
     Recurse,
@@ -84,7 +84,7 @@ pub enum RegenerateRuleState<'ctx, 'b> {
     Start,
     Rule(usize),
     Place(usize, Vec<usize>),
-    Term(usize, RuleContext, Env<'ctx, 'b>, Vec<Ty<'ctx>>),
+    Term(usize, Box<RuleContext>, Box<Env<'ctx, 'b>>, Vec<Ty<'ctx>>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1011,8 +1011,11 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 let mut env = Env::new(true, &self.trs.lex, Some(self.trs.lex.lex.src));
                 let tp = env.new_type_variable();
                 let arg_tps = vec![tp, tp];
-                self.spec
-                    .replace(MoveState::SampleRule(context, env, arg_tps));
+                self.spec.replace(MoveState::SampleRule(
+                    Box::new(context),
+                    Box::new(env),
+                    arg_tps,
+                ));
             }
             Move::RegenerateRule => {
                 self.path.push((mv.clone(), n));
@@ -1061,7 +1064,12 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                                     .expect("tp");
                                 let arg_tps = vec![tp];
                                 self.spec.replace(MoveState::RegenerateRule(
-                                    RegenerateRuleState::Term(r, context, env, arg_tps),
+                                    RegenerateRuleState::Term(
+                                        r,
+                                        Box::new(context),
+                                        Box::new(env),
+                                        arg_tps,
+                                    ),
                                 ));
                             }
                             Some(p) => {
@@ -1103,8 +1111,11 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             new_arg_tps.extend_from_slice(&arg_tps[1..]);
                             self.path.push((mv.clone(), n));
                             self.label = StateLabel::PartialRevision;
-                            self.spec
-                                .replace(MoveState::SampleRule(new_context, env, new_arg_tps));
+                            self.spec.replace(MoveState::SampleRule(
+                                Box::new(new_context),
+                                env,
+                                new_arg_tps,
+                            ));
                         }
                     }
                     Some(MoveState::RegenerateRule(RegenerateRuleState::Term(
@@ -1137,7 +1148,12 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             self.path.push((mv.clone(), n));
                             self.label = StateLabel::PartialRevision;
                             self.spec.replace(MoveState::RegenerateRule(
-                                RegenerateRuleState::Term(r, new_context, env, new_arg_tps),
+                                RegenerateRuleState::Term(
+                                    r,
+                                    Box::new(new_context),
+                                    env,
+                                    new_arg_tps,
+                                ),
                             ));
                         }
                     }
