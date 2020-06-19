@@ -27,8 +27,6 @@ macro_rules! r#tryo {
     };
 }
 
-type Hyp<'ctx, 'b> = Hypothesis<MCTSObj<'ctx, 'b>, &'b Datum, MCTSModel<'ctx, 'b>>;
-
 #[derive(Copy, Debug, PartialEq, Eq, Clone, Hash)]
 pub enum MCTSState {
     Revision(RevisionHandle),
@@ -121,7 +119,7 @@ pub struct TRSMCTS<'ctx, 'b> {
     pub hi: usize,
     pub data: &'b [&'b Datum],
     pub root: Option<MCTSState>,
-    pub hypotheses: Arena<Box<Hyp<'ctx, 'b>>>,
+    pub hypotheses: Arena<Box<MCTSObj<'ctx>>>,
     pub revisions: Arena<Revision>,
     pub terminals: Arena<Terminal>,
     pub model: ModelParams,
@@ -172,12 +170,14 @@ pub enum Selection {
     MaxThompson { schedule: Schedule, n_top: usize },
 }
 
-pub struct MCTSObj<'ctx, 'b> {
-    pub trs: TRS<'ctx, 'b>,
+pub struct MCTSObj<'ctx> {
     pub time: f64,
     pub count: usize,
-    pub meta: Vec<Move<'ctx>>,
-    pub meta_prior: f64,
+    pub moves: Vec<Move<'ctx>>,
+    pub lprior: f64,
+    pub llikelihood: f64,
+    pub lposterior: f64,
+    pub generalizes: bool,
 }
 
 pub struct MCTSModel<'a, 'b> {
@@ -213,32 +213,38 @@ impl<'a, 'b> MCTSModel<'a, 'b> {
     }
 }
 
-impl<'ctx, 'b> MCTSObj<'ctx, 'b> {
+impl<'ctx> MCTSObj<'ctx> {
     pub fn new(
-        trs: TRS<'ctx, 'b>,
         time: f64,
         count: usize,
-        meta: Vec<Move<'ctx>>,
-        meta_prior: f64,
+        moves: Vec<Move<'ctx>>,
+        lprior: f64,
+        llikelihood: f64,
+        lposterior: f64,
+        generalizes: bool,
     ) -> Self {
         MCTSObj {
-            trs,
             time,
             count,
-            meta,
-            meta_prior,
+            moves,
+            lprior,
+            llikelihood,
+            lposterior,
+            generalizes,
+        }
+    }
         }
     }
 }
 
-impl<'ctx, 'b> std::ops::Index<HypothesisHandle> for Arena<Box<Hyp<'ctx, 'b>>> {
-    type Output = Hyp<'ctx, 'b>;
+impl<'ctx> std::ops::Index<HypothesisHandle> for Arena<Box<MCTSObj<'ctx>>> {
+    type Output = MCTSObj<'ctx>;
     fn index(&self, index: HypothesisHandle) -> &Self::Output {
         &self[index.0]
     }
 }
 
-impl<'ctx, 'b> std::ops::IndexMut<HypothesisHandle> for Arena<Box<Hyp<'ctx, 'b>>> {
+impl<'ctx> std::ops::IndexMut<HypothesisHandle> for Arena<Box<MCTSObj<'ctx>>> {
     fn index_mut(&mut self, index: HypothesisHandle) -> &mut Self::Output {
         &mut self[index.0]
     }
@@ -270,11 +276,13 @@ impl std::ops::IndexMut<TerminalHandle> for Arena<Terminal> {
     }
 }
 
-impl<'a, 'b> ProbabilisticModel for MCTSModel<'a, 'b> {
-    type Object = MCTSObj<'a, 'b>;
+impl<'ctx, 'b> ProbabilisticModel for MCTSModel<'ctx, 'b> {
+    type Object = TrueState<'ctx, 'b>;
     type Datum = &'b Datum;
     fn log_prior(&mut self, object: &Self::Object) -> f64 {
-        object.meta_prior
+        object.path.iter().fold(0.0, |partial_prior, (_, n)| {
+            partial_prior - 2f64.ln() - (*n as f64).ln()
+        })
     }
     fn single_log_likelihood<DataIter>(
         &mut self,
@@ -1252,23 +1260,34 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
                 .trial_start
                 .map(|ts| ts.elapsed().as_secs_f64())
                 .unwrap_or(0.0);
+
         let count = self.count;
         self.count += 1;
-        let mut trs = state.trs.clone();
-        trs.utrs.canonicalize(&mut HashMap::new());
-        let (meta, prior) = state.path.clone().into_iter().fold(
-            (Vec::with_capacity(state.path.len()), 0.0),
-            |(mut meta, prior), (mv, n)| {
-                meta.push(mv);
-                (meta, prior - 2f64.ln() - (n as f64).ln())
+
+        let moves = state.path.iter().fold(
+            Vec::with_capacity(state.path.len()),
+            |mut moves, (mv, _)| {
+                moves.push(mv.clone());
+                moves
             },
         );
-        let object = MCTSObj::new(trs, time, count, meta, prior);
+
+        let mut truestate = state.clone();
+        truestate.trs.utrs.canonicalize(&mut HashMap::new());
         let model = MCTSModel::new(self.model);
-        HypothesisHandle(
-            self.hypotheses
-                .insert(Box::new(Hypothesis::new(object, model))),
-        )
+        let mut hypothesis = Hypothesis::new(truestate, model);
+        hypothesis.log_posterior(self.data);
+        let generalizes = hypothesis.model.generalizes(self.data);
+        let object = MCTSObj::new(
+            time,
+            count,
+            moves,
+            hypothesis.lprior,
+            hypothesis.llikelihood,
+            hypothesis.lposterior,
+            generalizes,
+        );
+        HypothesisHandle(self.hypotheses.insert(Box::new(object)))
     }
     pub fn rm_hypothesis(&mut self, hh: HypothesisHandle) {
         self.hypotheses.remove(hh.0);
@@ -1507,25 +1526,23 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         rng: &mut R,
     ) -> Self::StateEvaluation {
         let score = match *state {
-            MCTSState::Terminal(th) => {
-                mcts.hypotheses[mcts.terminals[th].trs].log_posterior(mcts.data);
-                mcts.hypotheses[mcts.terminals[th].trs].lposterior
-            }
+            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
             MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
-                PlayoutState::Untried => {
-                    if let Some(state) = data.playout(mcts, rng) {
-                        let hh = mcts.make_hypothesis(&state);
-                        mcts.revisions[rh].playout = PlayoutState::Success(hh);
-                        mcts.hypotheses[hh].log_posterior(mcts.data)
-                    } else {
-                        mcts.revisions[rh].playout = PlayoutState::Failed;
-                        std::f64::NEG_INFINITY
-                    }
-                }
                 // Note: the DAG creates multiple nodes sharing the same state.
                 // They share a single playout, which may not be correct.
                 PlayoutState::Failed => std::f64::NEG_INFINITY,
                 PlayoutState::Success(hh) => mcts.hypotheses[hh].lposterior,
+                PlayoutState::Untried => match data.playout(mcts, rng) {
+                    Some(state) => {
+                        let hh = mcts.make_hypothesis(&state);
+                        mcts.revisions[rh].playout = PlayoutState::Success(hh);
+                        mcts.hypotheses[hh].lposterior
+                    }
+                    None => {
+                        mcts.revisions[rh].playout = PlayoutState::Failed;
+                        std::f64::NEG_INFINITY
+                    }
+                },
             },
         };
         if score > mcts.best {
