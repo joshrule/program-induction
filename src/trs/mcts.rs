@@ -54,7 +54,7 @@ pub struct Terminal {
     trs: HypothesisHandle,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum PlayoutState<T: std::fmt::Debug + Copy> {
     Untried,
     Failed,
@@ -1491,10 +1491,10 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                 mcts.hypotheses[mcts.terminals[th].trs].log_posterior(mcts.data);
                 mcts.hypotheses[mcts.terminals[th].trs].lposterior
             }
-            MCTSState::Revision(rh) => match mcts.revisions[rh].playout.clone() {
+            MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
                 PlayoutState::Untried => {
-                    if let Some(mut state) = data.playout(mcts, rng) {
-                        let hh = mcts.make_hypothesis(&mut state);
+                    if let Some(state) = data.playout(mcts, rng) {
+                        let hh = mcts.make_hypothesis(&state);
                         mcts.revisions[rh].playout = PlayoutState::Success(hh);
                         mcts.hypotheses[hh].log_posterior(mcts.data)
                     } else {
@@ -1502,9 +1502,8 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                         std::f64::NEG_INFINITY
                     }
                 }
-                // Note: the new DAG representation means we create multiple
-                // nodes sharing the same state. They share a single playout,
-                // which may not be exactly correct.
+                // Note: the DAG creates multiple nodes sharing the same state.
+                // They share a single playout, which may not be correct.
                 PlayoutState::Failed => std::f64::NEG_INFINITY,
                 PlayoutState::Success(hh) => mcts.hypotheses[hh].lposterior,
             },
