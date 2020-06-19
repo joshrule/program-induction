@@ -713,8 +713,8 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
                 let terminal = Terminal::new(mcts.make_hypothesis(data));
                 Some(mcts.add_terminal(terminal))
             }
-            StateLabel::PartialRevision => Some(mcts.add_revision(Revision::new())),
-            StateLabel::CompleteRevision => Some(mcts.add_revision(Revision::new())),
+            StateLabel::PartialRevision => Some(mcts.add_revision(Revision::default())),
+            StateLabel::CompleteRevision => Some(mcts.add_revision(Revision::default())),
         }
     }
     //fn describe_self(&self, data: &Self::Data, mcts: &TRSMCTS) -> Value {
