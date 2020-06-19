@@ -340,7 +340,7 @@ impl<M: MCTS> SearchTree<M> {
         let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
         stats.update(evaluation);
         let root_node = Node {
-            state: root_state.clone(),
+            state: root_state,
             incoming: None,
             outgoing: vec![],
             stats,
@@ -381,7 +381,7 @@ impl<M: MCTS> SearchTree<M> {
         let mut stats = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics::new();
         stats.update(evaluation);
         let root_node = Node {
-            state: root_state.clone(),
+            state: root_state,
             incoming: None,
             outgoing: vec![],
             stats,
@@ -693,19 +693,13 @@ impl<M: MCTS> SearchTree<M> {
                     let parent_state = &self.tree.nodes[self.tree.moves[mh].parent].state;
                     let parents = self.tree.table[parent_state].clone();
                     for ph in parents {
-                        self.update_tree(
-                            Some(child_state.clone()),
-                            &mut data.clone(),
-                            ph,
-                            &mv,
-                            rng,
-                        )
-                        .ok()
-                        .map(|ch| {
+                        if let Ok(ch) =
+                            self.update_tree(Some(child_state), &mut data.clone(), ph, &mv, rng)
+                        {
                             nh = ch;
                             self.backpropagate_tree(ch);
                             self.soft_prune_tree(mh);
-                        });
+                        }
                     }
                 }
             }
@@ -721,7 +715,7 @@ impl<M: MCTS> SearchTree<M> {
         parents
             .iter()
             .filter_map(|ph| {
-                self.update_tree(child_state.clone(), &mut child_data.clone(), *ph, &mov, rng)
+                self.update_tree(child_state, &mut child_data.clone(), *ph, &mov, rng)
                     .ok()
                     .map(|ch| {
                         self.backpropagate_tree(ch);
@@ -755,7 +749,7 @@ impl<M: MCTS> SearchTree<M> {
         let mv = &self.tree.moves[mh];
         self.tree.nodes[nh]
             .state
-            .make_move(data, &mv.mov, n, &mut self.mcts);
+            .make_move(data, &mv.mov, n, &self.mcts);
         match mv.child {
             Some(_) => Ok(None),
             None => Ok(M::State::make_state(&data, &mut self.mcts)),
@@ -788,7 +782,7 @@ impl<M: MCTS> SearchTree<M> {
             let mov = &self.tree.moves[mh];
             self.tree.nodes[nh]
                 .state
-                .make_move(&mut data, &mov.mov, n, &mut self.mcts);
+                .make_move(&mut data, &mov.mov, n, &self.mcts);
             match mov.child {
                 // Descend known moves.
                 Some(child_nh) => {
@@ -825,7 +819,7 @@ impl<M: MCTS> SearchTree<M> {
             }
             Some(child_state) => {
                 let ancestors = self.tree.ancestors_tree(nh);
-                let ch = self.make_node(child_state.clone(), data, rng);
+                let ch = self.make_node(child_state, data, rng);
                 let entry = self.tree.table.entry(child_state).or_insert_with(Vec::new);
                 // Prevent cycles: don't add nodes whose state is contained in an ancestor.
                 if ancestors.iter().any(|a| entry.contains(a)) {

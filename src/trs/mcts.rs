@@ -658,6 +658,12 @@ impl Revision {
     }
 }
 
+impl Default for Revision {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
     type Data = TrueState<'ctx, 'b>;
     type Move = Move<'ctx>;
@@ -693,7 +699,6 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
         }
     }
     fn make_state(data: &Self::Data, mcts: &mut TRSMCTS<'ctx, 'b>) -> Option<Self> {
-        // TODO: implement
         match data.label {
             StateLabel::Failed => None,
             StateLabel::Terminal => {
