@@ -699,9 +699,15 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
     fn valid_data(data: &Self::Data, _mcts: &TRSMCTS<'ctx, 'b>) -> bool {
         data.label != StateLabel::Failed
     }
-    fn available_moves(&self, data: &mut Self::Data, mcts: &TRSMCTS<'ctx, 'b>) -> Self::MoveList {
+    fn available_moves(
+        &self,
+        data: &mut Self::Data,
+        depth: usize,
+        mcts: &TRSMCTS<'ctx, 'b>,
+    ) -> Self::MoveList {
         match *self {
             MCTSState::Terminal(_) => vec![],
+            MCTSState::Revision(_) if mcts.max_depth() <= depth => vec![],
             MCTSState::Revision(_) => data.available_moves(mcts),
         }
     }
