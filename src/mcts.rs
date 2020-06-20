@@ -781,7 +781,7 @@ impl<M: MCTS> SearchTree<M> {
         self.can_continue()?;
         let mut nh = self.tree.root;
         let mut data = M::State::root_data(&self.mcts);
-        for _ in 0..self.mcts.max_depth() {
+        for _ in 0..=self.mcts.max_depth() {
             // Choose a move. Avoid moves going to pruned nodes.
             let moves = self.tree.nodes[nh]
                 .outgoing
