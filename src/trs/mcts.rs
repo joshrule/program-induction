@@ -466,11 +466,20 @@ pub fn compute_path<'ctx, 'b>(
 ///       &ctx,
 ///   ).expect("lex");
 ///   let context = parse_rulecontext("v0_ (> (HEAD [!])) = CONS", &mut lex).expect("context");
-///   let fillers = rulecontext_fillers(&lex, &context);
-///   println!("{}", fillers.len());
-///   for a in fillers {
-///       println!("{}", a.display(lex.signature()));
-///   }
+///   let mut env = lex.infer_rulecontext(&context).expect("env");
+///   let tp = context
+///                .preorder()
+///                .zip(&env.tps)
+///                .find(|(t, _)| t.is_hole())
+///                .map(|(_, tp)| *tp)
+///                .expect("tp");
+///   let mut arg_tps = vec![tp];
+///   let fillers = rulecontext_fillers(&context, &mut env, &mut arg_tps);
+///   assert_eq!(fillers.len(), 3);
+///   assert_eq!(
+///       vec!["Some(\"NIL\")", "Some(\".\")", "None"],
+///       fillers.iter().map(|a| format!("{:?}", a.map(|atom| atom.display(lex.signature())))).collect::<Vec<_>>()
+///   );
 /// })
 /// ```
 pub fn rulecontext_fillers<'ctx, 'b>(
