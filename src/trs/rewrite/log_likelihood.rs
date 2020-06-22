@@ -64,7 +64,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                         {
                             // (1-a)p
                             // TODO: would be nice to have a generative story here
-                            generalizes = generalizes || trace[n].log_p() > 0.0;
+                            generalizes = generalizes || trace[n].log_p() > NEG_INFINITY;
                             trace[n].log_p() + (1.0 - alpha).ln()
                         } else {
                             // ap
