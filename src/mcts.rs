@@ -9,11 +9,12 @@ use itertools::Itertools;
 use rand::Rng;
 use serde::Serialize;
 //use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
 
 pub type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
 type Data<M> = <<M as MCTS>::State as State<M>>::Data;
+type Key<M> = <<M as MCTS>::State as State<M>>::Key;
 type StateEvaluation<M> = <<M as MCTS>::StateEval as StateEvaluator<M>>::StateEvaluation;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -24,6 +25,7 @@ pub struct MoveHandle(Index);
 
 pub trait State<M: MCTS<State = Self>>: Copy + std::hash::Hash + Eq + Sized {
     type Data: std::fmt::Debug + Clone + Sized;
+    type Key: std::fmt::Debug + Copy + Eq + Hash + Sized;
     type Move: std::fmt::Display + PartialEq + Clone;
     type MoveList: IntoIterator<Item = Self::Move>;
     fn root_data(mcts: &M) -> Self::Data;
@@ -31,6 +33,7 @@ pub trait State<M: MCTS<State = Self>>: Copy + std::hash::Hash + Eq + Sized {
     fn available_moves(&self, data: &mut Self::Data, depth: usize, mcts: &M) -> Self::MoveList;
     fn make_move(&self, data: &mut Self::Data, mov: &Self::Move, n: usize, mcts: &M);
     fn make_state(data: &Self::Data, mcts: &mut M) -> Option<Self>;
+    fn key(&self) -> Self::Key;
     fn discard(&self, mcts: &mut M);
     //fn describe_self(&self, data: &Self::Data, mcts: &M) -> Value;
     //fn describe_move(&self, data: &Self::Data, mv: &Self::Move, mcts: &M, failed: bool) -> Value;
@@ -94,7 +97,7 @@ pub struct TreeStore<M: MCTS> {
     root: NodeHandle,
     nodes: Arena<Node<M>>,
     moves: Arena<MoveInfo<M>>,
-    table: HashMap<M::State, Vec<NodeHandle>>,
+    table: HashMap<Key<M>, Vec<NodeHandle>>,
 }
 
 pub struct Node<M: MCTS> {
@@ -237,7 +240,7 @@ impl<M: MCTS> TreeStore<M> {
     }
     /// Find the paths to equivalent nodes.
     pub fn paths_dag(&self, nh: NodeHandle) -> Vec<Vec<MoveHandle>> {
-        self.table[&self.nodes[nh].state]
+        self.table[&self.nodes[nh].state.key()]
             .iter()
             .map(|nh| self.path_tree(*nh))
             .collect()
@@ -269,7 +272,7 @@ impl<M: MCTS> TreeStore<M> {
     }
     /// Find all nodes giving rise to equivalent nodes.
     pub fn ancestors_dag(&self, src_nh: NodeHandle) -> Vec<NodeHandle> {
-        let mut stack = self.table[&self.nodes[src_nh].state].clone();
+        let mut stack = self.table[&self.nodes[src_nh].state.key()].clone();
         let mut ancestors = vec![];
         while let Some(nh) = stack.pop() {
             if let Some(mh) = self.nodes[nh].incoming {
@@ -295,7 +298,7 @@ impl<M: MCTS> TreeStore<M> {
     }
     /// Find all nodes descending from equivalent nodes.
     pub fn descendants_dag(&self, src_nh: NodeHandle) -> Vec<NodeHandle> {
-        let mut stack = self.table[&self.nodes[src_nh].state].clone();
+        let mut stack = self.table[&self.nodes[src_nh].state.key()].clone();
         let mut descendants = vec![];
         while let Some(nh) = stack.pop() {
             for &mh in &self.nodes[nh].outgoing {
@@ -311,7 +314,7 @@ impl<M: MCTS> TreeStore<M> {
     }
     /// Find all moves sharing an equivalent parent.
     pub fn siblings_dag(&self, src_mh: MoveHandle) -> Vec<MoveHandle> {
-        self.table[&self.nodes[self.moves[src_mh].parent].state]
+        self.table[&self.nodes[self.moves[src_mh].parent].state.key()]
             .iter()
             .flat_map(|nh| self.nodes[*nh].outgoing.iter().copied())
             .collect()
@@ -322,7 +325,7 @@ impl<M: MCTS> TreeStore<M> {
     }
     /// Remove the first occurrence of some node
     fn delist(&mut self, nh: NodeHandle) {
-        if let Some(nodes) = self.table.get_mut(&self.nodes[nh].state) {
+        if let Some(nodes) = self.table.get_mut(&self.nodes[nh].state.key()) {
             // TODO: convert to if? Entries should be unique.
             while let Some(idx) = nodes.iter().position(|x| *x == nh) {
                 nodes.swap_remove(idx);
@@ -370,7 +373,7 @@ impl<M: MCTS> SearchTree<M> {
             .map(|mv| MoveHandle(moves.insert(mv)))
             .collect();
         nodes[root].outgoing = mhs;
-        table.insert(root_state, vec![root]);
+        table.insert(root_state.key(), vec![root]);
         let tree = TreeStore {
             moves,
             table,
@@ -411,7 +414,7 @@ impl<M: MCTS> SearchTree<M> {
             .map(|mv| MoveHandle(self.tree.moves.insert(mv)))
             .collect();
         self.tree.nodes[root].outgoing = mhs;
-        self.tree.table.insert(root_state, vec![root]);
+        self.tree.table.insert(root_state.key(), vec![root]);
     }
     pub fn reset<R: Rng>(&mut self, root_state: M::State, rng: &mut R) {
         self.tree.table.clear();
@@ -702,7 +705,7 @@ impl<M: MCTS> SearchTree<M> {
                 None => nh = self.tree.moves[mh].child.expect("inconsistent tree"),
                 Some(child_state) => {
                     let parent_state = &self.tree.nodes[self.tree.moves[mh].parent].state;
-                    let parents = self.tree.table[parent_state].clone();
+                    let parents = self.tree.table[&parent_state.key()].clone();
                     for ph in parents {
                         let depth = self.tree.depth(ph);
                         if let Ok(ch) = self.update_tree(
@@ -724,24 +727,66 @@ impl<M: MCTS> SearchTree<M> {
         Ok(())
     }
     pub fn step<R: Rng>(&mut self, rng: &mut R) -> Result<Vec<NodeHandle>, MCTSError> {
+        // Check that you can continue.
         self.can_continue()?;
-        let (child_state, child_data, mh) = self.expand(rng)?;
-        let parent_state = &self.tree.nodes[self.tree.moves[mh].parent].state;
-        let mov = &self.tree.moves[mh].mov.clone();
-        let parents = self.tree.table[parent_state].clone();
-        parents
-            .iter()
-            .filter_map(|ph| {
-                let depth = self.tree.depth(*ph);
-                self.update_tree(child_state, &mut child_data.clone(), *ph, &mov, depth, rng)
-                    .ok()
-                    .map(|ch| {
-                        self.backpropagate_tree(ch);
-                        self.soft_prune_tree(mh);
-                        Ok(ch)
-                    })
-            })
-            .collect()
+        // Iterate down through the tree.
+        let mut nh = self.tree.root;
+        let mut data = M::State::root_data(&self.mcts);
+        for _ in 0..=self.mcts.max_depth() {
+            // Choose a move. Avoid moves going to pruned nodes.
+            let moves = self.tree.nodes[nh]
+                .outgoing
+                .iter()
+                .copied()
+                .filter(|mh| self.tree.moves[*mh].pruning == Pruning::None);
+            let n = self.tree.nodes[nh]
+                .outgoing
+                .iter()
+                .filter(|mh| self.tree.moves[**mh].pruning == Pruning::None)
+                .count();
+            let mh = self
+                .move_eval
+                .choose(moves, nh, &self, rng)
+                .expect("INVARIANT: active nodes must have moves");
+            let mov = &self.tree.moves[mh];
+            match mov.child {
+                // Descend known moves.
+                Some(child_nh) => {
+                    self.tree.nodes[nh]
+                        .state
+                        .make_move(&mut data, &mov.mov, n, &self.mcts);
+                    nh = child_nh;
+                }
+                // Take new moves.
+                None => {
+                    // Get the parent entry.
+                    // Take the move.
+                    self.tree.nodes[nh]
+                        .state
+                        .make_move(&mut data, &mov.mov, n, &self.mcts);
+                    // Make the child state.
+                    let child_state = M::State::make_state(&data, &mut self.mcts);
+                    let parent_state = &self.tree.nodes[self.tree.moves[mh].parent].state;
+                    let parents = self.tree.table[&parent_state.key()].clone();
+                    // For each parent, update the tree, backpropagate, etc.
+                    let mov = &self.tree.moves[mh].mov.clone();
+                    return parents
+                        .iter()
+                        .filter_map(|ph| {
+                            let depth = self.tree.depth(*ph);
+                            self.update_tree(child_state, &mut data.clone(), *ph, &mov, depth, rng)
+                                .ok()
+                                .map(|ch| {
+                                    self.backpropagate_tree(ch);
+                                    self.soft_prune_tree(mh);
+                                    Ok(ch)
+                                })
+                        })
+                        .collect();
+                }
+            }
+        }
+        Err(MCTSError::TreeAtMaxDepth)
     }
     fn can_continue(&self) -> Result<(), MCTSError> {
         if self.tree.table.len() >= self.mcts.max_states() {
@@ -773,48 +818,6 @@ impl<M: MCTS> SearchTree<M> {
             None => Ok(M::State::make_state(&data, &mut self.mcts)),
         }
     }
-    // Expand the search tree by taking a single move.
-    fn expand<R: Rng>(
-        &mut self,
-        rng: &mut R,
-    ) -> Result<(Option<M::State>, Data<M>, MoveHandle), MCTSError> {
-        self.can_continue()?;
-        let mut nh = self.tree.root;
-        let mut data = M::State::root_data(&self.mcts);
-        for _ in 0..=self.mcts.max_depth() {
-            // Choose a move. Avoid moves going to pruned nodes.
-            let moves = self.tree.nodes[nh]
-                .outgoing
-                .iter()
-                .copied()
-                .filter(|mh| self.tree.moves[*mh].pruning == Pruning::None);
-            let n = self.tree.nodes[nh]
-                .outgoing
-                .iter()
-                .filter(|mh| self.tree.moves[**mh].pruning == Pruning::None)
-                .count();
-            let mh = self
-                .move_eval
-                .choose(moves, nh, &self, rng)
-                .expect("INVARIANT: active nodes must have moves");
-            let mov = &self.tree.moves[mh];
-            self.tree.nodes[nh]
-                .state
-                .make_move(&mut data, &mov.mov, n, &self.mcts);
-            match mov.child {
-                // Descend known moves.
-                Some(child_nh) => {
-                    nh = child_nh;
-                }
-                // Take new moves.
-                None => {
-                    let child_state = M::State::make_state(&data, &mut self.mcts);
-                    return Ok((child_state, data, mh));
-                }
-            }
-        }
-        Err(MCTSError::TreeAtMaxDepth)
-    }
     fn update_tree<R: Rng>(
         &mut self,
         move_result: Option<M::State>,
@@ -839,7 +842,11 @@ impl<M: MCTS> SearchTree<M> {
             Some(child_state) => {
                 let ancestors = self.tree.ancestors_tree(nh);
                 let ch = self.make_node(child_state, data, depth, rng);
-                let entry = self.tree.table.entry(child_state).or_insert_with(Vec::new);
+                let entry = self
+                    .tree
+                    .table
+                    .entry(child_state.key())
+                    .or_insert_with(Vec::new);
                 // Prevent cycles: don't add nodes whose state is contained in an ancestor.
                 if ancestors.iter().any(|a| entry.contains(a)) {
                     self.hard_prune_tree(mh);
@@ -889,7 +896,7 @@ impl<M: MCTS> SearchTree<M> {
     fn prune_dag(&mut self, src_mh: MoveHandle, prune: Pruning) {
         let src_mv = &self.tree.moves[src_mh];
         let mov = src_mv.mov.clone();
-        let parents = self.tree.table[&self.tree.nodes[src_mv.parent].state].clone();
+        let parents = self.tree.table[&self.tree.nodes[src_mv.parent].state.key()].clone();
         for &nh in &parents {
             // find the move
             if let Some(mh) = self.tree.nodes[nh]

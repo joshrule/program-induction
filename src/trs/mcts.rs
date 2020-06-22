@@ -7,7 +7,12 @@ use mcts::{
 use polytype::atype::Ty;
 use rand::prelude::{Rng, SliceRandom};
 //use serde_json::Value;
-use std::{cmp::Ordering, collections::HashMap, convert::TryFrom};
+use std::{
+    cmp::Ordering,
+    collections::{hash_map::DefaultHasher, HashMap},
+    convert::TryFrom,
+    hash::{Hash, Hasher},
+};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
 use trs::{
     Composition, Datum, Env, Eval, Hypothesis, Lexicon, ModelParams, ProbabilisticModel, Recursion,
@@ -28,7 +33,13 @@ macro_rules! r#tryo {
 }
 
 #[derive(Copy, Debug, PartialEq, Eq, Clone, Hash)]
-pub enum MCTSState {
+pub struct MCTSState {
+    key: u64,
+    kind: MCTSStateKind,
+}
+
+#[derive(Copy, Debug, PartialEq, Eq, Clone, Hash)]
+pub enum MCTSStateKind {
     Revision(RevisionHandle),
     Terminal(TerminalHandle),
 }
@@ -103,7 +114,7 @@ pub enum Move<'ctx> {
     Stop,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
 pub enum StateLabel {
     Failed,
     Terminal,
@@ -694,6 +705,7 @@ impl Default for Revision {
 
 impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
     type Data = TrueState<'ctx, 'b>;
+    type Key = u64;
     type Move = Move<'ctx>;
     type MoveList = Vec<Self::Move>;
     fn root_data(mcts: &TRSMCTS<'ctx, 'b>) -> Self::Data {
@@ -714,10 +726,10 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
         depth: usize,
         mcts: &TRSMCTS<'ctx, 'b>,
     ) -> Self::MoveList {
-        match *self {
-            MCTSState::Terminal(_) => vec![],
-            MCTSState::Revision(_) if mcts.max_depth() <= depth => vec![],
-            MCTSState::Revision(_) => data.available_moves(mcts),
+        match self.kind {
+            MCTSStateKind::Terminal(_) => vec![],
+            MCTSStateKind::Revision(_) if mcts.max_depth() <= depth => vec![],
+            MCTSStateKind::Revision(_) => data.available_moves(mcts),
         }
     }
     fn make_move(
@@ -727,20 +739,27 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
         n: usize,
         mcts: &TRSMCTS<'ctx, 'b>,
     ) {
-        match *self {
-            MCTSState::Terminal(_) => panic!("cannot move from terminal"),
-            MCTSState::Revision(_) => data.make_move(mv, n, mcts.data),
+        match self.kind {
+            MCTSStateKind::Terminal(_) => panic!("cannot move from terminal"),
+            MCTSStateKind::Revision(_) => data.make_move(mv, n, mcts.data),
         }
+    }
+    fn key(&self) -> Self::Key {
+        self.key
     }
     fn make_state(data: &Self::Data, mcts: &mut TRSMCTS<'ctx, 'b>) -> Option<Self> {
         match data.label {
             StateLabel::Failed => None,
             StateLabel::Terminal => {
                 let terminal = Terminal::new(mcts.make_hypothesis(data));
-                Some(mcts.add_terminal(terminal))
+                Some(mcts.add_terminal(terminal, data.to_key()))
             }
-            StateLabel::PartialRevision => Some(mcts.add_revision(Revision::default())),
-            StateLabel::CompleteRevision => Some(mcts.add_revision(Revision::default())),
+            StateLabel::PartialRevision => {
+                Some(mcts.add_revision(Revision::default(), data.to_key()))
+            }
+            StateLabel::CompleteRevision => {
+                Some(mcts.add_revision(Revision::default(), data.to_key()))
+            }
         }
     }
     //fn describe_self(&self, data: &Self::Data, mcts: &TRSMCTS) -> Value {
@@ -797,6 +816,46 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
 }
 
 impl<'ctx, 'b> TrueState<'ctx, 'b> {
+    // TODO: major hacky.
+    pub fn to_key(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        match &self.spec {
+            None => 0.hash(&mut hasher),
+            Some(MoveState::SampleRule(ref context, _, _)) => {
+                1.hash(&mut hasher);
+                context.hash(&mut hasher)
+            }
+            Some(MoveState::RegenerateRule(state)) => {
+                2.hash(&mut hasher);
+                match state {
+                    RegenerateRuleState::Start => 0.hash(&mut hasher),
+                    RegenerateRuleState::Rule(n) => {
+                        1.hash(&mut hasher);
+                        n.hash(&mut hasher);
+                    }
+                    RegenerateRuleState::Place(n, place) => {
+                        2.hash(&mut hasher);
+                        n.hash(&mut hasher);
+                        place.hash(&mut hasher);
+                    }
+                    RegenerateRuleState::Term(n, ref context, _, _) => {
+                        3.hash(&mut hasher);
+                        n.hash(&mut hasher);
+                        context.hash(&mut hasher);
+                    }
+                }
+            }
+            Some(MoveState::Compose) => 3.hash(&mut hasher),
+            Some(MoveState::Recurse) => 4.hash(&mut hasher),
+            Some(MoveState::Variablize) => 5.hash(&mut hasher),
+            Some(MoveState::MemorizeDatum) => 6.hash(&mut hasher),
+            Some(MoveState::DeleteRule) => 7.hash(&mut hasher),
+        };
+        self.trs.utrs.hash(&mut hasher);
+        self.trs.lex.signature().hash(&mut hasher);
+        self.trs.lex.lex.ops.hash(&mut hasher);
+        hasher.finish()
+    }
     pub fn playout<R: Rng>(&self, mcts: &mut TRSMCTS<'ctx, 'b>, rng: &mut R) -> Option<Self> {
         // TODO: Maybe try backtracking instead of a fixed count?
         for _ in 0..10 {
@@ -1256,13 +1315,14 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             .unwrap_or(0.0);
     }
     pub fn rm_state(&mut self, state: &MCTSState) {
-        match *state {
-            MCTSState::Terminal(h) => self.rm_terminal(h),
-            MCTSState::Revision(r) => self.rm_revision(r),
+        match state.kind {
+            MCTSStateKind::Terminal(h) => self.rm_terminal(h),
+            MCTSStateKind::Revision(r) => self.rm_revision(r),
         }
     }
-    pub fn add_revision(&mut self, state: Revision) -> MCTSState {
-        MCTSState::Revision(RevisionHandle(self.revisions.insert(state)))
+    pub fn add_revision(&mut self, state: Revision, key: u64) -> MCTSState {
+        let kind = MCTSStateKind::Revision(RevisionHandle(self.revisions.insert(state)));
+        MCTSState { key, kind }
     }
     pub fn rm_revision(&mut self, rh: RevisionHandle) {
         if let PlayoutState::Success(hh) = self.revisions[rh].playout {
@@ -1270,8 +1330,9 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         }
         self.revisions.remove(rh.0);
     }
-    pub fn add_terminal(&mut self, state: Terminal) -> MCTSState {
-        MCTSState::Terminal(TerminalHandle(self.terminals.insert(state)))
+    pub fn add_terminal(&mut self, state: Terminal, key: u64) -> MCTSState {
+        let kind = MCTSStateKind::Terminal(TerminalHandle(self.terminals.insert(state)));
+        MCTSState { key, kind }
     }
     pub fn rm_terminal(&mut self, th: TerminalHandle) {
         self.rm_hypothesis(self.terminals[th].trs);
@@ -1333,7 +1394,8 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         let state = Revision {
             playout: PlayoutState::Untried,
         };
-        let root_state = self.add_revision(state);
+        let data = MCTSState::root_data(self);
+        let root_state = self.add_revision(state, data.to_key());
         self.root.replace(root_state);
         root_state
     }
@@ -1535,9 +1597,9 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         state: &<TRSMCTS<'a, 'b> as MCTS>::State,
         mcts: &mut TRSMCTS<'a, 'b>,
     ) -> Self::StateEvaluation {
-        match *state {
-            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
-            MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
+        match state.kind {
+            MCTSStateKind::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
+            MCTSStateKind::Revision(rh) => match mcts.revisions[rh].playout {
                 PlayoutState::Untried => panic!("shouldn't reread untried playout"),
                 PlayoutState::Failed => std::f64::NEG_INFINITY,
                 PlayoutState::Success(hh) => mcts.hypotheses[hh].lposterior,
@@ -1551,9 +1613,9 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         mcts: &mut TRSMCTS<'a, 'b>,
         rng: &mut R,
     ) -> Self::StateEvaluation {
-        let score = match *state {
-            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
-            MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
+        let score = match state.kind {
+            MCTSStateKind::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
+            MCTSStateKind::Revision(rh) => match mcts.revisions[rh].playout {
                 // Note: the DAG creates multiple nodes sharing the same state.
                 // They share a single playout, which may not be correct.
                 PlayoutState::Failed => std::f64::NEG_INFINITY,
