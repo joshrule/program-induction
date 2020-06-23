@@ -846,7 +846,11 @@ impl<M: MCTS> SearchTree<M> {
             .ok_or(MCTSError::TreeInconsistent)?;
         match move_result {
             None => {
-                self.prune_dag(mh, Pruning::Hard);
+                let pmh = self.tree.parent_move(mh);
+                self.hard_prune_tree(mh);
+                if let Some(pmh) = pmh {
+                    self.soft_prune_tree(pmh);
+                }
                 Err(MCTSError::MoveFailed)
             }
             Some(child_state) => {
@@ -859,7 +863,11 @@ impl<M: MCTS> SearchTree<M> {
                     .or_insert_with(Vec::new);
                 // Prevent cycles: don't add nodes whose state is contained in an ancestor.
                 if ancestors.iter().any(|a| entry.contains(a)) {
+                    let pmh = self.tree.parent_move(mh);
                     self.hard_prune_tree(mh);
+                    if let Some(pmh) = pmh {
+                        self.soft_prune_tree(pmh);
+                    }
                     Err(MCTSError::MoveCreatedCycle)
                 } else {
                     // Give the move a child.
@@ -935,9 +943,7 @@ impl<M: MCTS> SearchTree<M> {
             if let Some(nh) = self.tree.moves[mh].child {
                 self.tree.delist(nh);
                 for &omh in &self.tree.nodes[nh].outgoing {
-                    if self.tree.moves[omh].pruning != Pruning::Hard {
-                        stack.push(omh);
-                    }
+                    stack.push(omh);
                 }
                 self.tree.nodes[nh].state.discard(&mut self.mcts);
                 self.tree.nodes.remove(nh.0);
