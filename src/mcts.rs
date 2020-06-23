@@ -910,32 +910,6 @@ impl<M: MCTS> SearchTree<M> {
         }
         nh
     }
-    /// Prunes a `MoveInfo<M>` from the tree.
-    fn prune_dag(&mut self, src_mh: MoveHandle, prune: Pruning) {
-        let src_mv = &self.tree.moves[src_mh];
-        let mov = src_mv.mov.clone();
-        let parents = self.tree.table[&self.tree.nodes[src_mv.parent].state.key()].clone();
-        for &nh in &parents {
-            // find the move
-            if let Some(mh) = self.tree.nodes[nh]
-                .outgoing
-                .iter()
-                .copied()
-                .find(|mh| self.tree.moves[*mh].mov == mov)
-            {
-                match prune {
-                    Pruning::None => (),
-                    Pruning::Soft => self.soft_prune_tree(mh),
-                    Pruning::Hard => {
-                        self.hard_prune_tree(mh);
-                        if let Some(parent_mh) = self.tree.parent_move(mh) {
-                            self.soft_prune_tree(parent_mh);
-                        }
-                    }
-                }
-            }
-        }
-    }
     /// Prunes paths descending from failed/cyclic moves.
     fn hard_prune_tree(&mut self, src_mh: MoveHandle) {
         let mut stack = vec![src_mh];
