@@ -749,23 +749,19 @@ impl<M: MCTS> SearchTree<M> {
                 .choose(moves, nh, &self, rng)
                 .expect("INVARIANT: active nodes must have moves");
             let mov = &self.tree.moves[mh];
+            self.tree.nodes[nh]
+                .state
+                .make_move(&mut data, &mov.mov, n, &self.mcts);
             match mov.child {
                 // Descend known moves.
                 Some(child_nh) => {
-                    self.tree.nodes[nh]
-                        .state
-                        .make_move(&mut data, &mov.mov, n, &self.mcts);
                     nh = child_nh;
                 }
                 // Take new moves.
                 None => {
-                    // Get the parent entry.
-                    // Take the move.
-                    self.tree.nodes[nh]
-                        .state
-                        .make_move(&mut data, &mov.mov, n, &self.mcts);
                     // Make the child state.
                     let child_state = M::State::make_state(&data, &mut self.mcts);
+                    // Get the parent entry.
                     let parent_state = &self.tree.nodes[self.tree.moves[mh].parent].state;
                     let parents = self.tree.table[&parent_state.key()].clone();
                     // For each parent, update the tree, backpropagate, etc.
