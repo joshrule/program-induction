@@ -174,7 +174,6 @@ impl<M: MCTS> MCTSManager<M> {
                     | MCTSError::TreeExhausted
                     | MCTSError::TreeAtMaxStates
                     | MCTSError::TreeAtMaxDepth => {
-                        println!("Stopping trial because: {}", e);
                         break;
                     }
                     MCTSError::MoveFailed | MCTSError::MoveCreatedCycle => (),
