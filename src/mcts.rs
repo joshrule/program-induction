@@ -716,9 +716,12 @@ impl<M: MCTS> SearchTree<M> {
                             depth,
                             rng,
                         ) {
+                            let table_mh = self.tree.nodes[ch]
+                                .incoming
+                                .expect("INVARIANT: child node has parent");
                             nh = ch;
                             self.backpropagate_tree(ch);
-                            self.soft_prune_tree(mh);
+                            self.soft_prune_tree(table_mh);
                         }
                     }
                 }
@@ -770,13 +773,24 @@ impl<M: MCTS> SearchTree<M> {
                         .iter()
                         .filter_map(|ph| {
                             let depth = self.tree.depth(*ph);
-                            self.update_tree(child_state, &mut data.clone(), *ph, &mov, depth, rng)
-                                .ok()
-                                .map(|ch| {
+                            match self.update_tree(
+                                child_state,
+                                &mut data.clone(),
+                                *ph,
+                                &mov,
+                                depth,
+                                rng,
+                            ) {
+                                Ok(ch) => {
+                                    let table_mh = self.tree.nodes[ch]
+                                        .incoming
+                                        .expect("INVARIANT: child node has parent");
                                     self.backpropagate_tree(ch);
-                                    self.soft_prune_tree(mh);
-                                    Ok(ch)
-                                })
+                                    self.soft_prune_tree(table_mh);
+                                    Some(Ok(ch))
+                                }
+                                Err(_) => None,
+                            }
                         })
                         .collect();
                 }
