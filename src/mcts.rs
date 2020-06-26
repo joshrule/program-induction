@@ -2,8 +2,6 @@
 //!
 //! [Monte Carlo Tree Search]: https://en.wikipedia.org/wiki/Monte_Carlo_tree_search
 
-// TODO:
-// - ask for states to be Debug for easier debugging.
 use generational_arena::{Arena, Index};
 use itertools::Itertools;
 use rand::Rng;
