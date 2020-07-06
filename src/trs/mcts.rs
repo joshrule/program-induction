@@ -981,6 +981,10 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
             }
             Move::Variablize(Some(ref v)) => {
                 let mut clauses = self.trs.utrs.clauses();
+                if clauses.len() < v.0 {
+                    self.label = StateLabel::Failed;
+                    return;
+                }
                 clauses[v.0] = tryo![
                     self,
                     self.trs.apply_variablization(&v.1, &v.2, &clauses[v.0])
