@@ -981,7 +981,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
             }
             Move::Variablize(Some(ref v)) => {
                 let mut clauses = self.trs.utrs.clauses();
-                if clauses.len() < v.0 {
+                if clauses.len() <= v.0 {
                     self.label = StateLabel::Failed;
                     return;
                 }
@@ -1134,12 +1134,14 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             env.new_variable().map(Atom::Variable).expect("variable")
                         });
                         let place = tryo![self, context.leftmost_hole()];
-                        // TODO: would be nice to avoid cloning here.
                         let new_context = tryo![
                             self,
                             context.replace(
                                 &place,
-                                Context::from(SituatedAtom::new(atom, self.trs.lex.signature()))
+                                Context::from(tryo![
+                                    self,
+                                    SituatedAtom::new(atom, self.trs.lex.signature())
+                                ])
                             )
                         ];
                         if let Ok(rule) = Rule::try_from(&new_context) {
@@ -1174,8 +1176,10 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                         let atom = atom.unwrap_or_else(|| {
                             env.new_variable().map(Atom::Variable).expect("variable")
                         });
-                        let subcontext =
-                            Context::from(SituatedAtom::new(atom, self.trs.lex.signature()));
+                        let subcontext = Context::from(tryo![
+                            self,
+                            SituatedAtom::new(atom, self.trs.lex.signature())
+                        ]);
                         let new_context = tryo![self, context.replace(&place, subcontext)];
                         if let Ok(rule) = Rule::try_from(&new_context) {
                             tryo![self, self.trs.utrs.remove_idx(r).ok()];

@@ -285,7 +285,9 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                     let env_ss = self.snapshot();
                     params.variable = variable || partial.size() > 1;
                     let atom = self.sample_atom(&tp, params, rng)?;
-                    let subcontext = Context::from(SituatedAtom::new(atom, &self.lex.lex.sig));
+                    let sit_atom = SituatedAtom::new(atom, &self.lex.lex.sig)
+                        .ok_or(SampleError::OptionsExhausted)?;
+                    let subcontext = Context::from(sit_atom);
                     size[0] += subcontext.size() - 1;
                     if params.limit.is_okay(&size) {
                         let mut new_arg_types = self.check_atom(tp, atom)?;
@@ -371,7 +373,9 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
                     params.variable = hole_place != [0] && variable;
                     let env_ss = self.snapshot();
                     let atom = self.sample_atom(tp, params, rng)?;
-                    let subcontext = Context::from(SituatedAtom::new(atom, &self.lex.lex.sig));
+                    let sit_atom = SituatedAtom::new(atom, &self.lex.lex.sig)
+                        .ok_or(SampleError::OptionsExhausted)?;
+                    let subcontext = Context::from(sit_atom);
                     size[hole_place[0]] += subcontext.size() - 1;
                     if params.limit.is_okay(&size) {
                         let mut new_arg_types = self.check_atom(tp, atom)?;

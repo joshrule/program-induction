@@ -198,7 +198,9 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         let app = lex
             .has_operator(Some("."), 2)
             .map_err(|_| SampleError::Subterm)?;
-        let mut subctx = Context::from(SituatedAtom::new(Atom::from(new_op), lex.signature()));
+        let sit_atom = SituatedAtom::new(Atom::from(new_op), lex.signature())
+            .ok_or(SampleError::OptionsExhausted)?;
+        let mut subctx = Context::from(sit_atom);
         for var in vars {
             subctx = Context::Application {
                 op: app,
@@ -442,7 +444,8 @@ mod tests {
             env.sub.add(TVar(dummy + 1), t_int);
             env.sub.add(TVar(dummy + 2), t_list);
             let op = TRS::new_operator(&mut env, applicative, vars, t_list).expect("op");
-            let context = Context::from(SituatedAtom::new(Atom::from(op), env.lex.signature()));
+            let sit_atom = SituatedAtom::new(Atom::from(op), env.lex.signature()).unwrap();
+            let context = Context::from(sit_atom);
             let tp = env
                 .lex
                 .infer_context(&context)
