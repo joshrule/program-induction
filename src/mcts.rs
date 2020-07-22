@@ -3,7 +3,6 @@
 //! [Monte Carlo Tree Search]: https://en.wikipedia.org/wiki/Monte_Carlo_tree_search
 
 use generational_arena::{Arena, Index};
-use itertools::Itertools;
 use rand::Rng;
 use serde::Serialize;
 //use serde_json::Value;
@@ -348,45 +347,13 @@ impl<M: MCTS> SearchTree<M> {
         self.tree.moves.clear();
         self.set_root(root_state, rng);
     }
-    pub fn prune_except_top<R: Rng>(&mut self, n: usize, root_state: M::State, rng: &mut R) {
-        let mut paths = Vec::with_capacity(n);
-        for (idx, _) in self.tree.nodes.iter().sorted_by(|a, b| {
-            a.1.evaluation
-                .into()
-                .partial_cmp(&b.1.evaluation.into())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            // Find the best valid path not contained in the set.
-            if NodeHandle(idx) != self.tree.root
-                && paths
-                    .iter()
-                    .flatten()
-                    .all(|x: &MoveHandle| self.tree.moves[*x].child != Some(NodeHandle(idx)))
-            {
-                let path = self.tree.path_tree(NodeHandle(idx));
-                if self.valid_path(&path) {
-                    paths.push(path);
-                    // Stop when you have n paths.
-                    if paths.len() == n {
-                        break;
-                    }
-                }
-            }
-        }
-        // Convert the paths to moves.
-        let moves = paths
-            .into_iter()
-            .map(|path| {
-                path.into_iter()
-                    .map(|mh| self.tree.moves[mh].mov.clone())
-                    .collect_vec()
-            })
-            .collect_vec();
-        // Reset the tree.
+    pub fn prune_except_top<I, R: Rng>(&mut self, paths: I, root_state: M::State, rng: &mut R)
+    where
+        I: Iterator<Item = Vec<Move<M>>>,
+    {
         self.reset(root_state, rng);
-        // Take the series of moves specified by each path.
-        for path in &moves {
-            self.follow_path(path, rng).ok();
+        for path in paths {
+            self.follow_path(&path, rng).ok();
         }
     }
     // TODO: reinstate
@@ -478,30 +445,6 @@ impl<M: MCTS> SearchTree<M> {
                     .for_each(|child| stack.push((child, false)));
             }
         }
-    }
-    /// Take a single search step.
-    fn valid_path(&self, path: &[MoveHandle]) -> bool {
-        let mut nh = self.tree.root;
-        let mut data = M::State::root_data(&self.mcts);
-        for mh in path {
-            let mv = &self.tree.moves[*mh];
-            let n = self.tree.nodes[mv.parent].outgoing.len();
-            self.tree.nodes[nh]
-                .state
-                .make_move(&mut data, &mv.mov, n, &self.mcts);
-            match mv.child {
-                // Descend known moves.
-                Some(child_nh) => {
-                    if M::State::valid_data(&data, &self.mcts) {
-                        nh = child_nh;
-                    } else {
-                        return false;
-                    }
-                }
-                None => return false,
-            }
-        }
-        true
     }
     pub fn follow_path<R: Rng>(&mut self, path: &[Move<M>], rng: &mut R) -> Result<(), MCTSError> {
         let mut nh = self.tree.root;
