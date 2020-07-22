@@ -1021,10 +1021,14 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     .replace(MoveState::RegenerateRule(RegenerateRuleState::Start));
             }
             Move::RegenerateThisRule(r) => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                self.spec
-                    .replace(MoveState::RegenerateRule(RegenerateRuleState::Rule(r)));
+                if self.trs.utrs.rules.len() <= r {
+                    self.label = StateLabel::Failed;
+                } else {
+                    self.path.push((mv.clone(), n));
+                    self.label = StateLabel::PartialRevision;
+                    self.spec
+                        .replace(MoveState::RegenerateRule(RegenerateRuleState::Rule(r)));
+                }
             }
             Move::RegenerateThisPlace(p) => {
                 self.path.push((mv.clone(), n));
@@ -1040,9 +1044,13 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                                 .max(rule.rhs.iter().map(|rhs| rhs.height()).max().unwrap_or(0));
                             let mut ps = Vec::with_capacity(max_height);
                             ps.push(p);
-                            self.spec.replace(MoveState::RegenerateRule(
-                                RegenerateRuleState::Place(r, ps),
-                            ));
+                            if rule.at(&ps).is_none() {
+                                self.label = StateLabel::Failed;
+                            } else {
+                                self.spec.replace(MoveState::RegenerateRule(
+                                    RegenerateRuleState::Place(r, ps),
+                                ));
+                            }
                         }
                     },
                     Some(MoveState::RegenerateRule(RegenerateRuleState::Place(r, mut ps))) => {
@@ -1071,9 +1079,14 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             }
                             Some(p) => {
                                 ps.push(p);
-                                self.spec.replace(MoveState::RegenerateRule(
-                                    RegenerateRuleState::Place(r, ps),
-                                ));
+                                let rule = &self.trs.utrs.rules[r];
+                                if rule.at(&ps).is_none() {
+                                    self.label = StateLabel::Failed;
+                                } else {
+                                    self.spec.replace(MoveState::RegenerateRule(
+                                        RegenerateRuleState::Place(r, ps),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -1098,23 +1111,29 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                                 ])
                             )
                         ];
-                        if let Ok(rule) = Rule::try_from(&new_context) {
-                            tryo![self, self.trs.append_clauses(vec![rule]).ok()];
-                            self.n += 1;
-                            self.path.push((mv.clone(), n));
-                            self.spec = None;
-                            self.label = StateLabel::CompleteRevision;
-                        } else {
-                            let tp = arg_tps[0];
-                            let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
-                            new_arg_tps.extend_from_slice(&arg_tps[1..]);
-                            self.path.push((mv.clone(), n));
-                            self.label = StateLabel::PartialRevision;
-                            self.spec.replace(MoveState::SampleRule(
-                                Box::new(new_context),
-                                env,
-                                new_arg_tps,
-                            ));
+                        match Rule::try_from(&new_context) {
+                            Ok(rule) => {
+                                tryo![self, self.trs.append_clauses(vec![rule]).ok()];
+                                self.n += 1;
+                                self.path.push((mv.clone(), n));
+                                self.spec = None;
+                                self.label = StateLabel::CompleteRevision;
+                            }
+                            Err(v) if v.is_empty() => {
+                                self.label = StateLabel::Failed;
+                            }
+                            _ => {
+                                let tp = arg_tps[0];
+                                let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
+                                new_arg_tps.extend_from_slice(&arg_tps[1..]);
+                                self.path.push((mv.clone(), n));
+                                self.label = StateLabel::PartialRevision;
+                                self.spec.replace(MoveState::SampleRule(
+                                    Box::new(new_context),
+                                    env,
+                                    new_arg_tps,
+                                ));
+                            }
                         }
                     }
                     Some(MoveState::RegenerateRule(RegenerateRuleState::Term(
@@ -1135,27 +1154,33 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             SituatedAtom::new(atom, self.trs.lex.signature())
                         ]);
                         let new_context = tryo![self, context.replace(&place, subcontext)];
-                        if let Ok(rule) = Rule::try_from(&new_context) {
-                            tryo![self, self.trs.utrs.remove_idx(r).ok()];
-                            tryo![self, self.trs.utrs.insert_idx(r, rule).ok()];
-                            self.n += 1;
-                            self.path.push((mv.clone(), n));
-                            self.spec = None;
-                            self.label = StateLabel::CompleteRevision;
-                        } else {
-                            let tp = arg_tps[0];
-                            let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
-                            new_arg_tps.extend_from_slice(&arg_tps[1..]);
-                            self.path.push((mv.clone(), n));
-                            self.label = StateLabel::PartialRevision;
-                            self.spec.replace(MoveState::RegenerateRule(
-                                RegenerateRuleState::Term(
-                                    r,
-                                    Box::new(new_context),
-                                    env,
-                                    new_arg_tps,
-                                ),
-                            ));
+                        match Rule::try_from(&new_context) {
+                            Ok(rule) => {
+                                tryo![self, self.trs.utrs.remove_idx(r).ok()];
+                                tryo![self, self.trs.utrs.insert_idx(r, rule).ok()];
+                                self.n += 1;
+                                self.path.push((mv.clone(), n));
+                                self.spec = None;
+                                self.label = StateLabel::CompleteRevision;
+                            }
+                            Err(v) if v.is_empty() => {
+                                self.label = StateLabel::Failed;
+                            }
+                            _ => {
+                                let tp = arg_tps[0];
+                                let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
+                                new_arg_tps.extend_from_slice(&arg_tps[1..]);
+                                self.path.push((mv.clone(), n));
+                                self.label = StateLabel::PartialRevision;
+                                self.spec.replace(MoveState::RegenerateRule(
+                                    RegenerateRuleState::Term(
+                                        r,
+                                        Box::new(new_context),
+                                        env,
+                                        new_arg_tps,
+                                    ),
+                                ));
+                            }
                         }
                     }
                     ref x => panic!("* MoveState doesn't match Move: {:?}", x),
