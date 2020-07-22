@@ -10,8 +10,8 @@ use rand::prelude::{Rng, SliceRandom};
 use std::{cmp::Ordering, collections::HashMap, convert::TryFrom, hash::Hash};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
 use trs::{
-    Composition, Datum, Env, Eval, Hypothesis, Lexicon, ModelParams, ProbabilisticModel, Recursion,
-    Schedule, Variablization, TRS,
+    Composition, Datum, Env, Lexicon, ModelParams, Recursion, Schedule, SingleLikelihood,
+    Variablization, TRS,
 };
 use utils::logsumexp;
 
@@ -174,17 +174,14 @@ pub struct MCTSObj<'ctx> {
     pub time: f64,
     pub count: usize,
     pub moves: Vec<Move<'ctx>>,
-    pub lprior: f64,
-    pub llikelihood: f64,
-    pub lposterior: f64,
-    pub generalizes: bool,
+    pub ln_search_prior: f64,
+    pub ln_search_likelihood: f64,
+    pub ln_search_posterior: f64,
+    pub ln_predict_prior: f64,
+    pub ln_predict_likelihood: f64,
+    pub ln_predict_posterior: f64,
 }
 
-pub struct MCTSModel<'a, 'b> {
-    params: ModelParams,
-    evals: HashMap<&'b Datum, Eval>,
-    phantom: std::marker::PhantomData<TRS<'a, 'b>>,
-}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TrueState<'ctx, 'b> {
@@ -195,42 +192,29 @@ pub struct TrueState<'ctx, 'b> {
     label: StateLabel,
 }
 
-impl<'a, 'b> MCTSModel<'a, 'b> {
-    pub fn new(params: ModelParams) -> Self {
-        MCTSModel {
-            params,
-            evals: HashMap::new(),
-            phantom: std::marker::PhantomData,
-        }
-    }
-    pub fn generalizes(&self, data: &[&Datum]) -> bool {
-        data.iter().all(|datum| {
-            self.evals
-                .get(datum)
-                .map(|eval| eval.generalizes())
-                .unwrap_or(false)
-        })
-    }
-}
 
 impl<'ctx> MCTSObj<'ctx> {
     pub fn new(
         time: f64,
         count: usize,
         moves: Vec<Move<'ctx>>,
-        lprior: f64,
-        llikelihood: f64,
-        lposterior: f64,
-        generalizes: bool,
+        ln_search_prior: f64,
+        ln_search_likelihood: f64,
+        ln_search_posterior: f64,
+        ln_predict_prior: f64,
+        ln_predict_likelihood: f64,
+        ln_predict_posterior: f64,
     ) -> Self {
         MCTSObj {
             time,
             count,
             moves,
-            lprior,
-            llikelihood,
-            lposterior,
-            generalizes,
+            ln_search_prior,
+            ln_search_likelihood,
+            ln_search_posterior,
+            ln_predict_prior,
+            ln_predict_likelihood,
+            ln_predict_posterior,
         }
     }
     pub fn play<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> Option<TRS<'ctx, 'b>> {
@@ -240,7 +224,7 @@ impl<'ctx> MCTSObj<'ctx> {
         for mv in &self.moves {
             // Note: providing bogus count, since we don't care.
             state.make_move(mv, 1, mcts.data);
-            if let StateLabel::Failed = state.label {
+            if StateLabel::Failed == state.label {
                 return None;
             }
         }
@@ -287,36 +271,6 @@ impl std::ops::IndexMut<TerminalHandle> for Arena<Terminal> {
     }
 }
 
-impl<'ctx, 'b> ProbabilisticModel for MCTSModel<'ctx, 'b> {
-    type Object = TrueState<'ctx, 'b>;
-    type Datum = &'b Datum;
-    fn log_prior(&mut self, object: &Self::Object) -> f64 {
-        object.path.iter().fold(0.0, |partial_prior, (_, n)| {
-            partial_prior - 2f64.ln() - (*n as f64).ln()
-        })
-    }
-    fn single_log_likelihood<DataIter>(
-        &mut self,
-        object: &Self::Object,
-        data: &Self::Datum,
-    ) -> f64 {
-        object
-            .trs
-            .single_log_likelihood(data, self.params.likelihood)
-            .likelihood()
-    }
-    fn log_likelihood(&mut self, object: &Self::Object, data: &[Self::Datum]) -> f64 {
-        object
-            .trs
-            .log_likelihood(data, &mut self.evals, self.params.likelihood)
-    }
-    fn log_posterior(&mut self, object: &Self::Object, data: &[Self::Datum]) -> (f64, f64, f64) {
-        let lprior = self.log_prior(object);
-        let llikelihood = self.log_likelihood(object, data);
-        let lposterior = lprior * self.params.p_temp + llikelihood * self.params.l_temp;
-        (lprior, llikelihood, lposterior)
-    }
-}
 
 pub fn relative_mass_uct(parent: &QN, child: &QN) -> f64 {
     let q = if child.q == std::f64::NEG_INFINITY && parent.q == std::f64::NEG_INFINITY {
@@ -1308,18 +1262,38 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
 
         let mut truestate = state.clone();
         truestate.trs.utrs.canonicalize(&mut HashMap::new());
-        let model = MCTSModel::new(self.model);
-        let mut hypothesis = Hypothesis::new(truestate, model);
-        hypothesis.log_posterior(self.data);
-        let generalizes = hypothesis.model.generalizes(self.data);
+        let meta_program_prior = truestate.path.iter().fold(0.0, |partial_prior, (_, n)| {
+            partial_prior - (*n as f64).ln()
+        });
+        let trs_prior = truestate.trs.log_prior(self.model.prior);
+        let mut l1 = self.model.likelihood;
+        l1.single = SingleLikelihood::Generalization(0.001);
+        let soft_generalization_likelihood = truestate.trs.log_likelihood(self.data, l1);
+        let mut l2 = self.model.likelihood;
+        l2.single = SingleLikelihood::Generalization(0.0);
+        let hard_generalization_likelihood = truestate.trs.log_likelihood(self.data, l2);
+        let accuracy_likelihood = truestate
+            .trs
+            .log_likelihood(self.data, self.model.likelihood);
+        let ln_search_prior = logsumexp(&[meta_program_prior - 2f64.ln(), trs_prior - 2f64.ln()]);
+        let ln_prediction_prior =
+            trs_prior + logsumexp(&[meta_program_prior - 2f64.ln(), trs_prior - 2f64.ln()]);
+        let ln_search_likelihood = accuracy_likelihood + soft_generalization_likelihood;
+        let ln_prediction_likelihood = accuracy_likelihood + hard_generalization_likelihood;
+        let ln_search_posterior =
+            ln_search_prior * self.model.p_temp + ln_search_likelihood * self.model.l_temp;
+        let ln_prediction_posterior =
+            ln_prediction_prior * self.model.p_temp + ln_prediction_likelihood * self.model.l_temp;
         let object = MCTSObj::new(
             time,
             count,
             moves,
-            hypothesis.lprior,
-            hypothesis.llikelihood,
-            hypothesis.lposterior,
-            generalizes,
+            ln_search_prior,
+            ln_search_likelihood,
+            ln_search_posterior,
+            ln_prediction_prior,
+            ln_prediction_likelihood,
+            ln_prediction_posterior,
         );
         HypothesisHandle(self.hypotheses.insert(Box::new(object)))
     }
@@ -1544,11 +1518,11 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         mcts: &mut TRSMCTS<'a, 'b>,
     ) -> Self::StateEvaluation {
         match *state {
-            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
+            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].ln_search_posterior,
             MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
                 PlayoutState::Untried => panic!("shouldn't reread untried playout"),
                 PlayoutState::Failed => std::f64::NEG_INFINITY,
-                PlayoutState::Success(hh) => mcts.hypotheses[hh].lposterior,
+                PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_search_posterior,
             },
         }
     }
@@ -1560,17 +1534,17 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         rng: &mut R,
     ) -> Self::StateEvaluation {
         let score = match *state {
-            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].lposterior,
+            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].ln_search_posterior,
             MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
                 // Note: the DAG creates multiple nodes sharing the same state.
                 // They share a single playout, which may not be correct.
                 PlayoutState::Failed => std::f64::NEG_INFINITY,
-                PlayoutState::Success(hh) => mcts.hypotheses[hh].lposterior,
+                PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_search_posterior,
                 PlayoutState::Untried => match data.playout(mcts, rng) {
                     Some(state) => {
                         let hh = mcts.make_hypothesis(&state);
                         mcts.revisions[rh].playout = PlayoutState::Success(hh);
-                        mcts.hypotheses[hh].lposterior
+                        mcts.hypotheses[hh].ln_search_posterior
                     }
                     None => {
                         mcts.revisions[rh].playout = PlayoutState::Failed;

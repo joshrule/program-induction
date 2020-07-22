@@ -330,6 +330,8 @@ pub enum SingleLikelihood {
         t_max: usize,
         d_max: usize,
     },
+    // Reward generalization.
+    Generalization(f64),
 }
 
 // TODO: FIXME - I'm broken because TRSs are no longer thread safe.
