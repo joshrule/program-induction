@@ -1123,6 +1123,10 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                                 self.label = StateLabel::Failed;
                             }
                             _ => {
+                                if !env.contains(atom) {
+                                    self.label = StateLabel::Failed;
+                                    return;
+                                }
                                 let tp = arg_tps[0];
                                 let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                                 new_arg_tps.extend_from_slice(&arg_tps[1..]);
@@ -1167,6 +1171,10 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                                 self.label = StateLabel::Failed;
                             }
                             _ => {
+                                if !env.contains(atom) {
+                                    self.label = StateLabel::Failed;
+                                    return;
+                                }
                                 let tp = arg_tps[0];
                                 let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                                 new_arg_tps.extend_from_slice(&arg_tps[1..]);

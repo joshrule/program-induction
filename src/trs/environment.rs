@@ -138,6 +138,13 @@ impl<'ctx, 'lex> Env<'ctx, 'lex> {
             .unique()
             .collect_vec()
     }
+    /// Tests whether the `Env` is aware of a given `Atom`.
+    pub fn contains(&self, atom: Atom) -> bool {
+        match atom {
+            Atom::Operator(Operator(id)) => id <= self.tps.len(),
+            Atom::Variable(Variable(id)) => id <= self.vars.len(),
+        }
+    }
     /// Infer the `TypeSchema` associated with an `Operator`.
     fn op_tp(&self, op: Operator) -> Result<(Schema<'ctx>, Option<usize>), TypeError<'ctx>> {
         let o_id = op.id();
