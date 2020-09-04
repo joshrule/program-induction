@@ -16,6 +16,17 @@ pub(crate) fn logsumexp(lps: &[f64]) -> f64 {
     }
 }
 
+pub(crate) fn logdiffexp(x: f64, y: f64) -> f64 {
+    if x == y {
+        f64::NEG_INFINITY
+    } else {
+        let max = x.max(y);
+        let xprime = x - max;
+        let yprime = y - max;
+        (xprime.exp() - yprime.exp()).ln() + max
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64>> {
     let (non_inf_min, max) = lps

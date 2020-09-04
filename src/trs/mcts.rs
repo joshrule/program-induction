@@ -13,7 +13,7 @@ use trs::{
     Composition, Datum, Env, Lexicon, ModelParams, Recursion, Schedule, SingleLikelihood,
     Variablization, TRS,
 };
-use utils::logsumexp;
+use utils::{logdiffexp, logsumexp};
 
 macro_rules! r#tryo {
     ($state:ident, $expr:expr) => {
@@ -174,11 +174,11 @@ pub struct MCTSObj<'ctx> {
     pub time: f64,
     pub count: usize,
     pub moves: Vec<Move<'ctx>>,
+    pub ln_predict_meta: f64,
+    pub ln_predict_rest: f64,
     pub ln_search_prior: f64,
     pub ln_search_likelihood: f64,
     pub ln_search_posterior: f64,
-    pub ln_predict_prior: f64,
-    pub ln_predict_likelihood: f64,
     pub ln_predict_posterior: f64,
 }
 
@@ -198,23 +198,22 @@ impl<'ctx> MCTSObj<'ctx> {
         time: f64,
         count: usize,
         moves: Vec<Move<'ctx>>,
+        ln_predict_meta: f64,
+        ln_predict_rest: f64,
         ln_search_prior: f64,
         ln_search_likelihood: f64,
         ln_search_posterior: f64,
-        ln_predict_prior: f64,
-        ln_predict_likelihood: f64,
-        ln_predict_posterior: f64,
     ) -> Self {
         MCTSObj {
             time,
             count,
             moves,
+            ln_predict_meta,
+            ln_predict_rest,
             ln_search_prior,
             ln_search_likelihood,
             ln_search_posterior,
-            ln_predict_prior,
-            ln_predict_likelihood,
-            ln_predict_posterior,
+            ln_predict_posterior: std::f64::NAN,
         }
     }
     pub fn play<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> Option<TRS<'ctx, 'b>> {
@@ -303,8 +302,6 @@ pub fn max_thompson_sample<R: Rng>(
         Selection::MaxThompson { schedule, .. } => {
             let node = tree.node(child);
             let temp = schedule.temperature(node.stats.n as f64);
-            //println!("temp: {} from {}", temp, node.stats.n);
-            //println!("weights: {:?}", node.stats.scores);
             let raw_score = *node
                 .stats
                 .scores
@@ -1245,10 +1242,22 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         self.trial_start.replace(std::time::Instant::now());
     }
     pub fn finish_trial(&mut self) {
+        // Stop trial.
         self.search_time += self
             .trial_start
             .map(|ts| ts.elapsed().as_secs_f64())
             .unwrap_or(0.0);
+        // Get normalizing constant.
+        let ps = self
+            .hypotheses
+            .iter()
+            .map(|(_, x)| x.ln_predict_rest)
+            .collect_vec();
+        let z = logsumexp(&ps);
+        // Compute posterior.
+        for (_, x) in self.hypotheses.iter_mut() {
+            x.ln_predict_posterior = (x.ln_predict_rest - z) + x.ln_predict_meta;
+        }
     }
     pub fn rm_state(&mut self, state: &MCTSState) {
         match *state {
@@ -1308,25 +1317,27 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         let accuracy_likelihood = truestate
             .trs
             .log_likelihood(self.data, self.model.likelihood);
-        let ln_search_prior = logsumexp(&[meta_program_prior - 2f64.ln(), trs_prior - 2f64.ln()]);
-        let ln_prediction_prior =
-            trs_prior + logsumexp(&[meta_program_prior - 2f64.ln(), trs_prior - 2f64.ln()]);
+        // Noisy-OR
+        let ln_search_prior = logdiffexp(
+            logsumexp(&[meta_program_prior, trs_prior]),
+            meta_program_prior + trs_prior,
+        );
+        let ln_prediction_prior = trs_prior;
         let ln_search_likelihood = accuracy_likelihood + soft_generalization_likelihood;
         let ln_prediction_likelihood = accuracy_likelihood + hard_generalization_likelihood;
         let ln_search_posterior =
             ln_search_prior * self.model.p_temp + ln_search_likelihood * self.model.l_temp;
-        let ln_prediction_posterior =
+        let ln_predict_rest =
             ln_prediction_prior * self.model.p_temp + ln_prediction_likelihood * self.model.l_temp;
         let object = MCTSObj::new(
             time,
             count,
             moves,
+            meta_program_prior,
+            ln_predict_rest,
             ln_search_prior,
             ln_search_likelihood,
             ln_search_posterior,
-            ln_prediction_prior,
-            ln_prediction_likelihood,
-            ln_prediction_posterior,
         );
         HypothesisHandle(self.hypotheses.insert(Box::new(object)))
     }
