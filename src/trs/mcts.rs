@@ -174,11 +174,15 @@ pub struct MCTSObj<'ctx> {
     pub time: f64,
     pub count: usize,
     pub moves: Vec<Move<'ctx>>,
-    pub ln_predict_meta: f64,
-    pub ln_predict_rest: f64,
+    pub obj_meta: f64,
+    pub obj_trs: f64,
+    pub obj_acc: f64,
+    pub obj_gen: f64,
     pub ln_search_prior: f64,
     pub ln_search_likelihood: f64,
     pub ln_search_posterior: f64,
+    pub ln_predict_prior: f64,
+    pub ln_predict_likelihood: f64,
     pub ln_predict_posterior: f64,
 }
 
@@ -198,22 +202,31 @@ impl<'ctx> MCTSObj<'ctx> {
         time: f64,
         count: usize,
         moves: Vec<Move<'ctx>>,
-        ln_predict_meta: f64,
-        ln_predict_rest: f64,
+        obj_meta: f64,
+        obj_trs: f64,
+        obj_acc: f64,
+        obj_gen: f64,
         ln_search_prior: f64,
         ln_search_likelihood: f64,
         ln_search_posterior: f64,
+        ln_predict_prior: f64,
+        ln_predict_likelihood: f64,
+        ln_predict_posterior: f64,
     ) -> Self {
         MCTSObj {
             time,
             count,
             moves,
-            ln_predict_meta,
-            ln_predict_rest,
+            obj_meta,
+            obj_trs,
+            obj_acc,
+            obj_gen,
             ln_search_prior,
             ln_search_likelihood,
             ln_search_posterior,
-            ln_predict_posterior: std::f64::NAN,
+            ln_predict_prior,
+            ln_predict_likelihood,
+            ln_predict_posterior,
         }
     }
     pub fn play<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> Option<TRS<'ctx, 'b>> {
@@ -1247,17 +1260,6 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             .trial_start
             .map(|ts| ts.elapsed().as_secs_f64())
             .unwrap_or(0.0);
-        // Get normalizing constant.
-        let ps = self
-            .hypotheses
-            .iter()
-            .map(|(_, x)| x.ln_predict_rest)
-            .collect_vec();
-        let z = logsumexp(&ps);
-        // Compute posterior.
-        for (_, x) in self.hypotheses.iter_mut() {
-            x.ln_predict_posterior = (x.ln_predict_rest - z) + x.ln_predict_meta;
-        }
     }
     pub fn rm_state(&mut self, state: &MCTSState) {
         match *state {
@@ -1322,22 +1324,28 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             logsumexp(&[meta_program_prior, trs_prior]),
             meta_program_prior + trs_prior,
         );
-        let ln_prediction_prior = trs_prior;
         let ln_search_likelihood = accuracy_likelihood + soft_generalization_likelihood;
-        let ln_prediction_likelihood = accuracy_likelihood + hard_generalization_likelihood;
         let ln_search_posterior =
             ln_search_prior * self.model.p_temp + ln_search_likelihood * self.model.l_temp;
-        let ln_predict_rest =
-            ln_prediction_prior * self.model.p_temp + ln_prediction_likelihood * self.model.l_temp;
+        // Noisy-AND
+        let ln_predict_prior = trs_prior + meta_program_prior;
+        let ln_predict_likelihood = accuracy_likelihood + hard_generalization_likelihood;
+        let ln_predict_posterior =
+            ln_predict_prior * self.model.p_temp + ln_predict_likelihood * self.model.l_temp;
         let object = MCTSObj::new(
             time,
             count,
             moves,
             meta_program_prior,
-            ln_predict_rest,
+            trs_prior,
+            accuracy_likelihood,
+            hard_generalization_likelihood,
             ln_search_prior,
             ln_search_likelihood,
             ln_search_posterior,
+            ln_predict_prior,
+            ln_predict_likelihood,
+            ln_predict_posterior,
         );
         HypothesisHandle(self.hypotheses.insert(Box::new(object)))
     }
