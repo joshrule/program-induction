@@ -304,7 +304,7 @@ pub struct Likelihood {
     /// considers all depths.
     pub max_depth: Option<usize>,
     /// Additional parameters for the function used to compute the likelihood of a single datum.
-    single: SingleLikelihood,
+    pub single: SingleLikelihood,
 }
 
 /// Possible single likelihoods for a TRS-based probabilistic model.
