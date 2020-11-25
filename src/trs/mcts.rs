@@ -170,6 +170,7 @@ pub enum Selection {
     MaxThompson { schedule: Schedule, n_top: usize },
 }
 
+#[derive(Clone, PartialEq)]
 pub struct MCTSObj<'ctx> {
     pub time: f64,
     pub count: usize,
@@ -234,7 +235,7 @@ impl<'ctx> MCTSObj<'ctx> {
         let mut state = MCTSState::root_data(mcts);
         // Make each move, failing if necessary.
         for mv in &self.moves {
-            // Note: providing bogus count, since we don't care.
+            // Providing bogus count, since we don't care.
             state.make_move(mv, 1, mcts.data);
             if StateLabel::Failed == state.label {
                 return None;
@@ -243,6 +244,8 @@ impl<'ctx> MCTSObj<'ctx> {
         Some(state.trs)
     }
 }
+
+impl<'ctx> Eq for MCTSObj<'ctx> {}
 
 impl<'ctx> std::ops::Index<HypothesisHandle> for Arena<Box<MCTSObj<'ctx>>> {
     type Output = MCTSObj<'ctx>;
