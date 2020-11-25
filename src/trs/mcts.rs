@@ -1330,8 +1330,8 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         let ln_search_likelihood = accuracy_likelihood + soft_generalization_likelihood;
         let ln_search_posterior =
             ln_search_prior * self.model.p_temp + ln_search_likelihood * self.model.l_temp;
-        // Noisy-AND
-        let ln_predict_prior = trs_prior + meta_program_prior;
+        // After HL finds a meta-program, it doesn't care how it found it.
+        let ln_predict_prior = trs_prior;
         let ln_predict_likelihood = accuracy_likelihood + hard_generalization_likelihood;
         let ln_predict_posterior =
             ln_predict_prior * self.model.p_temp + ln_predict_likelihood * self.model.l_temp;
