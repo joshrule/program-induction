@@ -7,7 +7,7 @@ use mcts::{
 use polytype::atype::Ty;
 use rand::prelude::{Rng, SliceRandom};
 //use serde_json::Value;
-use std::{cmp::Ordering, collections::HashMap, convert::TryFrom, hash::Hash};
+use std::{cmp::Ordering, collections::HashMap, convert::TryFrom, f64::NEG_INFINITY, hash::Hash};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
 use trs::{
     Composition, Datum, Env, Lexicon, ModelParams, Recursion, Schedule, SingleLikelihood,
@@ -322,7 +322,7 @@ pub fn max_thompson_sample<R: Rng>(
                 .stats
                 .scores
                 .choose_weighted(rng, |x| (x / temp).exp())
-                .unwrap_or(&std::f64::NEG_INFINITY);
+                .unwrap_or(&NEG_INFINITY);
             raw_score / temp
         }
         x => panic!("in max_thompson_sample but Selection is {:?}", x),
@@ -498,7 +498,7 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for VNMax {
 impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNMean {
     fn new() -> Self {
         QNMean(QN {
-            q: std::f64::NEG_INFINITY,
+            q: NEG_INFINITY,
             n: 0.0,
         })
     }
@@ -514,7 +514,7 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNMean {
 impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNN {
     fn new() -> Self {
         QNN(QN {
-            q: std::f64::NEG_INFINITY,
+            q: NEG_INFINITY,
             n: 0.0,
         })
     }
@@ -527,7 +527,7 @@ impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNN {
 impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for QNMax {
     fn new() -> Self {
         QNMax(QN {
-            q: std::f64::NEG_INFINITY,
+            q: NEG_INFINITY,
             n: 0.0,
         })
     }
@@ -1248,7 +1248,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             hypotheses: Arena::new(),
             terminals: Arena::new(),
             revisions: Arena::new(),
-            best: std::f64::NEG_INFINITY,
+            best: NEG_INFINITY,
             search_time: 0.0,
             trial_start: None,
             count: 0,
@@ -1359,7 +1359,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         self.hypotheses.clear();
         self.terminals.clear();
         self.revisions.clear();
-        self.best = std::f64::NEG_INFINITY;
+        self.best = NEG_INFINITY;
         self.root = None;
     }
     pub fn root(&mut self) -> MCTSState {
@@ -1399,12 +1399,12 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     //        // Ensure our move is available.
     //        let available_moves = Revision::available_moves_inner(&trs, &spec, n, self);
     //        if !available_moves.contains(mv) {
-    //            return (None, std::f64::NEG_INFINITY);
+    //            return (None, NEG_INFINITY);
     //        }
     //        // Take the move and update the state accordingly.
     //        match Revision::make_move_inner(&mv, &spec, &self.data, &trs) {
     //            MoveResult::Failed => {
-    //                return (None, std::f64::NEG_INFINITY);
+    //                return (None, NEG_INFINITY);
     //            }
     //            MoveResult::Terminal => {
     //                ps.push(available_moves.len() as f64);
@@ -1424,7 +1424,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
     //        let prior = ps.into_iter().map(|p| -(2.0 * p).ln()).sum();
     //        (Some(trs), prior)
     //    } else {
-    //        (None, std::f64::NEG_INFINITY)
+    //        (None, NEG_INFINITY)
     //    }
     //}
     //fn update_playout(&mut self, rh: RevisionHandle) -> bool {
@@ -1576,7 +1576,7 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
             MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].ln_search_posterior,
             MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
                 PlayoutState::Untried => panic!("shouldn't reread untried playout"),
-                PlayoutState::Failed => std::f64::NEG_INFINITY,
+                PlayoutState::Failed => NEG_INFINITY,
                 PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_search_posterior,
             },
         }
@@ -1593,7 +1593,7 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
             MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
                 // Note: the DAG creates multiple nodes sharing the same state.
                 // They share a single playout, which may not be correct.
-                PlayoutState::Failed => std::f64::NEG_INFINITY,
+                PlayoutState::Failed => NEG_INFINITY,
                 PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_search_posterior,
                 PlayoutState::Untried => match data.playout(mcts, rng) {
                     Some(state) => {
@@ -1603,7 +1603,7 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                     }
                     None => {
                         mcts.revisions[rh].playout = PlayoutState::Failed;
-                        std::f64::NEG_INFINITY
+                        NEG_INFINITY
                     }
                 },
             },
