@@ -112,6 +112,7 @@ pub struct MoveInfo<M: MCTS> {
 pub enum MCTSError {
     MoveCreatedCycle,
     MoveFailed,
+    MoveNotFound,
     TreeExhausted,
     TreeAtMaxStates,
     TreeAtMaxDepth,
@@ -136,6 +137,7 @@ impl std::fmt::Display for MCTSError {
         match *self {
             MCTSError::MoveCreatedCycle => write!(f, "move created cycle"),
             MCTSError::MoveFailed => write!(f, "move failed"),
+            MCTSError::MoveNotFound => write!(f, "move not found"),
             MCTSError::TreeExhausted => write!(f, "tree exhausted"),
             MCTSError::TreeAtMaxStates => write!(f, "tree contains maximum number of states"),
             MCTSError::TreeAtMaxDepth => write!(f, "tree full to maximum depth"),
@@ -169,7 +171,9 @@ impl<M: MCTS> MCTSManager<M> {
                     | MCTSError::TreeAtMaxDepth => {
                         break;
                     }
-                    MCTSError::MoveFailed | MCTSError::MoveCreatedCycle => (),
+                    MCTSError::MoveFailed
+                    | MCTSError::MoveNotFound
+                    | MCTSError::MoveCreatedCycle => (),
                 },
             }
         }
@@ -347,7 +351,7 @@ impl<M: MCTS> SearchTree<M> {
         self.tree.moves.clear();
         self.set_root(root_state, rng);
     }
-    pub fn prune_except_top<I, R: Rng>(&mut self, paths: I, root_state: M::State, rng: &mut R)
+    pub fn prune_except<I, R: Rng>(&mut self, paths: I, root_state: M::State, rng: &mut R)
     where
         I: Iterator<Item = Vec<Move<M>>>,
     {
@@ -457,7 +461,11 @@ impl<M: MCTS> SearchTree<M> {
                 .find(|mh| self.tree.moves[**mh].mov == *mv)
                 .ok_or(MCTSError::MoveFailed)?;
             match self.expand_node(nh, mh, &mut data)? {
-                None => nh = self.tree.moves[mh].child.expect("inconsistent tree"),
+                None => {
+                    nh = self.tree.moves[mh]
+                        .child
+                        .ok_or(MCTSError::TreeInconsistent)?
+                }
                 Some(child_state) => {
                     let ph = self.tree.moves[mh].parent;
                     let depth = self.tree.depth(ph);
@@ -544,12 +552,16 @@ impl<M: MCTS> SearchTree<M> {
     ) -> Result<Option<M::State>, MCTSError> {
         let n = self.tree.nodes[nh].outgoing.len();
         let mv = &self.tree.moves[mh];
+        // We always take the move so `data` is up to date.
         self.tree.nodes[nh]
             .state
             .make_move(data, &mv.mov, n, &self.mcts);
         match mv.child {
             Some(_) => Ok(None),
-            None => Ok(M::State::make_state(&data, &mut self.mcts)),
+            None => match M::State::make_state(&data, &mut self.mcts) {
+                None => Err(MCTSError::MoveFailed),
+                x => Ok(x),
+            },
         }
     }
     fn update_tree<R: Rng>(

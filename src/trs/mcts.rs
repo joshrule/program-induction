@@ -187,7 +187,6 @@ pub struct MCTSObj<'ctx> {
     pub ln_predict_posterior: f64,
 }
 
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TrueState<'ctx, 'b> {
     trs: TRS<'ctx, 'b>,
@@ -196,7 +195,6 @@ pub struct TrueState<'ctx, 'b> {
     path: Vec<(Move<'ctx>, usize)>,
     label: StateLabel,
 }
-
 
 impl<'ctx> MCTSObj<'ctx> {
     pub fn new(
@@ -243,6 +241,27 @@ impl<'ctx> MCTSObj<'ctx> {
         }
         Some(state.trs)
     }
+    pub fn test_path<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> bool {
+        let mut state = MCTSState::root_data(mcts);
+        let trial = mcts.data.len() - 1;
+        for mv in &self.moves {
+            if state
+                .available_moves(mcts)
+                .iter()
+                .find(|available| *available == mv)
+                .is_some()
+            {
+                // Providing bogus count, since we don't care.
+                state.make_move(mv, 1, mcts.data);
+                if state.label == StateLabel::Failed {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl<'ctx> Eq for MCTSObj<'ctx> {}
@@ -285,7 +304,6 @@ impl std::ops::IndexMut<TerminalHandle> for Arena<Terminal> {
         &mut self[index.0]
     }
 }
-
 
 pub fn relative_mass_uct(parent: &QN, child: &QN) -> f64 {
     let q = if child.q == std::f64::NEG_INFINITY && parent.q == std::f64::NEG_INFINITY {
