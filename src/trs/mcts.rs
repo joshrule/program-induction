@@ -243,7 +243,6 @@ impl<'ctx> MCTSObj<'ctx> {
     }
     pub fn test_path<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> bool {
         let mut state = MCTSState::root_data(mcts);
-        let trial = mcts.data.len() - 1;
         for mv in &self.moves {
             if state
                 .available_moves(mcts)
