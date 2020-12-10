@@ -136,8 +136,8 @@ impl<'a, 'b> TRS<'a, 'b> {
                         let p_sample = env
                             .logprior_term(rhs, tp, atom_weights)
                             .unwrap_or(NEG_INFINITY);
-                        let p_rewrite = trace.rewrites_to(rhs, move |t1, t2| {
-                            UntypedTRS::p_list(t1, t2, dist, t_max, d_max, &sig)
+                        let p_rewrite = trace.rewrites_to(rhs, move |correct, predicted| {
+                            UntypedTRS::p_list(predicted, correct, dist, t_max, d_max, &sig)
                         });
                         Some(logsumexp(&[
                             alpha.ln() + p_sample,
