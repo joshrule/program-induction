@@ -41,6 +41,9 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
                 trs.remove_clauses(&old_rules).ok()?;
                 trs.remove_clauses(&new_rules).ok()?;
                 trs.prepend_clauses(new_rules).ok()?;
+                trs.utrs.lo = self.utrs.lo;
+                trs.utrs.hi = self.utrs.hi;
+                trs.bg_ops = self.bg_ops.clone();
                 Some(trs.smart_delete(0, n))
             }
         }

@@ -681,8 +681,12 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
     type Move = Move<'ctx>;
     type MoveList = Vec<Self::Move>;
     fn root_data(mcts: &TRSMCTS<'ctx, 'b>) -> Self::Data {
+        let mut trs = TRS::new_unchecked(&mcts.lexicon, mcts.deterministic, mcts.bg, vec![]);
+        trs.utrs.lo = mcts.lo;
+        trs.utrs.hi = mcts.hi;
+        trs.identify_symbols();
         TrueState {
-            trs: TRS::new_unchecked(&mcts.lexicon, mcts.deterministic, mcts.bg, vec![]),
+            trs,
             spec: None,
             n: 0,
             path: vec![],
@@ -1380,10 +1384,6 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         self.root = None;
     }
     pub fn root(&mut self) -> MCTSState {
-        let mut trs = TRS::new_unchecked(&self.lexicon, self.deterministic, self.bg, vec![]);
-        trs.utrs.lo = self.lo;
-        trs.utrs.hi = self.hi;
-        trs.identify_symbols();
         let state = Revision {
             playout: PlayoutState::Untried,
         };
