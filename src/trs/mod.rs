@@ -330,6 +330,13 @@ pub enum SingleLikelihood {
         t_max: usize,
         d_max: usize,
     },
+    // generative trace-based log-likelihood with prefix noise model: (1-p_prefix(d|h))
+    ListPrefix {
+        alpha: f64,
+        atom_weights: (f64, f64, f64, f64),
+        p_add: f64,
+        p_del: f64,
+    },
     // Reward generalization.
     Generalization(f64),
 }

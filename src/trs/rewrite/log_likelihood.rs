@@ -8,14 +8,15 @@ impl<'a, 'b> TRS<'a, 'b> {
     /// in [`term_rewriting::Trace`]s rooted at its LHSs.
     ///
     /// [`term_rewriting::Trace`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/trace/struct.Trace.html
+    // Taken from Equation 16 in Appendix B of (Piantadosi, Goodman, Tenenbaum, 2016).
     pub fn log_likelihood<'c>(&self, data: &[&'b Datum], likelihood: Likelihood) -> f64 {
         data.iter()
             .rev()
             .enumerate()
             .filter_map(|(i, datum)| {
-                let lweight = likelihood.decay.powi(i as i32).ln();
+                let weight = (1.0 + i as f64).powf(-likelihood.decay);
                 let llikelihood = self.single_log_likelihood(datum, likelihood)?;
-                Some(lweight + llikelihood)
+                Some(weight * llikelihood)
             })
             .sum()
     }
@@ -143,6 +144,38 @@ impl<'a, 'b> TRS<'a, 'b> {
                             alpha.ln() + p_sample,
                             (1.0 - alpha).ln() + p_rewrite,
                         ]))
+                    } else {
+                        Some(NEG_INFINITY)
+                    }
+                }
+                // trace-sensitive ll with string prefix noise model: (1-p_prefix(d|h))
+                SingleLikelihood::ListPrefix {
+                    alpha,
+                    atom_weights,
+                    p_add,
+                    p_del,
+                } => {
+                    if let Ok(mut env) = self.lex.infer_term(&datum.lhs) {
+                        env.invent = false;
+                        let list = self.lex.lex.ctx.intern_name("list");
+                        let tp = self.lex.lex.ctx.intern_tcon(list, &[]);
+                        let p_sample = env
+                            .logprior_term(rhs, tp, atom_weights)
+                            .unwrap_or(NEG_INFINITY);
+                        let n_chars = self.utrs.hi + 1 - self.utrs.lo;
+                        let p_rewrite = trace.rewrites_to(rhs, move |correct, predicted| {
+                            UntypedTRS::p_list_prefix(
+                                predicted,
+                                correct,
+                                p_add,
+                                p_del,
+                                n_chars as usize,
+                                &sig,
+                            )
+                        });
+                        let lp =
+                            logsumexp(&[alpha.ln() + p_sample, (1.0 - alpha).ln() + p_rewrite]);
+                        Some(lp)
                     } else {
                         Some(NEG_INFINITY)
                     }
