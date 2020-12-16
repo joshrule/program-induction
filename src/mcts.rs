@@ -357,7 +357,8 @@ impl<M: MCTS> SearchTree<M> {
     {
         self.reset(root_state, rng);
         for path in paths {
-            self.follow_path(&path, rng).ok();
+            self.follow_path(&path, rng)
+                .expect("FAILING `prune_except`");
         }
     }
     // TODO: reinstate
