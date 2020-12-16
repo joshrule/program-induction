@@ -60,6 +60,7 @@ pub enum PlayoutState<T: std::fmt::Debug + Copy> {
 }
 
 pub struct BestSoFarMoveEvaluator;
+pub struct BestInSubtreeMoveEvaluator;
 pub struct RescaledByBestMoveEvaluator;
 pub struct RelativeMassMoveEvaluator;
 pub struct ThompsonMoveEvaluator;
@@ -168,6 +169,7 @@ pub enum Selection {
     BestSoFarUCT,
     Thompson(u32),
     MaxThompson { schedule: Schedule, n_top: usize },
+    BestInSubtree(f64),
 }
 
 #[derive(Clone, PartialEq)]
@@ -315,27 +317,46 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
     exploit + explore
 }
 
-pub fn max_thompson_sample<R: Rng>(
-    _parent: NodeHandle,
-    child: NodeHandle,
+// Taken from Fleet
+pub fn best_in_subtree_uct<R: Rng>(
+    ph: NodeHandle,
+    ch: NodeHandle,
     tree: &TreeStore<TRSMCTS>,
     mcts: &TRSMCTS,
-    rng: &mut R,
+    _rng: &mut R,
 ) -> f64 {
     match mcts.params.selection {
-        Selection::MaxThompson { schedule, .. } => {
-            let node = tree.node(child);
-            let temp = schedule.temperature(node.stats.n as f64);
-            let raw_score = *node
-                .stats
-                .scores
-                .choose_weighted(rng, |x| (x / temp).exp())
-                .unwrap_or(&NEG_INFINITY);
-            raw_score / temp
+        Selection::BestInSubtree(c) => {
+            let parent = tree.node(ph).stats.0;
+            let child = tree.node(ch).stats.0;
+            // Fleet tests whether child.n == 0, but that's impossible under unexplored_first.
+            parent.q / child.q + c * (parent.n.ln() / child.n).sqrt()
         }
-        x => panic!("in max_thompson_sample but Selection is {:?}", x),
+        x => panic!("in `best_in_subtree_uct` but Selection is {:?}", x),
     }
 }
+
+//pub fn max_thompson_sample<R: Rng>(
+//    _parent: NodeHandle,
+//    child: NodeHandle,
+//    tree: &TreeStore<TRSMCTS>,
+//    mcts: &TRSMCTS,
+//    rng: &mut R,
+//) -> f64 {
+//    match mcts.params.selection {
+//        Selection::MaxThompson { schedule, .. } => {
+//            let node = tree.node(child);
+//            let temp = schedule.temperature(node.stats.n as f64);
+//            let raw_score = *node
+//                .stats
+//                .scores
+//                .choose_weighted(rng, |x| (x / temp).exp())
+//                .unwrap_or(&NEG_INFINITY);
+//            raw_score / temp
+//        }
+//        x => panic!("in max_thompson_sample but Selection is {:?}", x),
+//    }
+//}
 
 //pub fn thompson_sample<R: Rng>(
 //    parent: NodeHandle,
@@ -1225,7 +1246,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
 
 impl<'ctx, 'b> MCTS for TRSMCTS<'ctx, 'b> {
     type StateEval = MCTSStateEvaluator;
-    type MoveEval = MaxThompsonMoveEvaluator;
+    type MoveEval = BestInSubtreeMoveEvaluator;
     type State = MCTSState;
     fn max_depth(&self) -> usize {
         self.params.max_depth
@@ -1535,9 +1556,32 @@ where
 //    }
 //}
 
-impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MaxThompsonMoveEvaluator {
-    type NodeStatistics = VNMax;
-    fn choose<R: Rng, MoveIter>(
+// impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MaxThompsonMoveEvaluator {
+//     type NodeStatistics = VNMax;
+//     fn choose<R: Rng, MoveIter>(
+//         &self,
+//         moves: MoveIter,
+//         nh: NodeHandle,
+//         tree: &SearchTree<TRSMCTS<'a, 'b>>,
+//         rng: &mut R,
+//     ) -> Option<MoveHandle>
+//     where
+//         MoveIter: Iterator<Item = MoveHandle>,
+//     {
+//         unexplored_first(
+//             moves,
+//             nh,
+//             tree.mcts(),
+//             tree.tree(),
+//             max_thompson_sample,
+//             rng,
+//         )
+//     }
+// }
+
+impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for BestInSubtreeMoveEvaluator {
+    type NodeStatistics = QNMax;
+    fn choose<'c, R: Rng, MoveIter>(
         &self,
         moves: MoveIter,
         nh: NodeHandle,
@@ -1552,7 +1596,7 @@ impl<'a, 'b> MoveEvaluator<TRSMCTS<'a, 'b>> for MaxThompsonMoveEvaluator {
             nh,
             tree.mcts(),
             tree.tree(),
-            max_thompson_sample,
+            best_in_subtree_uct,
             rng,
         )
     }
