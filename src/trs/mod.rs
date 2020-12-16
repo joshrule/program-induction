@@ -187,7 +187,7 @@ pub enum Schedule {
     Linear(f64, f64),
     // Use a logarithmic cooling schedule.
     #[serde(alias = "logarithmic")]
-    Logarithmic(f64),
+    Logarithmic(f64, f64),
     // Use an exponential cooling schedule.
     #[serde(alias = "exponential")]
     Exponential(f64, f64),
@@ -202,7 +202,7 @@ impl Schedule {
             Schedule::None => 1.0,
             Schedule::Constant(c) => c,
             Schedule::Linear(t0, eta) => t0 - eta * t,
-            Schedule::Logarithmic(c) => c / (1.0 + t).ln(),
+            Schedule::Logarithmic(t0, alpha) => t0 / (1.0 + alpha * (1.0 + t).ln()),
             Schedule::Exponential(t0, alpha) => t0 * alpha.powf(t),
             Schedule::Inverse(t0, eta) => t0 / (1.0 + eta * t),
         }
