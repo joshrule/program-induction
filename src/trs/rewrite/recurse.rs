@@ -429,9 +429,6 @@ mod tests {
             )
                 .expect("trs");
             let transforms = trs.find_all_recursions();
-            for (t, p1, p2, tp) in &transforms {
-                println!("{} {:?} {:?} {}", t.pretty(&lex.signature()), p1, p2, tp);
-            }
             assert_eq!(77, transforms.len());
         })
     }
@@ -492,12 +489,8 @@ mod tests {
     //
     //        let sig = &lex.0.signature;
     //        let (old_rule, new_rules) = new_ruless.pop().unwrap();
-    //        println!("{}", old_rule.pretty(sig));
     //        assert_eq!(trs_str, format!("{};", old_rule.display(sig)));
     //
-    //        for (i, rule) in new_rules.iter().enumerate() {
-    //            println!("{}. {}", i, rule.pretty(sig));
-    //        }
     //        assert_eq!(9, new_rules.len());
     //        assert_eq!(
     //            "C (CONS (DECC (DIGIT 5) 4) []) = []",

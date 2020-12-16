@@ -65,7 +65,6 @@ mod tests {
             assert!(maybe_trs.is_ok());
 
             let new_trs = maybe_trs.unwrap();
-            println!("{}\n", new_trs);
             assert_eq!(new_trs.to_string(), ".(C .(.(CONS .(v0_ v1_)) NIL)) = NIL;\n.(C .(.(CONS .(v0_ v1_)) v2_)) = .(.(CONS .(v0_ v1_)) .(C v2_));");
         })
     }

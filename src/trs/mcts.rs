@@ -665,8 +665,8 @@ impl Revision {
         let playout = PlayoutState::Untried;
         Revision { playout }
     }
-    pub fn show(&self) {
-        println!("playout: {:?}", self.playout);
+    pub fn show(&self) -> String {
+        format!("{:?}", self.playout)
     }
 }
 

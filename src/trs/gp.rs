@@ -286,10 +286,8 @@ impl<'a, 'b> GP for TRSGP<'a, 'b> {
             // Check the parents.
             if self.check(name, &parents) {
                 // Take the move.
-                // println!("#     ### {:?}", name);
                 if let Ok(trss) = mv.take(&self, task, obs, rng, &parents, params, gpparams) {
                     self.add(name, parents.iter().map(|&t| t.clone()).collect());
-                    // println!("#     ### {} ", trss.len());
                     return trss;
                 }
             }

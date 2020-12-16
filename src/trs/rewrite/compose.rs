@@ -215,11 +215,6 @@ mod tests {
             ).expect("trs");
             let compositions = trs.find_all_compositions();
 
-            let sig = lex.signature();
-            for (i, (t, p1, p2, tp)) in compositions.iter().enumerate() {
-                println!("{}. {} {:?} {:?} {}", i, t.pretty(&sig), p1, p2, tp);
-            }
-
             assert_eq!(6, compositions.len());
         })
     }
@@ -242,9 +237,6 @@ mod tests {
                 .collect::<Option<Vec<_>>>()
                 .expect("trss");
 
-            for (i, trs) in trss.iter().enumerate() {
-                println!("{}.\n{}\n", i, trs);
-            }
             assert_eq!(6, trss.len());
         })
     }

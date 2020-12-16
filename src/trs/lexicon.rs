@@ -285,7 +285,6 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///     let mut rng = thread_rng();
     ///     for i in 0..50 {
     ///         let term = lex.sample_term(&schema, params, true, &mut rng).unwrap();
-    ///         println!("{}. {}", i, term.pretty(&lex.signature()));
     ///     }
     /// })
     /// ```
@@ -387,13 +386,8 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///// # use polytype::atype::{Variable as TVar, TypeSchema, with_ctx};
     ///// with_ctx(32, |ctx| {
     /////     let mut lex = parse_lexicon("id/0: t1. t1 -> t1; ./2: t1. t2. (t1 -> t2) -> t1 -> t2;", &ctx).expect("lex");
-    /////     println!("lex:\n{}", lex);
     /////     let schema = ctx.intern_monotype(ctx.intern_tvar(TVar(lex.lex.to_mut().src.fresh())));
-    /////     println!("schema: {}", schema);
     /////     let rules: Vec<_> = lex.enumerate_rules(&schema, GenerationLimit::TermSize(3), true).collect();
-    /////     for rule in &rules {
-    /////         println!("{}", rule.pretty(&lex.lex.sig));
-    /////     }
     /////     assert_eq!(rules.len(), 18);
     ///// })
     ///// ```
@@ -430,7 +424,6 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///     let mut rng = thread_rng();
     ///     for i in 0..50 {
     ///         let rule = lex.sample_rule(&schema, params, true, &mut rng).unwrap();
-    ///         println!("{}. {}", i, rule.pretty(&lex.signature()));
     ///     }
     /// })
     /// ```
@@ -459,7 +452,6 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///     while rules.len() < 50 {
     ///         if let Ok(rule) = lex.sample_rule(&schema, params, false, &mut rng) {
     ///             rules.push(rule.pretty(&lex.signature()));
-    ///             println!("{}", rule.pretty(&lex.signature()));
     ///         }
     ///     }
     ///     assert!(rules.contains(&"> = equal".to_string()));
@@ -637,7 +629,6 @@ impl<'ctx, 'lex> Lexicon<'ctx, 'lex> {
     ///         results.push((string, lp));
     ///     }
     ///     results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    ///     results.iter().for_each(|(s,p)| println!("{}: {}", p, s));
     /// })
     /// ```
     pub fn logprior_utrs<F>(
