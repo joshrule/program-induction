@@ -169,7 +169,7 @@ pub enum Selection {
     BestSoFarUCT,
     Thompson(u32),
     MaxThompson { schedule: Schedule, n_top: usize },
-    BestInSubtree(f64),
+    BestInSubtree(f64, f64),
 }
 
 #[derive(Clone, PartialEq)]
@@ -326,11 +326,15 @@ pub fn best_in_subtree_uct<R: Rng>(
     _rng: &mut R,
 ) -> f64 {
     match mcts.params.selection {
-        Selection::BestInSubtree(c) => {
+        Selection::BestInSubtree(c, factor) => {
+            let scale = match tree.mv(tree.node(ch).incoming.unwrap()).mov {
+                Move::Recurse(None) | Move::Compose(None) | Move::Variablize(None) => factor,
+                _ => 1.0,
+            };
             let parent = tree.node(ph).stats.0;
             let child = tree.node(ch).stats.0;
             // Fleet tests whether child.n == 0, but that's impossible under unexplored_first.
-            parent.q / child.q + c * (parent.n.ln() / child.n).sqrt()
+            parent.q / child.q + scale * c * (parent.n.ln() / child.n).sqrt()
         }
         x => panic!("in `best_in_subtree_uct` but Selection is {:?}", x),
     }
