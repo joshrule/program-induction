@@ -5,6 +5,7 @@ use rand::{
 };
 use std::{cmp, f64, iter::repeat};
 
+#[allow(dead_code)]
 pub(crate) fn logsumexp(lps: &[f64]) -> f64 {
     let largest = lps.iter().fold(f64::NEG_INFINITY, |acc, lp| acc.max(*lp));
     if largest == f64::NEG_INFINITY {
@@ -15,6 +16,7 @@ pub(crate) fn logsumexp(lps: &[f64]) -> f64 {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn logdiffexp(x: f64, y: f64) -> f64 {
     if x == y {
         f64::NEG_INFINITY
