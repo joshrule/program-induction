@@ -13,7 +13,7 @@ use trs::{
     Composition, Datum, Env, Lexicon, ModelParams, Recursion, Schedule, SingleLikelihood,
     Variablization, TRS,
 };
-use utils::{logdiffexp, logsumexp};
+use utils::logsumexp;
 
 macro_rules! r#tryo {
     ($state:ident, $expr:expr) => {
@@ -175,16 +175,13 @@ pub struct MCTSObj<'ctx> {
     pub time: f64,
     pub count: usize,
     pub moves: Vec<Move<'ctx>>,
-    pub obj_meta: f64,
-    pub obj_trs: f64,
-    pub obj_acc: f64,
-    pub obj_gen: f64,
-    pub ln_search_prior: f64,
-    pub ln_search_likelihood: f64,
-    pub ln_search_posterior: f64,
-    pub ln_predict_prior: f64,
-    pub ln_predict_likelihood: f64,
-    pub ln_predict_posterior: f64,
+    pub ln_meta: f64,
+    pub ln_trs: f64,
+    pub ln_acc: f64,
+    pub ln_wf: f64,
+    pub ln_prior: f64,
+    pub ln_likelihood: f64,
+    pub ln_posterior: f64,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -201,31 +198,25 @@ impl<'ctx> MCTSObj<'ctx> {
         time: f64,
         count: usize,
         moves: Vec<Move<'ctx>>,
-        obj_meta: f64,
-        obj_trs: f64,
-        obj_acc: f64,
-        obj_gen: f64,
-        ln_search_prior: f64,
-        ln_search_likelihood: f64,
-        ln_search_posterior: f64,
-        ln_predict_prior: f64,
-        ln_predict_likelihood: f64,
-        ln_predict_posterior: f64,
+        ln_meta: f64,
+        ln_trs: f64,
+        ln_acc: f64,
+        ln_wf: f64,
+        ln_prior: f64,
+        ln_likelihood: f64,
+        ln_posterior: f64,
     ) -> Self {
         MCTSObj {
             time,
             count,
             moves,
-            obj_meta,
-            obj_trs,
-            obj_acc,
-            obj_gen,
-            ln_search_prior,
-            ln_search_likelihood,
-            ln_search_posterior,
-            ln_predict_prior,
-            ln_predict_likelihood,
-            ln_predict_posterior,
+            ln_meta,
+            ln_trs,
+            ln_acc,
+            ln_wf,
+            ln_prior,
+            ln_likelihood,
+            ln_posterior,
         }
     }
     pub fn play<'b>(&self, mcts: &TRSMCTS<'ctx, 'b>) -> Option<TRS<'ctx, 'b>> {
@@ -1330,46 +1321,31 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
 
         let mut truestate = state.clone();
         truestate.trs.utrs.canonicalize(&mut HashMap::new());
-        let meta_program_prior = truestate.path.iter().fold(0.0, |partial_prior, (_, n)| {
+        let ln_meta = truestate.path.iter().fold(0.0, |partial_prior, (_, n)| {
             partial_prior - (*n as f64).ln()
         });
-        let trs_prior = truestate.trs.log_prior(self.model.prior);
-        let mut l1 = self.model.likelihood;
-        l1.single = SingleLikelihood::Generalization(0.001);
-        let soft_generalization_likelihood = truestate.trs.log_likelihood(self.data, l1);
+        let ln_trs = truestate.trs.log_prior(self.model.prior);
         let mut l2 = self.model.likelihood;
         l2.single = SingleLikelihood::Generalization(0.0);
-        let hard_generalization_likelihood = truestate.trs.log_likelihood(self.data, l2);
-        let accuracy_likelihood = truestate
+        let ln_wf = truestate.trs.log_likelihood(self.data, l2);
+        let ln_acc = truestate
             .trs
             .log_likelihood(self.data, self.model.likelihood);
-        // Noisy-OR
-        let ln_search_prior = logdiffexp(
-            logsumexp(&[meta_program_prior, trs_prior]),
-            meta_program_prior + trs_prior,
-        );
-        let ln_search_likelihood = accuracy_likelihood + soft_generalization_likelihood;
-        let ln_search_posterior =
-            ln_search_prior * self.model.p_temp + ln_search_likelihood * self.model.l_temp;
         // After HL finds a meta-program, it doesn't care how it found it.
-        let ln_predict_prior = trs_prior;
-        let ln_predict_likelihood = accuracy_likelihood + hard_generalization_likelihood;
-        let ln_predict_posterior =
-            ln_predict_prior * self.model.p_temp + ln_predict_likelihood * self.model.l_temp;
+        let ln_prior = ln_trs;
+        let ln_likelihood = ln_acc + ln_wf;
+        let ln_posterior = ln_prior * self.model.p_temp + ln_likelihood * self.model.l_temp;
         let object = MCTSObj::new(
             time,
             count,
             moves,
-            meta_program_prior,
-            trs_prior,
-            accuracy_likelihood,
-            hard_generalization_likelihood,
-            ln_search_prior,
-            ln_search_likelihood,
-            ln_search_posterior,
-            ln_predict_prior,
-            ln_predict_likelihood,
-            ln_predict_posterior,
+            ln_meta,
+            ln_trs,
+            ln_acc,
+            ln_wf,
+            ln_prior,
+            ln_likelihood,
+            ln_posterior,
         );
         HypothesisHandle(self.hypotheses.insert(Box::new(object)))
     }
@@ -1590,11 +1566,11 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         mcts: &mut TRSMCTS<'a, 'b>,
     ) -> Self::StateEvaluation {
         match *state {
-            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].ln_search_posterior,
+            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].ln_posterior,
             MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
                 PlayoutState::Untried => panic!("shouldn't reread untried playout"),
                 PlayoutState::Failed => NEG_INFINITY,
-                PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_search_posterior,
+                PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_posterior,
             },
         }
     }
@@ -1606,17 +1582,17 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
         rng: &mut R,
     ) -> Self::StateEvaluation {
         let score = match *state {
-            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].ln_search_posterior,
+            MCTSState::Terminal(th) => mcts.hypotheses[mcts.terminals[th].trs].ln_posterior,
             MCTSState::Revision(rh) => match mcts.revisions[rh].playout {
                 // Note: the DAG creates multiple nodes sharing the same state.
                 // They share a single playout, which may not be correct.
                 PlayoutState::Failed => NEG_INFINITY,
-                PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_search_posterior,
+                PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_posterior,
                 PlayoutState::Untried => match data.playout(mcts, rng) {
                     Some(state) => {
                         let hh = mcts.make_hypothesis(&state);
                         mcts.revisions[rh].playout = PlayoutState::Success(hh);
-                        mcts.hypotheses[hh].ln_search_posterior
+                        mcts.hypotheses[hh].ln_posterior
                     }
                     None => {
                         mcts.revisions[rh].playout = PlayoutState::Failed;
