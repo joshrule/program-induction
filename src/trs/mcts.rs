@@ -942,18 +942,30 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.label = StateLabel::Terminal;
             }
             Move::Generalize => {
-                self.trs = tryo![self, self.trs.generalize().ok()];
-                self.n += 1;
-                self.path.push((mv.clone(), n));
-                self.spec = None;
-                self.label = StateLabel::CompleteRevision;
+                let trs = tryo![self, self.trs.generalize().ok()];
+                if self.trs != trs {
+                    self.trs = trs;
+                    self.n += 1;
+                    self.path.push((mv.clone(), n));
+                    self.spec = None;
+                    self.label = StateLabel::CompleteRevision;
+                } else {
+                    self.label = StateLabel::Failed;
+                    return;
+                }
             }
             Move::AntiUnify => {
-                self.trs = tryo![self, self.trs.lgg().ok()];
-                self.n += 1;
-                self.path.push((mv.clone(), n));
-                self.spec = None;
-                self.label = StateLabel::CompleteRevision;
+                let trs = tryo![self, self.trs.lgg().ok()];
+                if self.trs != trs {
+                    self.trs = trs;
+                    self.n += 1;
+                    self.path.push((mv.clone(), n));
+                    self.spec = None;
+                    self.label = StateLabel::CompleteRevision;
+                } else {
+                    self.label = StateLabel::Failed;
+                    return;
+                }
             }
             Move::Compose(None) => {
                 self.path.push((mv.clone(), n));
@@ -961,11 +973,17 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.spec.replace(MoveState::Compose);
             }
             Move::Compose(Some(ref composition)) => {
-                self.trs = tryo![self, self.trs.compose_by(composition)];
-                self.n += 1;
-                self.path.push((mv.clone(), n));
-                self.spec = None;
-                self.label = StateLabel::CompleteRevision;
+                let trs = tryo![self, self.trs.compose_by(composition)];
+                if self.trs != trs {
+                    self.trs = trs;
+                    self.n += 1;
+                    self.path.push((mv.clone(), n));
+                    self.spec = None;
+                    self.label = StateLabel::CompleteRevision;
+                } else {
+                    self.label = StateLabel::Failed;
+                    return;
+                }
             }
             Move::Recurse(None) => {
                 self.path.push((mv.clone(), n));
@@ -973,11 +991,17 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 self.spec.replace(MoveState::Recurse);
             }
             Move::Recurse(Some(ref recursion)) => {
-                self.trs = tryo![self, self.trs.recurse_by(recursion)];
-                self.n += 1;
-                self.path.push((mv.clone(), n));
-                self.spec = None;
-                self.label = StateLabel::CompleteRevision;
+                let trs = tryo![self, self.trs.recurse_by(recursion)];
+                if self.trs != trs {
+                    self.trs = trs;
+                    self.n += 1;
+                    self.path.push((mv.clone(), n));
+                    self.spec = None;
+                    self.label = StateLabel::CompleteRevision;
+                } else {
+                    self.label = StateLabel::Failed;
+                    return;
+                }
             }
             Move::Variablize(None) => {
                 self.path.push((mv.clone(), n));
@@ -995,11 +1019,17 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     self.trs.apply_variablization(&v.1, &v.2, &clauses[v.0])
                 ];
                 // TODO: remove clone
-                self.trs = tryo![self, self.trs.clone().adopt_rules(&mut clauses)];
-                self.n += 1;
-                self.path.push((mv.clone(), n));
-                self.spec = None;
-                self.label = StateLabel::CompleteRevision;
+                let trs = tryo![self, self.trs.clone().adopt_rules(&mut clauses)];
+                if self.trs != trs {
+                    self.trs = trs;
+                    self.n += 1;
+                    self.path.push((mv.clone(), n));
+                    self.spec = None;
+                    self.label = StateLabel::CompleteRevision;
+                } else {
+                    self.label = StateLabel::Failed;
+                    return;
+                }
             }
             Move::DeleteRule(None) => {
                 self.path.push((mv.clone(), n));
@@ -1220,6 +1250,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             }
                             Err(v) if v.is_empty() => {
                                 self.label = StateLabel::Failed;
+                                return;
                             }
                             _ => {
                                 if !env.contains(atom) {
