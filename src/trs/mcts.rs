@@ -1480,9 +1480,7 @@ where
     let (childful, childless): (Vec<_>, Vec<_>) =
         moves.partition(|mh| tree.mv(*mh).child.is_some());
     // Take the first childless move, or perform UCT on childed moves.
-    if let Some(mh) = childless.iter().find(|mh| tree.mv(**mh).mov == Move::Stop) {
-        Some(*mh)
-    } else if let Some(mh) = childless.choose(rng) {
+    if let Some(mh) = childless.choose(rng) {
         Some(*mh)
     } else {
         childful
