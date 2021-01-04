@@ -130,6 +130,7 @@ mod utils;
 pub use ec::*;
 pub use gp::*;
 pub use mcts::*;
+pub use utils::*;
 
 use polytype::TypeSchema;
 use std::f64;

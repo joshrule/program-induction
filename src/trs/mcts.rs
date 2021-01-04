@@ -801,7 +801,7 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
 }
 
 impl<'ctx, 'b> TrueState<'ctx, 'b> {
-    pub fn playout<R: Rng>(&self, mcts: &mut TRSMCTS<'ctx, 'b>, _rng: &mut R) -> Option<Self> {
+    pub fn playout<R: Rng>(&self, mcts: &mut TRSMCTS<'ctx, 'b>, rng: &mut R) -> Option<Self> {
         // TODO: Maybe try backtracking instead of a fixed count?
         for _ in 0..10 {
             let mut state = self.clone();
@@ -810,7 +810,7 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
             while progress && depth < mcts.params.max_depth {
                 progress = false;
                 // Compute the available moves.
-                let moves = state.available_moves(mcts);
+                let mut moves = state.available_moves(mcts);
                 // Choose a move (random policy favoring STOP).
                 let moves_len = moves.len();
                 let mut move_weights = std::iter::repeat(1.0).take(moves_len).collect_vec();
@@ -819,7 +819,8 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     move_weights[idx] = (moves_len - 1) as f64 / 3.0;
                 }
                 let old_state = state.clone();
-                for mv in weighted_permutation(&moves, &move_weights, None) {
+                weighted_permutation(&mut moves, &move_weights, rng);
+                for mv in moves {
                     state.make_move(&mv, moves_len, mcts.data);
                     match state.label {
                         StateLabel::Failed => {

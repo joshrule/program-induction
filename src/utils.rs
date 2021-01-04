@@ -1,12 +1,8 @@
 use itertools::Itertools;
-use rand::{
-    distributions::{Distribution, Uniform},
-    thread_rng,
-};
-use std::{cmp, f64, iter::repeat};
+use rand::prelude::*;
+use std::{cmp::Ordering, f64, iter::repeat};
 
-#[allow(dead_code)]
-pub(crate) fn logsumexp(lps: &[f64]) -> f64 {
+pub fn logsumexp(lps: &[f64]) -> f64 {
     let largest = lps.iter().fold(f64::NEG_INFINITY, |acc, lp| acc.max(*lp));
     if largest == f64::NEG_INFINITY {
         f64::NEG_INFINITY
@@ -16,8 +12,7 @@ pub(crate) fn logsumexp(lps: &[f64]) -> f64 {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn logdiffexp(x: f64, y: f64) -> f64 {
+pub fn logdiffexp(x: f64, y: f64) -> f64 {
     if x == y {
         f64::NEG_INFINITY
     } else {
@@ -28,8 +23,7 @@ pub(crate) fn logdiffexp(x: f64, y: f64) -> f64 {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64>> {
+pub fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64>> {
     let (non_inf_min, max) = lps
         .iter()
         .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, lp| {
@@ -62,15 +56,15 @@ pub(crate) fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64
     }
 }
 
-pub fn fail_geometric_logpdf(k: usize, p: f64) -> f64 {
+pub(crate) fn fail_geometric_logpdf(k: usize, p: f64) -> f64 {
     (1.0 - p).ln() * (k as f64) + p.ln()
 }
 
-pub fn trials_geometric_logpdf(k: usize, p: f64) -> f64 {
+pub(crate) fn trials_geometric_logpdf(k: usize, p: f64) -> f64 {
     (1.0 - p).ln() * ((k as f64) - 1.0) + p.ln()
 }
 
-pub fn zero_or_trials_geometric_logpdf(k: usize, a: f64, p: f64) -> f64 {
+pub(crate) fn zero_or_trials_geometric_logpdf(k: usize, a: f64, p: f64) -> f64 {
     if k == 0 {
         a.ln()
     } else {
@@ -78,7 +72,7 @@ pub fn zero_or_trials_geometric_logpdf(k: usize, a: f64, p: f64) -> f64 {
     }
 }
 
-pub fn assignments(n_items: usize, n_groups: usize) -> Option<Vec<Vec<usize>>> {
+pub(crate) fn assignments(n_items: usize, n_groups: usize) -> Option<Vec<Vec<usize>>> {
     if n_items == 0 || n_groups == 0 {
         None
     } else {
@@ -91,7 +85,7 @@ pub fn assignments(n_items: usize, n_groups: usize) -> Option<Vec<Vec<usize>>> {
     }
 }
 
-pub fn assignment_to_count(assignment: &[usize], n_groups: usize) -> Vec<usize> {
+pub(crate) fn assignment_to_count(assignment: &[usize], n_groups: usize) -> Vec<usize> {
     let mut count = vec![0usize; n_groups];
     for a in assignment {
         count[*a] += 1;
@@ -101,7 +95,7 @@ pub fn assignment_to_count(assignment: &[usize], n_groups: usize) -> Vec<usize> 
 
 // - p(0,a,p,m) = a^m
 // - p(n,a,p,m) = sum_a prod_i p(a_i,a,p,1), a \in assignments(n,m) , 0 <= i <= m
-pub fn block_generative_logpdf(a: f64, p: f64, n_items: usize, n_blocks: usize) -> f64 {
+pub(crate) fn block_generative_logpdf(a: f64, p: f64, n_items: usize, n_blocks: usize) -> f64 {
     if let Some(assignments) = assignments(n_items, n_blocks) {
         let counts = assignments
             .into_iter()
@@ -121,34 +115,48 @@ pub fn block_generative_logpdf(a: f64, p: f64, n_items: usize, n_blocks: usize) 
     }
 }
 
-#[allow(dead_code)]
-pub fn weighted_permutation<T: Clone>(xs: &[T], ws: &[f64], n: Option<usize>) -> Vec<T> {
-    let mut ws = ws.to_vec();
-    let mut idxs: Vec<_> = (0..(ws.len())).collect();
-    let mut permutation = vec![];
-    let length = cmp::min(n.unwrap_or_else(|| xs.len()), xs.len());
-    while permutation.len() < length {
-        let jidxs: Vec<_> = idxs.iter().cloned().enumerate().collect();
-        let &(jdx, idx): &(usize, usize) = weighted_sample(&jidxs, &ws);
-        permutation.push(xs[idx].clone());
-        idxs.remove(jdx);
-        ws.remove(jdx);
-    }
-    permutation
-}
-
-#[allow(dead_code)]
-/// Samples an item from `xs` given the weights `ws`.
-pub fn weighted_sample<'a, T>(xs: &'a [T], ws: &[f64]) -> &'a T {
-    assert_eq!(xs.len(), ws.len(), "weighted sample given invalid inputs");
-    let total: f64 = ws.iter().sum();
-    let threshold: f64 = Uniform::new(0f64, total).sample(&mut thread_rng());
-    let mut cum = 0f64;
-    for (wp, x) in ws.iter().zip(xs) {
-        cum += *wp;
-        if threshold <= cum {
-            return x;
+/// Randomly permute a mutable slice, `xs`, given a set of weights, `ws`.
+///
+/// # Examples
+///
+/// ```
+/// # #[macro_use] extern crate polytype;
+/// # extern crate programinduction;
+/// # extern crate rand;
+/// # use programinduction::weighted_permutation;
+/// # use rand::prelude::*;
+/// let mut rng = thread_rng();
+///
+/// let ws = [1.0, 1.0, 1.0, 1.0, 1.0];
+/// let mut xs = [5, 6, 7, 8, 9];
+/// weighted_permutation(&mut xs, &ws, &mut rng);
+/// ```
+pub fn weighted_permutation<T: Eq + Clone + std::fmt::Debug, R: Rng>(
+    xs: &mut [T],
+    ws: &[f64],
+    rng: &mut R,
+) {
+    // Gives a list of the new index and the current index.
+    // This is probably cheap to create compared to cloning the Ts.
+    let mut indices = ws
+        .iter()
+        .map(|w| -rng.gen::<f64>().ln() / w)
+        .enumerate()
+        .sorted_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap_or(Ordering::Equal))
+        .rev()
+        .map(|(i, _)| i)
+        .enumerate()
+        .rev()
+        .collect_vec();
+    // The idea here is to keep track of where items are by mutating the index tracker.
+    while let Some((new, old)) = indices.pop() {
+        if new != old {
+            xs.swap(new, old);
+            for x in indices.iter_mut() {
+                if x.1 == new {
+                    x.1 = old;
+                }
+            }
         }
     }
-    unreachable!()
 }
