@@ -113,7 +113,7 @@ extern crate rand;
 extern crate rayon;
 #[macro_use]
 extern crate serde;
-//#[macro_use]
+#[macro_use]
 extern crate serde_json;
 #[macro_use]
 extern crate smallvec;

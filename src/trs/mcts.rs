@@ -6,7 +6,7 @@ use mcts::{
 };
 use polytype::atype::Ty;
 use rand::prelude::{Rng, SliceRandom};
-//use serde_json::Value;
+use serde_json::Value;
 use std::{cmp::Ordering, collections::HashMap, convert::TryFrom, f64::NEG_INFINITY, hash::Hash};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
 use trs::{
@@ -317,7 +317,9 @@ pub fn best_so_far_uct(parent: &QN, child: &QN, mcts: &TRSMCTS) -> f64 {
     exploit + explore
 }
 
-// Taken from Fleet
+// Taken from [Fleet]
+//
+// [Fleet]: https://github.com/piantado/Fleet/
 pub fn best_in_subtree_uct<R: Rng>(
     ph: NodeHandle,
     ch: NodeHandle,
@@ -327,7 +329,8 @@ pub fn best_in_subtree_uct<R: Rng>(
 ) -> f64 {
     match mcts.params.selection {
         Selection::BestInSubtree(c, factor) => {
-            let scale = match tree.mv(tree.node(ch).incoming.unwrap()).mov {
+            let mov = &tree.mv(tree.node(ch).incoming.unwrap()).mov;
+            let scale = match *mov {
                 Move::Recurse(None) | Move::Compose(None) | Move::Variablize(None) => factor,
                 _ => 1.0,
             };
@@ -747,54 +750,37 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
             StateLabel::CompleteRevision => Some(mcts.add_revision(Revision::default())),
         }
     }
-    //fn describe_self(&self, data: &Self::Data, mcts: &TRSMCTS) -> Value {
-    //    match *self {
-    //        MCTSState::Terminal(th) => {
-    //            let hh = mcts.terminals[th].trs;
-    //            let trs = &mcts.hypotheses[hh].object.trs;
-    //            let trs_string = trs.utrs.pretty(trs.lex.signature());
-    //            json!({
-    //                "type": "terminal",
-    //                "trs": trs_string,
-    //            })
-    //        }
-    //        MCTSState::Revision(rh) => {
-    //            let trs_string = data.trs.utrs.pretty(data.trs.lex.signature());
-    //            let playout_string = match mcts.revisions[rh].playout {
-    //                PlayoutState::Failed => "failed".to_string(),
-    //                PlayoutState::Untried => "untried".to_string(),
-    //                PlayoutState::Success(hh) => {
-    //                    let playout = &mcts.hypotheses[hh].object.trs;
-    //                    playout.utrs.pretty(playout.lex.signature())
-    //                }
-    //            };
-    //            json!({
-    //                "type": "revision",
-    //                "n": data.n,
-    //                "trs": trs_string,
-    //                "playout": playout_string,
-    //            })
-    //        }
-    //    }
-    //}
-    //fn describe_move(
-    //    &self,
-    //    data: &Self::Data,
-    //    mv: &Self::Move,
-    //    _mcts: &TRSMCTS,
-    //    failed: bool,
-    //) -> Value {
-    //    match *self {
-    //        MCTSState::Terminal(_) => Value::Null,
-    //        MCTSState::Revision(_) => {
-    //            if failed {
-    //                Value::String(mv.head())
-    //            } else {
-    //                Value::String(mv.pretty(&data.trs.lex))
-    //            }
-    //        }
-    //    }
-    //}
+    fn describe_self(&self, mcts: &TRSMCTS) -> Value {
+        match *self {
+            MCTSState::Terminal(th) => {
+                let trs = mcts.hypotheses[mcts.terminals[th].trs].play(mcts).unwrap();
+                json!({
+                    "type": "terminal",
+                    "trs": trs.utrs.pretty(trs.lex.signature()),
+                })
+            }
+            MCTSState::Revision(rh) => {
+                let playout_string = match mcts.revisions[rh].playout {
+                    PlayoutState::Failed => "failed".to_string(),
+                    PlayoutState::Untried => "untried".to_string(),
+                    PlayoutState::Success(hh) => {
+                        let playout = &mcts.hypotheses[hh].play(mcts).unwrap();
+                        playout.utrs.pretty(playout.lex.signature())
+                    }
+                };
+                json!({
+                    "type": "revision",
+                    "playout": playout_string,
+                })
+            }
+        }
+    }
+    fn describe_move(&self, mv: &Self::Move) -> Value {
+        match *self {
+            MCTSState::Terminal(_) => Value::Null,
+            MCTSState::Revision(_) => Value::String(mv.to_string()),
+        }
+    }
     fn discard(&self, mcts: &mut TRSMCTS<'ctx, 'b>) {
         mcts.rm_state(self)
     }

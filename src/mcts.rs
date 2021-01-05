@@ -5,8 +5,8 @@
 use generational_arena::{Arena, Index};
 use rand::Rng;
 use serde::Serialize;
-//use serde_json::Value;
-use std::hash::Hash;
+use serde_json::Value;
+use std::{collections::HashMap, hash::Hash};
 
 pub type Stats<M> = <<M as MCTS>::MoveEval as MoveEvaluator<M>>::NodeStatistics;
 type Move<M> = <<M as MCTS>::State as State<M>>::Move;
@@ -29,8 +29,8 @@ pub trait State<M: MCTS<State = Self>>: Copy + std::hash::Hash + Eq + Sized {
     fn make_move(&self, data: &mut Self::Data, mov: &Self::Move, n: usize, mcts: &M);
     fn make_state(data: &Self::Data, mcts: &mut M) -> Option<Self>;
     fn discard(&self, mcts: &mut M);
-    //fn describe_self(&self, data: &Self::Data, mcts: &M) -> Value;
-    //fn describe_move(&self, data: &Self::Data, mv: &Self::Move, mcts: &M, failed: bool) -> Value;
+    fn describe_self(&self, mcts: &M) -> Value;
+    fn describe_move(&self, mv: &Self::Move) -> Value;
 }
 
 pub trait NodeStatistic<M: MCTS> {
@@ -361,47 +361,60 @@ impl<M: MCTS> SearchTree<M> {
                 .expect("FAILING `prune_except`");
         }
     }
-    // TODO: reinstate
-    //pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {
-    //    let moves = self
-    //        .tree
-    //        .moves
-    //        .iter()
-    //        .map(|(mh, mv)| {
-    //            json!({
-    //                "handle": mh,
-    //                "parent": mv.parent,
-    //                "child": mv.child,
-    //                "move": self.tree.nodes[mv.parent].state.describe_move(&mv.mov, &self.mcts, mv.pruning == Pruning::Hard),
-    //                "pruning": mv.pruning,
-    //            })
-    //        })
-    //        .collect::<Vec<_>>();
-    //    let nodes = self
-    //        .tree
-    //        .nodes
-    //        .iter()
-    //        .map(|(h, n)| {
-    //            json!({
-    //                "handle": h,
-    //                "state": n.state.describe_self(&self.mcts),
-    //                "in": n.incoming,
-    //                "out": n.outgoing,
-    //                "score": n.evaluation.clone().into(),
-    //                "stats": n.stats,
-    //            })
-    //        })
-    //        .collect::<Vec<_>>();
-    //    let tree = json!({
-    //        "root": self.tree.root,
-    //        "moves": moves,
-    //        "nodes": nodes,
-    //    });
+    pub fn to_file(&self, data_file: &str) -> std::io::Result<()> {
+        let move_handles: HashMap<Index, usize> = self
+            .tree
+            .moves
+            .iter()
+            .enumerate()
+            .map(|(i, (mh, _))| (mh, i))
+            .collect();
+        let node_handles: HashMap<Index, usize> = self
+            .tree
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, (mh, _))| (mh, i))
+            .collect();
+        let moves = self
+            .tree
+            .moves
+            .iter()
+            .map(|(mh, mv)| {
+                json!({
+                    "handle": move_handles[&mh],
+                    "parent": node_handles[&mv.parent.0],
+                    "child": mv.child.map(|x| node_handles[&x.0]),
+                    "move": self.tree.nodes[mv.parent].state.describe_move(&mv.mov),
+                    "pruning": mv.pruning,
+                })
+            })
+            .collect::<Vec<_>>();
+        let nodes = self
+            .tree
+            .nodes
+            .iter()
+            .map(|(h, n)| {
+                json!({
+                    "handle": node_handles[&h],
+                    "state": n.state.describe_self(&self.mcts),
+                    "in": n.incoming.map(|x| move_handles[&x.0]),
+                    "out": n.outgoing.iter().map(|x| move_handles[&x.0]).collect::<Vec<_>>(),
+                    "score": n.evaluation.clone().into(),
+                    "stats": n.stats,
+                })
+            })
+            .collect::<Vec<_>>();
+        let tree = json!({
+            "root": node_handles[&self.tree.root.0],
+            "moves": moves,
+            "nodes": nodes,
+        });
 
-    //    let out_file = std::fs::File::create(data_file)?;
-    //    serde_json::to_writer(out_file, &tree)?;
-    //    Ok(())
-    //}
+        let out_file = std::fs::File::create(data_file)?;
+        serde_json::to_writer(out_file, &tree)?;
+        Ok(())
+    }
     pub fn mcts(&self) -> &M {
         &self.mcts
     }
