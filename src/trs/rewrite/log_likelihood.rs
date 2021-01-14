@@ -1,7 +1,7 @@
 use std::f64::NEG_INFINITY;
 use term_rewriting::{trace::Trace, Rule, Term, TRS as UntypedTRS};
 use trs::{Datum, Likelihood, SingleLikelihood, TRS};
-use utils::logsumexp;
+use utilities::logsumexp;
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// A log likelihood for a `TRS`: the probability of `data`'s RHSs appearing
@@ -9,7 +9,7 @@ impl<'a, 'b> TRS<'a, 'b> {
     ///
     /// [`term_rewriting::Trace`]: https://docs.rs/term_rewriting/~0.3/term_rewriting/trace/struct.Trace.html
     // Taken from Equation 16 in Appendix B of (Piantadosi, Goodman, Tenenbaum, 2016).
-    pub fn log_likelihood<'c>(&self, data: &[&'b Datum], likelihood: Likelihood) -> f64 {
+    pub fn log_likelihood(&self, data: &[&'b Datum], likelihood: Likelihood) -> f64 {
         data.iter()
             .rev()
             .enumerate()
@@ -151,33 +151,41 @@ impl<'a, 'b> TRS<'a, 'b> {
                 // trace-sensitive ll with string prefix noise model: (1-p_prefix(d|h))
                 SingleLikelihood::ListPrefix {
                     alpha,
-                    atom_weights,
                     p_add,
                     p_del,
                 } => {
-                    if let Ok(mut env) = self.lex.infer_term(&datum.lhs) {
-                        env.invent = false;
-                        let list = self.lex.lex.ctx.intern_name("list");
-                        let tp = self.lex.lex.ctx.intern_tcon(list, &[]);
-                        let p_sample = env
-                            .logprior_term(rhs, tp, atom_weights)
-                            .unwrap_or(NEG_INFINITY);
-                        let n_chars = self.utrs.hi + 1 - self.utrs.lo;
-                        let p_rewrite = trace.rewrites_to(rhs, move |correct, predicted| {
-                            UntypedTRS::p_list_prefix(
-                                predicted,
-                                correct,
+                    let n_chars = self.utrs.hi + 1 - self.utrs.lo;
+                    match self.lex.signature().has_op(0, Some("EMPTY".to_string())) {
+                        None => Some(NEG_INFINITY),
+                        Some(empty) => {
+                            let nil = Term::Application {
+                                op: empty,
+                                args: vec![],
+                            };
+                            let p_from_nil = UntypedTRS::p_list_prefix(
+                                &nil,
+                                rhs,
                                 p_add,
                                 p_del,
                                 n_chars as usize,
                                 &sig,
-                            )
-                        });
-                        let lp =
-                            logsumexp(&[alpha.ln() + p_sample, (1.0 - alpha).ln() + p_rewrite]);
-                        Some(lp)
-                    } else {
-                        Some(NEG_INFINITY)
+                            );
+                            let p_rewrite = trace.rewrites_to(rhs, move |correct, predicted| {
+                                UntypedTRS::p_list_prefix(
+                                    predicted,
+                                    correct,
+                                    p_add,
+                                    p_del,
+                                    n_chars as usize,
+                                    &sig,
+                                )
+                            });
+                            let lp = logsumexp(&[
+                                alpha.ln() + p_from_nil,
+                                (1.0 - alpha).ln() + p_rewrite,
+                            ]);
+                            Some(lp)
+                        }
                     }
                 }
                 _ => None,

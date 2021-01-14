@@ -1,6 +1,6 @@
 use std::f64::NEG_INFINITY;
 use trs::{Prior, TRS};
-use utils::{block_generative_logpdf, fail_geometric_logpdf};
+use utilities::{block_generative_logpdf, fail_geometric_logpdf};
 
 impl<'a, 'b> TRS<'a, 'b> {
     /// A pseudo log prior for a `TRS`: the negative [`size`] of the `TRS`

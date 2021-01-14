@@ -1,11 +1,20 @@
+//! Tools for making everything else easier.
+
+mod finite_history;
+
+pub use self::finite_history::{FHBool, FiniteHistory};
 use itertools::Itertools;
 use rand::prelude::*;
-use std::{cmp::Ordering, f64, iter::repeat};
+use std::{
+    cmp::Ordering,
+    f64::{EPSILON, INFINITY, NEG_INFINITY},
+    iter::repeat,
+};
 
 pub fn logsumexp(lps: &[f64]) -> f64 {
-    let largest = lps.iter().fold(f64::NEG_INFINITY, |acc, lp| acc.max(*lp));
-    if largest == f64::NEG_INFINITY {
-        f64::NEG_INFINITY
+    let largest = lps.iter().fold(NEG_INFINITY, |acc, lp| acc.max(*lp));
+    if largest == NEG_INFINITY {
+        NEG_INFINITY
     } else {
         let x = lps.iter().map(|lp| (lp - largest).exp()).sum::<f64>().ln();
         largest + x
@@ -13,8 +22,8 @@ pub fn logsumexp(lps: &[f64]) -> f64 {
 }
 
 pub fn logdiffexp(x: f64, y: f64) -> f64 {
-    if x == y {
-        f64::NEG_INFINITY
+    if (x - y).abs() < EPSILON {
+        NEG_INFINITY
     } else {
         let largest = x.max(y);
         let xprime = x - largest;
@@ -24,16 +33,14 @@ pub fn logdiffexp(x: f64, y: f64) -> f64 {
 }
 
 pub fn exp_normalize(lps: &[f64], rescale: Option<f64>) -> Option<Vec<f64>> {
-    let (non_inf_min, max) = lps
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, lp| {
-            if *lp == f64::NEG_INFINITY {
-                (acc.0, acc.1.max(*lp))
-            } else {
-                (acc.0.min(*lp), acc.1.max(*lp))
-            }
-        });
-    if max == f64::NEG_INFINITY {
+    let (non_inf_min, max) = lps.iter().fold((INFINITY, NEG_INFINITY), |acc, lp| {
+        if *lp == NEG_INFINITY {
+            (acc.0, acc.1.max(*lp))
+        } else {
+            (acc.0.min(*lp), acc.1.max(*lp))
+        }
+    });
+    if max == NEG_INFINITY {
         None
     } else {
         let mut ps = match rescale {

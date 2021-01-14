@@ -146,16 +146,10 @@ pub enum Eval {
 
 impl Datum {
     pub fn is_full(&self) -> bool {
-        match self {
-            Datum::Full(_) => true,
-            _ => false,
-        }
+        matches!(self, Datum::Full(_))
     }
     pub fn is_partial(&self) -> bool {
-        match self {
-            Datum::Partial(_) => true,
-            _ => false,
-        }
+        matches!(self, Datum::Partial(_))
     }
 }
 
@@ -333,7 +327,6 @@ pub enum SingleLikelihood {
     // generative trace-based log-likelihood with prefix noise model: (1-p_prefix(d|h))
     ListPrefix {
         alpha: f64,
-        atom_weights: (f64, f64, f64, f64),
         p_add: f64,
         p_del: f64,
     },

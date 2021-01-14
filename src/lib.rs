@@ -98,7 +98,9 @@
 //! [`pcfg`]: pcfg/index.html
 //! [`unit`]: https://doc.rust-lang.org/std/primitive.unit.html
 
+extern crate atomic_counter;
 extern crate crossbeam_channel;
+extern crate crossbeam_utils;
 extern crate generational_arena;
 extern crate itertools;
 #[macro_use]
@@ -122,15 +124,15 @@ extern crate term_rewriting;
 pub mod domains;
 mod ec;
 mod gp;
+pub mod hypotheses;
+pub mod inference;
 pub mod lambda;
-mod mcts;
+pub mod mcts;
 pub mod pcfg;
 pub mod trs;
-mod utils;
+pub mod utilities;
 pub use ec::*;
 pub use gp::*;
-pub use mcts::*;
-pub use utils::*;
 
 use polytype::TypeSchema;
 use std::f64;

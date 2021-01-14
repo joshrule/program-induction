@@ -13,7 +13,7 @@ use trs::{
     Composition, Datum, Env, Lexicon, ModelParams, Recursion, Schedule, SingleLikelihood,
     Variablization, TRS,
 };
-use utils::{logsumexp, weighted_permutation};
+use utilities::{logsumexp, weighted_permutation};
 
 macro_rules! r#tryo {
     ($state:ident, $expr:expr) => {
@@ -240,8 +240,7 @@ impl<'ctx> MCTSObj<'ctx> {
             if state
                 .available_moves(mcts)
                 .iter()
-                .find(|available| *available == mv)
-                .is_some()
+                .any(|available| available == mv)
             {
                 // Providing bogus count, since we don't care.
                 state.make_move(mv, 1, mcts.data);
@@ -938,7 +937,6 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     self.label = StateLabel::CompleteRevision;
                 } else {
                     self.label = StateLabel::Failed;
-                    return;
                 }
             }
             Move::AntiUnify => {
@@ -951,7 +949,6 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     self.label = StateLabel::CompleteRevision;
                 } else {
                     self.label = StateLabel::Failed;
-                    return;
                 }
             }
             Move::Compose(None) => {
@@ -969,7 +966,6 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     self.label = StateLabel::CompleteRevision;
                 } else {
                     self.label = StateLabel::Failed;
-                    return;
                 }
             }
             Move::Recurse(None) => {
@@ -987,7 +983,6 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     self.label = StateLabel::CompleteRevision;
                 } else {
                     self.label = StateLabel::Failed;
-                    return;
                 }
             }
             Move::Variablize(None) => {
@@ -999,7 +994,6 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                 let mut clauses = self.trs.utrs.clauses();
                 if clauses.len() <= v.0 {
                     self.label = StateLabel::Failed;
-                    return;
                 }
                 clauses[v.0] = tryo![
                     self,
@@ -1015,7 +1009,6 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                     self.label = StateLabel::CompleteRevision;
                 } else {
                     self.label = StateLabel::Failed;
-                    return;
                 }
             }
             Move::DeleteRule(None) => {
@@ -1237,7 +1230,6 @@ impl<'ctx, 'b> TrueState<'ctx, 'b> {
                             }
                             Err(v) if v.is_empty() => {
                                 self.label = StateLabel::Failed;
-                                return;
                             }
                             _ => {
                                 if !env.contains(atom) {
