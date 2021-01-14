@@ -2,14 +2,29 @@
 
 mod finite_history;
 
-pub use self::finite_history::{FHBool, FiniteHistory};
+pub use self::finite_history::FiniteHistory;
 use itertools::Itertools;
-use rand::prelude::*;
 use std::{
-    cmp::Ordering,
     f64::{EPSILON, INFINITY, NEG_INFINITY},
     iter::repeat,
 };
+
+#[macro_export]
+macro_rules! r#tryo {
+    ($state:ident, $expr:expr) => {
+        match $expr {
+            std::option::Option::Some(val) => val,
+            std::option::Option::None => {
+                $state.label = StateLabel::Failed;
+                return;
+            }
+        }
+    };
+}
+
+pub fn f64_eq(f1: f64, f2: f64) -> bool {
+    matches!(f1.partial_cmp(&f2), Some(std::cmp::Ordering::Equal) | None)
+}
 
 pub fn logsumexp(lps: &[f64]) -> f64 {
     let largest = lps.iter().fold(NEG_INFINITY, |acc, lp| acc.max(*lp));
@@ -119,51 +134,5 @@ pub(crate) fn block_generative_logpdf(a: f64, p: f64, n_items: usize, n_blocks: 
         logsumexp(&lps)
     } else {
         a.ln() * (n_blocks as f64)
-    }
-}
-
-/// Randomly permute a mutable slice, `xs`, given a set of weights, `ws`.
-///
-/// # Examples
-///
-/// ```
-/// # #[macro_use] extern crate polytype;
-/// # extern crate programinduction;
-/// # extern crate rand;
-/// # use programinduction::weighted_permutation;
-/// # use rand::prelude::*;
-/// let mut rng = thread_rng();
-///
-/// let ws = [1.0, 1.0, 1.0, 1.0, 1.0];
-/// let mut xs = [5, 6, 7, 8, 9];
-/// weighted_permutation(&mut xs, &ws, &mut rng);
-/// ```
-pub fn weighted_permutation<T: Eq + Clone + std::fmt::Debug, R: Rng>(
-    xs: &mut [T],
-    ws: &[f64],
-    rng: &mut R,
-) {
-    // Gives a list of the new index and the current index.
-    // This is probably cheap to create compared to cloning the Ts.
-    let mut indices = ws
-        .iter()
-        .map(|w| -rng.gen::<f64>().ln() / w)
-        .enumerate()
-        .sorted_by(|(_, a), (_, b)| a.partial_cmp(&b).unwrap_or(Ordering::Equal))
-        .rev()
-        .map(|(i, _)| i)
-        .enumerate()
-        .rev()
-        .collect_vec();
-    // The idea here is to keep track of where items are by mutating the index tracker.
-    while let Some((new, old)) = indices.pop() {
-        if new != old {
-            xs.swap(new, old);
-            for x in indices.iter_mut() {
-                if x.1 == new {
-                    x.1 = old;
-                }
-            }
-        }
     }
 }

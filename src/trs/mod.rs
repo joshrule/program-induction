@@ -36,6 +36,7 @@
 mod environment;
 mod lexicon;
 pub mod mcts;
+pub mod metaprogram;
 pub mod parser;
 mod rewrite;
 
@@ -123,13 +124,15 @@ impl<'ctx> std::error::Error for SampleError<'ctx> {
 /// Parameters for a TRS-based probabilistic model.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct ModelParams {
-    // The temperature constant.
+    /// The temperature schedule.
     pub schedule: Schedule,
+    /// The prior.
     pub prior: Prior,
+    /// The likelihood.
     pub likelihood: Likelihood,
     /// The weight of the log likelihood in the posterior.
     pub l_temp: f64,
-    /// The weight of the prior in the posterior.
+    /// The weight of the log prior in the posterior.
     pub p_temp: f64,
 }
 

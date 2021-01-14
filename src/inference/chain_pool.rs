@@ -12,9 +12,9 @@ where
     /// The pool of chains.
     pool: Vec<MCMCChain<'a, H, F>>,
     /// The number many steps to take before switching chains.
-    steps: usize,
+    pub steps: usize,
     /// The number of milliseconds to run before switching chains.
-    runtime: usize,
+    pub runtime: usize,
 }
 
 impl<'a, H, F> ChainPool<'a, H, F>
@@ -25,7 +25,7 @@ where
     /// Construct an MCMC chain pool.
     pub fn new<R: Rng>(
         mut h0: H,
-        callback: Option<&'a mut F>,
+        callback: Option<F>,
         data: &'a [Datum<H>],
         size: usize,
         all_callback: bool,

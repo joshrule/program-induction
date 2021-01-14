@@ -1,14 +1,14 @@
 //! Tools for defining hypotheses and hypothesis spaces.
 
+use crate::utilities::f64_eq;
 use rand::prelude::*;
 use std::{
     f64::{EPSILON, NAN, NEG_INFINITY},
     fmt::Display,
-    hash::Hash,
 };
 
 /// The data used to evaluate a given `Hypothesis`.
-pub type Datum<H> = <H as Hypothesis>::Datum;
+pub type Datum<B> = <B as Bayesable>::Datum;
 
 pub trait Temperable {
     fn at_temperature(&self, t: f64) -> f64;
@@ -21,12 +21,10 @@ pub trait Created {
 }
 
 /// `Hypothesis` types form a hypothesis space which can be searched.
-pub trait Hypothesis: Sized + Clone + Eq + Hash + Display {
-    type Datum: Clone + Sized;
-    fn score(&self) -> f64;
-    fn compute_score(&mut self, data: &[Self::Datum]);
-}
+pub trait Hypothesis: Sized + Clone + Eq + Display {}
 
+/// A container for the components of a Bayesian posterior probability.
+#[derive(Copy, Clone, Debug)]
 pub struct BayesScore {
     pub prior: f64,
     pub likelihood: f64,
@@ -35,6 +33,7 @@ pub struct BayesScore {
 
 /// `Bayesable` types support Bayesian inference (e.g. computing priors, likelihoods, and posteriors).
 pub trait Bayesable: Hypothesis {
+    type Datum: Clone + Sized;
     fn bayes_score(&self) -> &BayesScore;
     fn bayes_score_mut(&mut self) -> &mut BayesScore;
     fn compute_prior(&mut self) -> f64;
@@ -79,6 +78,13 @@ pub trait Bayesable: Hypothesis {
     }
 }
 
+/// `MCMCable` hypothesis spaces can be searched using MCMC.
+pub trait MCMCable: Bayesable {
+    fn restart<R: Rng>(&mut self, rng: &mut R) -> Self;
+    fn propose<R: Rng>(&mut self, rng: &mut R) -> (Self, f64);
+    fn replicate(&mut self, other: &Self);
+}
+
 impl<T: Bayesable> Temperable for T {
     fn at_temperature(&self, t: f64) -> f64 {
         let score = self.bayes_score();
@@ -86,9 +92,22 @@ impl<T: Bayesable> Temperable for T {
     }
 }
 
-/// `MCMCable` hypothesis spaces can be searched using MCMC.
-pub trait MCMCable: Bayesable {
-    fn restart<R: Rng>(&mut self, rng: &mut R) -> Self;
-    fn propose<R: Rng>(&mut self, rng: &mut R) -> (Self, f64);
-    fn replicate(&mut self, other: &Self);
+impl PartialEq for BayesScore {
+    fn eq(&self, other: &Self) -> bool {
+        f64_eq(self.prior, other.prior)
+            && f64_eq(self.likelihood, other.likelihood)
+            && f64_eq(self.posterior, other.posterior)
+    }
+}
+
+impl Eq for BayesScore {}
+
+impl Default for BayesScore {
+    fn default() -> Self {
+        BayesScore {
+            prior: NAN,
+            likelihood: NAN,
+            posterior: NAN,
+        }
+    }
 }

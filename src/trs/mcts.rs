@@ -4,28 +4,15 @@ use mcts::{
     MoveEvaluator, MoveHandle, NodeHandle, NodeStatistic, SearchTree, State, StateEvaluator,
     TreeStore, MCTS,
 };
-use polytype::atype::Ty;
 use rand::prelude::{Rng, SliceRandom};
 use serde_json::Value;
-use std::{cmp::Ordering, collections::HashMap, convert::TryFrom, f64::NEG_INFINITY, hash::Hash};
-use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
+use std::{cmp::Ordering, collections::HashMap, f64::NEG_INFINITY, hash::Hash};
+use term_rewriting::Rule;
 use trs::{
-    Composition, Datum, Env, Lexicon, ModelParams, Recursion, Schedule, SingleLikelihood,
-    Variablization, TRS,
+    metaprogram::{MetaProgram, MetaProgramControl, Move, State as TrueState, StateLabel},
+    Lexicon, Schedule, SingleLikelihood, TRS,
 };
-use utilities::{logsumexp, weighted_permutation};
-
-macro_rules! r#tryo {
-    ($state:ident, $expr:expr) => {
-        match $expr {
-            std::option::Option::Some(val) => val,
-            std::option::Option::None => {
-                $state.label = StateLabel::Failed;
-                return;
-            }
-        }
-    };
-}
+use utilities::logsumexp;
 
 #[derive(Copy, Debug, PartialEq, Eq, Clone, Hash)]
 pub enum MCTSState {
@@ -67,63 +54,17 @@ pub struct ThompsonMoveEvaluator;
 pub struct MaxThompsonMoveEvaluator;
 pub struct MCTSStateEvaluator;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum MoveState<'ctx, 'b> {
-    SampleRule(Box<RuleContext>, Box<Env<'ctx, 'b>>, Vec<Ty<'ctx>>),
-    RegenerateRule(RegenerateRuleState<'ctx, 'b>),
-    Compose,
-    Recurse,
-    Variablize,
-    MemorizeDatum,
-    DeleteRule,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum RegenerateRuleState<'ctx, 'b> {
-    Start,
-    Rule(usize),
-    Place(usize, Vec<usize>),
-    Term(usize, Box<RuleContext>, Box<Env<'ctx, 'b>>, Vec<Ty<'ctx>>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Move<'ctx> {
-    SampleRule,
-    SampleAtom(Option<Atom>),
-    RegenerateRule,
-    RegenerateThisRule(usize),
-    RegenerateThisPlace(Option<usize>),
-    MemorizeDatum(Option<usize>),
-    DeleteRule(Option<usize>),
-    Variablize(Option<Box<Variablization<'ctx>>>),
-    Compose(Option<Box<Composition<'ctx>>>),
-    Recurse(Option<Box<Recursion<'ctx>>>),
-    MemorizeAll,
-    Generalize,
-    AntiUnify,
-    Stop,
-}
-
-#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
-pub enum StateLabel {
-    Failed,
-    Terminal,
-    PartialRevision,
-    CompleteRevision,
-}
-
 pub struct TRSMCTS<'ctx, 'b> {
+    pub ctl: MetaProgramControl<'b>,
     pub lexicon: Lexicon<'ctx, 'b>,
     pub bg: &'b [Rule],
     pub deterministic: bool,
     pub lo: usize,
     pub hi: usize,
-    pub data: &'b [&'b Datum],
     pub root: Option<MCTSState>,
     pub hypotheses: Arena<Box<MCTSObj<'ctx>>>,
     pub revisions: Arena<Revision>,
     pub terminals: Arena<Terminal>,
-    pub model: ModelParams,
     pub params: MCTSParams,
     pub best: f64,
     pub search_time: f64,
@@ -133,9 +74,7 @@ pub struct TRSMCTS<'ctx, 'b> {
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub struct MCTSParams {
-    pub max_depth: usize,
     pub max_states: usize,
-    pub max_revisions: usize,
     pub max_size: usize,
     pub atom_weights: (f64, f64, f64, f64),
     pub invent: bool,
@@ -186,15 +125,6 @@ pub struct MCTSObj<'ctx> {
     pub ln_posterior: f64,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct TrueState<'ctx, 'b> {
-    trs: TRS<'ctx, 'b>,
-    n: usize,
-    spec: Option<MoveState<'ctx, 'b>>,
-    path: Vec<(Move<'ctx>, usize)>,
-    label: StateLabel,
-}
-
 impl<'ctx> MCTSObj<'ctx> {
     pub fn new(
         time: f64,
@@ -227,7 +157,7 @@ impl<'ctx> MCTSObj<'ctx> {
         // Make each move, failing if necessary.
         for mv in &self.moves {
             // Providing bogus count, since we don't care.
-            state.make_move(mv, 1, mcts.data);
+            state.make_move(mv, 1, mcts.ctl.data);
             if StateLabel::Failed == state.label {
                 return None;
             }
@@ -238,12 +168,12 @@ impl<'ctx> MCTSObj<'ctx> {
         let mut state = MCTSState::root_data(mcts);
         for mv in &self.moves {
             if state
-                .available_moves(mcts)
+                .available_moves(&mcts.ctl)
                 .iter()
                 .any(|available| available == mv)
             {
                 // Providing bogus count, since we don't care.
-                state.make_move(mv, 1, mcts.data);
+                state.make_move(mv, 1, mcts.ctl.data);
                 if state.label == StateLabel::Failed {
                     return false;
                 }
@@ -427,83 +357,6 @@ pub fn compute_path<'ctx, 'b>(
     // Leave reward at each node.
     score -= ((moves.len() + (children as usize)) as f64) * 2f64.ln();
     (moves, score)
-}
-
-/// Generate a list of `Atom`s that can fit into a `RuleContext`'s `Hole`.
-///
-/// # Examples
-///
-/// ```
-/// # extern crate polytype;
-/// # extern crate term_rewriting;
-/// # extern crate programinduction;
-/// # use polytype::atype::{with_ctx, TypeContext, Variable as TVar};
-/// # use term_rewriting::{Atom, Context, SituatedAtom, Variable};
-/// # use programinduction::trs::{Env, Lexicon, TRS, parse_rulecontext, parse_lexicon};
-/// # use programinduction::trs::mcts::rulecontext_fillers;
-/// with_ctx(1024, |ctx| {
-///
-///   let mut lex = parse_lexicon(
-///       &[
-///           "C/0: list -> list;",
-///           "CONS/0: nat -> list -> list;",
-///           "NIL/0: list;",
-///           "DECC/0: nat -> int -> nat;",
-///           "DIGIT/0: int -> nat;",
-///           "+/0: nat -> nat -> nat;",
-///           "-/0: nat -> nat -> nat;",
-///           ">/0: nat -> nat -> bool;",
-///           "TRUE/0: bool; FALSE/0: bool;",
-///           "HEAD/0: list -> nat;",
-///           "TAIL/0: list -> list;",
-///           "EMPTY/0: list -> bool;",
-///           "EQUAL/0: t0. t0 -> t0 -> bool;",
-///           "IF/0: t0. bool -> t0 -> t0 -> t0;",
-///           "./2: t1. t2. (t1 -> t2) -> t1 -> t2;",
-///           "0/0: int; 1/0: int; 2/0: int;",
-///           "3/0: int; 4/0: int; 5/0: int;",
-///           "6/0: int; 7/0: int; 8/0: int;",
-///           "9/0: int; NAN/0: nat",
-///       ].join(" "),
-///       &ctx,
-///   ).expect("lex");
-///   let context = parse_rulecontext("v0_ (> (HEAD [!])) = CONS", &mut lex).expect("context");
-///   let mut env = lex.infer_rulecontext(&context).expect("env");
-///   let tp = context
-///                .preorder()
-///                .zip(&env.tps)
-///                .find(|(t, _)| t.is_hole())
-///                .map(|(_, tp)| *tp)
-///                .expect("tp");
-///   let mut arg_tps = vec![tp];
-///   let fillers = rulecontext_fillers(&context, &mut env, &mut arg_tps);
-///   assert_eq!(fillers.len(), 3);
-///   assert_eq!(
-///       vec!["Some(\"NIL\")", "Some(\".\")", "None"],
-///       fillers.iter().map(|a| format!("{:?}", a.map(|atom| atom.display(lex.signature())))).collect::<Vec<_>>()
-///   );
-/// })
-/// ```
-pub fn rulecontext_fillers<'ctx, 'b>(
-    context: &RuleContext,
-    env: &mut Env<'ctx, 'b>,
-    arg_types: &mut Vec<Ty<'ctx>>,
-) -> Vec<Option<Atom>> {
-    match context.leftmost_hole() {
-        None => vec![],
-        Some(place) => {
-            let lhs_hole = place[0] == 0;
-            let full_lhs_hole = place == [0];
-            env.invent = lhs_hole && !full_lhs_hole;
-            env.enumerate_atoms(arg_types[0])
-                .filter_map(|atom| match atom {
-                    None if full_lhs_hole => None,
-                    Some(a) if full_lhs_hole && a.is_variable() => None,
-                    x => Some(x),
-                })
-                .collect_vec()
-        }
-    }
 }
 
 impl<'a, 'b> NodeStatistic<TRSMCTS<'a, 'b>> for VNMax {
@@ -703,13 +556,7 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
         trs.utrs.lo = mcts.lo;
         trs.utrs.hi = mcts.hi;
         trs.identify_symbols();
-        TrueState {
-            trs,
-            spec: None,
-            n: 0,
-            path: vec![],
-            label: StateLabel::CompleteRevision,
-        }
+        TrueState::from_meta(MetaProgram::from(trs), &mcts.ctl)
     }
     fn valid_data(data: &Self::Data, _mcts: &TRSMCTS<'ctx, 'b>) -> bool {
         data.label != StateLabel::Failed
@@ -723,7 +570,7 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
         match *self {
             MCTSState::Terminal(_) => vec![],
             MCTSState::Revision(_) if mcts.max_depth() <= depth => vec![],
-            MCTSState::Revision(_) => data.available_moves(mcts),
+            MCTSState::Revision(_) => data.available_moves(&mcts.ctl),
         }
     }
     fn make_move(
@@ -735,7 +582,7 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
     ) {
         match *self {
             MCTSState::Terminal(_) => panic!("cannot move from terminal"),
-            MCTSState::Revision(_) => data.make_move(mv, n, mcts.data),
+            MCTSState::Revision(_) => data.make_move(mv, n, mcts.ctl.data),
         }
     }
     fn make_state(data: &Self::Data, mcts: &mut TRSMCTS<'ctx, 'b>) -> Option<Self> {
@@ -785,486 +632,12 @@ impl<'ctx, 'b> State<TRSMCTS<'ctx, 'b>> for MCTSState {
     }
 }
 
-impl<'ctx, 'b> TrueState<'ctx, 'b> {
-    pub fn playout<R: Rng>(&self, mcts: &mut TRSMCTS<'ctx, 'b>, rng: &mut R) -> Option<Self> {
-        // TODO: Maybe try backtracking instead of a fixed count?
-        for _ in 0..10 {
-            let mut state = self.clone();
-            let mut progress = true;
-            let mut depth = state.path.len();
-            while progress && depth < mcts.params.max_depth {
-                progress = false;
-                // Compute the available moves.
-                let mut moves = state.available_moves(mcts);
-                // Choose a move (random policy favoring STOP).
-                let moves_len = moves.len();
-                let mut move_weights = std::iter::repeat(1.0).take(moves_len).collect_vec();
-                // 25% bias toward choosing `Stop`.
-                if let Some(idx) = moves.iter().position(|mv| *mv == Move::Stop) {
-                    move_weights[idx] = (moves_len - 1) as f64 / 3.0;
-                }
-                let old_state = state.clone();
-                weighted_permutation(&mut moves, &move_weights, rng);
-                for mv in moves {
-                    state.make_move(&mv, moves_len, mcts.data);
-                    match state.label {
-                        StateLabel::Failed => {
-                            state = old_state.clone();
-                            continue;
-                        }
-                        StateLabel::Terminal => return Some(state),
-                        _ => {
-                            depth += 1;
-                            progress = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-    fn available_moves(&mut self, mcts: &TRSMCTS<'ctx, 'b>) -> Vec<Move<'ctx>> {
-        let mut moves = vec![];
-        match &mut self.spec {
-            None => {
-                // Search can always stop.
-                moves.push(Move::Stop);
-                if self.n < mcts.params.max_revisions {
-                    // Search can always sample a new rule.
-                    moves.push(Move::SampleRule);
-                    // A TRS must have a rule in order to regenerate or generalize.
-                    if !self.trs.is_empty() {
-                        moves.push(Move::RegenerateRule);
-                        moves.push(Move::Generalize);
-                        moves.push(Move::Compose(None));
-                        moves.push(Move::Recurse(None));
-                        moves.push(Move::Variablize(None));
-                    }
-                    // A TRS must have >1 rule to delete without creating cycles.
-                    // Anti-unification relies on having two rules to unify.
-                    if self.trs.len() > 1 {
-                        moves.push(Move::DeleteRule(None));
-                        moves.push(Move::AntiUnify);
-                    }
-                    // We can only add data if there's data to add.
-                    if mcts.data.iter().any(|datum| match datum {
-                        Datum::Partial(_) => false,
-                        Datum::Full(rule) => self.trs.utrs.get_clause(rule).is_none(),
-                    }) {
-                        moves.push(Move::MemorizeAll);
-                        moves.push(Move::MemorizeDatum(None));
-                    }
-                }
-            }
-            Some(MoveState::Variablize) => self
-                .trs
-                .find_all_variablizations()
-                .into_iter()
-                .for_each(|v| moves.push(Move::Variablize(Some(Box::new(v))))),
-            Some(MoveState::Compose) => self
-                .trs
-                .find_all_compositions()
-                .into_iter()
-                .for_each(|composition| moves.push(Move::Compose(Some(Box::new(composition))))),
-            Some(MoveState::Recurse) => self
-                .trs
-                .find_all_recursions()
-                .into_iter()
-                .for_each(|recursion| moves.push(Move::Recurse(Some(Box::new(recursion))))),
-            Some(MoveState::MemorizeDatum) => {
-                (0..mcts.data.len())
-                    .filter(|idx| match mcts.data[*idx] {
-                        Datum::Partial(_) => false,
-                        Datum::Full(ref rule) => self.trs.utrs.get_clause(rule).is_none(),
-                    })
-                    .for_each(|idx| moves.push(Move::MemorizeDatum(Some(idx))));
-            }
-            Some(MoveState::DeleteRule) => {
-                (0..self.trs.len()).for_each(|idx| moves.push(Move::DeleteRule(Some(idx))));
-            }
-            Some(MoveState::SampleRule(ref context, ref mut env, ref mut arg_tps))
-            | Some(MoveState::RegenerateRule(RegenerateRuleState::Term(
-                _,
-                ref context,
-                ref mut env,
-                ref mut arg_tps,
-            ))) => {
-                // TODO: make rulecontext_fillers an iterator.
-                rulecontext_fillers(context, env, arg_tps)
-                    .into_iter()
-                    .map(Move::SampleAtom)
-                    .for_each(|mv| moves.push(mv));
-            }
-            Some(MoveState::RegenerateRule(RegenerateRuleState::Start)) => {
-                for i in 0..self.trs.utrs.rules.len() {
-                    moves.push(Move::RegenerateThisRule(i));
-                }
-            }
-            Some(MoveState::RegenerateRule(RegenerateRuleState::Rule(n))) => {
-                for i in 0..=self.trs.utrs.rules[*n].rhs.len() {
-                    moves.push(Move::RegenerateThisPlace(Some(i)));
-                }
-            }
-            Some(MoveState::RegenerateRule(RegenerateRuleState::Place(n, place))) => {
-                if let Some(term) = self.trs.utrs.rules[*n].at(&place) {
-                    if let Term::Application { args, .. } = term {
-                        for i in 0..args.len() {
-                            moves.push(Move::RegenerateThisPlace(Some(i)));
-                        }
-                    }
-                    moves.push(Move::RegenerateThisPlace(None));
-                }
-            }
-        }
-        moves
-    }
-    pub fn make_move(&mut self, mv: &Move<'ctx>, n: usize, data: &[&'b Datum]) {
-        match *mv {
-            Move::Stop => {
-                self.n += 1;
-                self.path.push((mv.clone(), n));
-                self.spec = None;
-                self.label = StateLabel::Terminal;
-            }
-            Move::Generalize => {
-                let trs = tryo![self, self.trs.generalize().ok()];
-                if self.trs != trs {
-                    self.trs = trs;
-                    self.n += 1;
-                    self.path.push((mv.clone(), n));
-                    self.spec = None;
-                    self.label = StateLabel::CompleteRevision;
-                } else {
-                    self.label = StateLabel::Failed;
-                }
-            }
-            Move::AntiUnify => {
-                let trs = tryo![self, self.trs.lgg().ok()];
-                if self.trs != trs {
-                    self.trs = trs;
-                    self.n += 1;
-                    self.path.push((mv.clone(), n));
-                    self.spec = None;
-                    self.label = StateLabel::CompleteRevision;
-                } else {
-                    self.label = StateLabel::Failed;
-                }
-            }
-            Move::Compose(None) => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                self.spec.replace(MoveState::Compose);
-            }
-            Move::Compose(Some(ref composition)) => {
-                let trs = tryo![self, self.trs.compose_by(composition)];
-                if self.trs != trs {
-                    self.trs = trs;
-                    self.n += 1;
-                    self.path.push((mv.clone(), n));
-                    self.spec = None;
-                    self.label = StateLabel::CompleteRevision;
-                } else {
-                    self.label = StateLabel::Failed;
-                }
-            }
-            Move::Recurse(None) => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                self.spec.replace(MoveState::Recurse);
-            }
-            Move::Recurse(Some(ref recursion)) => {
-                let trs = tryo![self, self.trs.recurse_by(recursion)];
-                if self.trs != trs {
-                    self.trs = trs;
-                    self.n += 1;
-                    self.path.push((mv.clone(), n));
-                    self.spec = None;
-                    self.label = StateLabel::CompleteRevision;
-                } else {
-                    self.label = StateLabel::Failed;
-                }
-            }
-            Move::Variablize(None) => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                self.spec.replace(MoveState::Variablize);
-            }
-            Move::Variablize(Some(ref v)) => {
-                let mut clauses = self.trs.utrs.clauses();
-                if clauses.len() <= v.0 {
-                    self.label = StateLabel::Failed;
-                }
-                clauses[v.0] = tryo![
-                    self,
-                    self.trs.apply_variablization(&v.1, &v.2, &clauses[v.0])
-                ];
-                // TODO: remove clone
-                let trs = tryo![self, self.trs.clone().adopt_rules(&mut clauses)];
-                if self.trs != trs {
-                    self.trs = trs;
-                    self.n += 1;
-                    self.path.push((mv.clone(), n));
-                    self.spec = None;
-                    self.label = StateLabel::CompleteRevision;
-                } else {
-                    self.label = StateLabel::Failed;
-                }
-            }
-            Move::DeleteRule(None) => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                self.spec.replace(MoveState::DeleteRule);
-            }
-            Move::DeleteRule(Some(r)) => {
-                tryo![self, self.trs.utrs.remove_idx(r).ok()];
-                self.n += 1;
-                self.path.push((mv.clone(), n));
-                self.spec = None;
-                self.label = StateLabel::CompleteRevision;
-            }
-            Move::MemorizeAll => {
-                let new_data = data
-                    .iter()
-                    .filter_map(|d| match d {
-                        Datum::Partial(_) => None,
-                        Datum::Full(rule) => {
-                            if self.trs.utrs.get_clause(rule).is_none() {
-                                Some(rule.clone())
-                            } else {
-                                None
-                            }
-                        }
-                    })
-                    .collect_vec();
-                if new_data.is_empty() {
-                    self.label = StateLabel::Failed;
-                } else {
-                    tryo![self, self.trs.append_clauses(new_data).ok()];
-                    self.n += 1;
-                    self.path.push((mv.clone(), n));
-                    self.spec = None;
-                    self.label = StateLabel::CompleteRevision;
-                }
-            }
-            Move::MemorizeDatum(None) => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                self.spec.replace(MoveState::MemorizeDatum);
-            }
-            Move::MemorizeDatum(Some(r)) => match data[r] {
-                Datum::Partial(_) => panic!("can't memorize partial data"),
-                Datum::Full(ref rule) => {
-                    tryo![self, self.trs.append_clauses(vec![rule.clone()]).ok()];
-                    self.n += 1;
-                    self.path.push((mv.clone(), n));
-                    self.spec = None;
-                    self.label = StateLabel::CompleteRevision;
-                }
-            },
-            Move::SampleRule => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                let context = RuleContext::default();
-                let mut env = Env::new(true, &self.trs.lex, Some(self.trs.lex.lex.src));
-                let tp = env.new_type_variable();
-                let arg_tps = vec![tp, tp];
-                self.spec.replace(MoveState::SampleRule(
-                    Box::new(context),
-                    Box::new(env),
-                    arg_tps,
-                ));
-            }
-            Move::RegenerateRule => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                self.spec
-                    .replace(MoveState::RegenerateRule(RegenerateRuleState::Start));
-            }
-            Move::RegenerateThisRule(r) => {
-                if self.trs.utrs.rules.len() <= r {
-                    self.label = StateLabel::Failed;
-                } else {
-                    self.path.push((mv.clone(), n));
-                    self.label = StateLabel::PartialRevision;
-                    self.spec
-                        .replace(MoveState::RegenerateRule(RegenerateRuleState::Rule(r)));
-                }
-            }
-            Move::RegenerateThisPlace(p) => {
-                self.path.push((mv.clone(), n));
-                self.label = StateLabel::PartialRevision;
-                match self.spec.take() {
-                    Some(MoveState::RegenerateRule(RegenerateRuleState::Rule(r))) => match p {
-                        None => panic!("no place specified"),
-                        Some(p) => {
-                            let rule = &self.trs.utrs.rules[r];
-                            let max_height = rule
-                                .lhs
-                                .height()
-                                .max(rule.rhs.iter().map(|rhs| rhs.height()).max().unwrap_or(0));
-                            let mut ps = Vec::with_capacity(max_height);
-                            ps.push(p);
-                            if rule.at(&ps).is_none() {
-                                self.label = StateLabel::Failed;
-                            } else {
-                                self.spec.replace(MoveState::RegenerateRule(
-                                    RegenerateRuleState::Place(r, ps),
-                                ));
-                            }
-                        }
-                    },
-                    Some(MoveState::RegenerateRule(RegenerateRuleState::Place(r, mut ps))) => {
-                        match p {
-                            None => {
-                                let context = RuleContext::from(&self.trs.utrs.rules[r]);
-                                let context =
-                                    context.replace(&ps, Context::Hole).expect("bad place");
-                                let env =
-                                    tryo![self, self.trs.lex.infer_rulecontext(&context).ok()];
-                                let tp = context
-                                    .preorder()
-                                    .zip(&env.tps)
-                                    .find(|(t, _)| t.is_hole())
-                                    .map(|(_, tp)| *tp)
-                                    .expect("tp");
-                                let arg_tps = vec![tp];
-                                self.spec.replace(MoveState::RegenerateRule(
-                                    RegenerateRuleState::Term(
-                                        r,
-                                        Box::new(context),
-                                        Box::new(env),
-                                        arg_tps,
-                                    ),
-                                ));
-                            }
-                            Some(p) => {
-                                ps.push(p);
-                                let rule = &self.trs.utrs.rules[r];
-                                if rule.at(&ps).is_none() {
-                                    self.label = StateLabel::Failed;
-                                } else {
-                                    self.spec.replace(MoveState::RegenerateRule(
-                                        RegenerateRuleState::Place(r, ps),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    x => panic!("# MoveState doesn't match Move: {:?}", x),
-                }
-            }
-            Move::SampleAtom(atom) => {
-                let spec = self.spec.take();
-                match spec {
-                    Some(MoveState::SampleRule(context, mut env, arg_tps)) => {
-                        let atom = atom.unwrap_or_else(|| {
-                            env.new_variable().map(Atom::Variable).expect("variable")
-                        });
-                        let place = tryo![self, context.leftmost_hole()];
-                        let new_context = tryo![
-                            self,
-                            context.replace(
-                                &place,
-                                Context::from(tryo![
-                                    self,
-                                    SituatedAtom::new(atom, self.trs.lex.signature())
-                                ])
-                            )
-                        ];
-                        match Rule::try_from(&new_context) {
-                            Ok(rule) => {
-                                tryo![self, self.trs.append_clauses(vec![rule]).ok()];
-                                self.n += 1;
-                                self.path.push((mv.clone(), n));
-                                self.spec = None;
-                                self.label = StateLabel::CompleteRevision;
-                            }
-                            Err(v) if v.is_empty() => {
-                                self.label = StateLabel::Failed;
-                            }
-                            _ => {
-                                if !env.contains(atom) {
-                                    self.label = StateLabel::Failed;
-                                    return;
-                                }
-                                let tp = arg_tps[0];
-                                let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
-                                new_arg_tps.extend_from_slice(&arg_tps[1..]);
-                                self.path.push((mv.clone(), n));
-                                self.label = StateLabel::PartialRevision;
-                                self.spec.replace(MoveState::SampleRule(
-                                    Box::new(new_context),
-                                    env,
-                                    new_arg_tps,
-                                ));
-                            }
-                        }
-                    }
-                    Some(MoveState::RegenerateRule(RegenerateRuleState::Term(
-                        r,
-                        context,
-                        mut env,
-                        arg_tps,
-                    ))) => {
-                        let place = tryo![self, context.leftmost_hole()];
-                        let lhs_hole = place[0] == 0;
-                        let full_lhs_hole = place == [0];
-                        env.invent = lhs_hole && !full_lhs_hole;
-                        let atom = atom.unwrap_or_else(|| {
-                            env.new_variable().map(Atom::Variable).expect("variable")
-                        });
-                        let subcontext = Context::from(tryo![
-                            self,
-                            SituatedAtom::new(atom, self.trs.lex.signature())
-                        ]);
-                        let new_context = tryo![self, context.replace(&place, subcontext)];
-                        match Rule::try_from(&new_context) {
-                            Ok(rule) => {
-                                tryo![self, self.trs.utrs.remove_idx(r).ok()];
-                                tryo![self, self.trs.utrs.insert_idx(r, rule).ok()];
-                                self.n += 1;
-                                self.path.push((mv.clone(), n));
-                                self.spec = None;
-                                self.label = StateLabel::CompleteRevision;
-                            }
-                            Err(v) if v.is_empty() => {
-                                self.label = StateLabel::Failed;
-                            }
-                            _ => {
-                                if !env.contains(atom) {
-                                    self.label = StateLabel::Failed;
-                                    return;
-                                }
-                                let tp = arg_tps[0];
-                                let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
-                                new_arg_tps.extend_from_slice(&arg_tps[1..]);
-                                self.path.push((mv.clone(), n));
-                                self.label = StateLabel::PartialRevision;
-                                self.spec.replace(MoveState::RegenerateRule(
-                                    RegenerateRuleState::Term(
-                                        r,
-                                        Box::new(new_context),
-                                        env,
-                                        new_arg_tps,
-                                    ),
-                                ));
-                            }
-                        }
-                    }
-                    ref x => panic!("* MoveState doesn't match Move: {:?}", x),
-                }
-            }
-        }
-    }
-}
-
 impl<'ctx, 'b> MCTS for TRSMCTS<'ctx, 'b> {
     type StateEval = MCTSStateEvaluator;
     type MoveEval = BestInSubtreeMoveEvaluator;
     type State = MCTSState;
     fn max_depth(&self) -> usize {
-        self.params.max_depth
+        self.ctl.max_length
     }
     fn max_states(&self) -> usize {
         self.params.max_states
@@ -1279,8 +652,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         deterministic: bool,
         lo: usize,
         hi: usize,
-        data: &'b [&'b Datum],
-        model: ModelParams,
+        ctl: MetaProgramControl<'b>,
         params: MCTSParams,
     ) -> TRSMCTS<'ctx, 'b> {
         TRSMCTS {
@@ -1289,8 +661,7 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
             deterministic,
             lo,
             hi,
-            data,
-            model,
+            ctl,
             params,
             root: None,
             hypotheses: Arena::new(),
@@ -1347,30 +718,32 @@ impl<'ctx, 'b> TRSMCTS<'ctx, 'b> {
         let count = self.count;
         self.count += 1;
 
-        let moves = state.path.iter().fold(
-            Vec::with_capacity(state.path.len()),
-            |mut moves, (mv, _)| {
-                moves.push(mv.clone());
-                moves
-            },
-        );
+        let moves =
+            state
+                .path
+                .iter()
+                .fold(Vec::with_capacity(state.path.len()), |mut moves, mv| {
+                    moves.push(mv.clone());
+                    moves
+                });
 
         let mut truestate = state.clone();
         truestate.trs.utrs.canonicalize(&mut HashMap::new());
-        let ln_meta = truestate.path.iter().fold(0.0, |partial_prior, (_, n)| {
-            partial_prior - (*n as f64).ln()
-        });
-        let ln_trs = truestate.trs.log_prior(self.model.prior);
-        let mut l2 = self.model.likelihood;
+        let ln_meta = truestate
+            .probs
+            .iter()
+            .fold(0.0, |partial_prior, n| partial_prior - (*n as f64).ln());
+        let ln_trs = truestate.trs.log_prior(self.ctl.model.prior);
+        let mut l2 = self.ctl.model.likelihood;
         l2.single = SingleLikelihood::Generalization(0.0);
-        let ln_wf = truestate.trs.log_likelihood(self.data, l2);
+        let ln_wf = truestate.trs.log_likelihood(self.ctl.data, l2);
         let ln_acc = truestate
             .trs
-            .log_likelihood(self.data, self.model.likelihood);
+            .log_likelihood(self.ctl.data, self.ctl.model.likelihood);
         // After HL finds a meta-program, it doesn't care how it found it.
         let ln_prior = ln_trs;
         let ln_likelihood = ln_acc + ln_wf;
-        let ln_posterior = ln_prior * self.model.p_temp + ln_likelihood * self.model.l_temp;
+        let ln_posterior = ln_prior * self.ctl.model.p_temp + ln_likelihood * self.ctl.model.l_temp;
         let object = MCTSObj::new(
             time,
             count,
@@ -1645,7 +1018,7 @@ impl<'a, 'b> StateEvaluator<TRSMCTS<'a, 'b>> for MCTSStateEvaluator {
                 // They share a single playout, which may not be correct.
                 PlayoutState::Failed => NEG_INFINITY,
                 PlayoutState::Success(hh) => mcts.hypotheses[hh].ln_posterior,
-                PlayoutState::Untried => match data.playout(mcts, rng) {
+                PlayoutState::Untried => match data.playout(&mcts.ctl, rng) {
                     Some(state) => {
                         let hh = mcts.make_hypothesis(&state);
                         mcts.revisions[rh].playout = PlayoutState::Success(hh);

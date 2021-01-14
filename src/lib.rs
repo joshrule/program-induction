@@ -130,6 +130,7 @@ pub mod lambda;
 pub mod mcts;
 pub mod pcfg;
 pub mod trs;
+#[macro_use]
 pub mod utilities;
 pub use ec::*;
 pub use gp::*;
