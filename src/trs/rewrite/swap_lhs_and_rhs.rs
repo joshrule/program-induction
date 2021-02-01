@@ -39,7 +39,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
     /// ```
     pub fn swap_lhs_and_rhs<R: Rng>(&self, rng: &mut R) -> Result<Self, SampleError<'ctx>> {
         if !self.is_empty() {
-            let idx = rng.gen_range(0, self.len());
+            let idx = rng.gen_range(0..self.len());
             let mut trs = self.clone();
             let mut new_rules = TRS::swap_rule(&trs.utrs.rules[idx])?;
             self.filter_background(&mut new_rules);

@@ -189,7 +189,7 @@ impl<'a, T> Distribution<&'a T> for Tournament<'a, T> {
                     .unwrap()
                     .0
             } else {
-                &self.population[rng.gen_range(0, self.population.len())].0
+                &self.population[rng.gen_range(0..self.population.len())].0
             }
         } else {
             (0..self.population.len())
