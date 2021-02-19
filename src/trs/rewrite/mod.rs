@@ -123,7 +123,7 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
             .operators()
             .iter()
             .map(|o| (*o, *o))
-            .collect()
+            .collect();
     }
 
     pub fn lexicon(&self) -> &Lexicon<'ctx, 'b> {

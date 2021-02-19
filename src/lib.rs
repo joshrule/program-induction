@@ -98,9 +98,7 @@
 //! [`pcfg`]: pcfg/index.html
 //! [`unit`]: https://doc.rust-lang.org/std/primitive.unit.html
 
-extern crate atomic_counter;
 extern crate crossbeam_channel;
-extern crate crossbeam_utils;
 extern crate generational_arena;
 extern crate itertools;
 #[macro_use]
