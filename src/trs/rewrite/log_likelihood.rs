@@ -155,7 +155,7 @@ impl<'a, 'b> TRS<'a, 'b> {
                     p_del,
                 } => {
                     let n_chars = self.utrs.hi + 1 - self.utrs.lo;
-                    match self.lex.signature().has_op(0, Some("EMPTY".to_string())) {
+                    match self.lex.signature().has_op(0, Some("NIL".to_string())) {
                         None => Some(NEG_INFINITY),
                         Some(empty) => {
                             let nil = Term::Application {
