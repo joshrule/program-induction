@@ -1,5 +1,5 @@
 use crate::{
-    hypotheses::{BayesScore, Bayesable, Created, Hypothesis, MCMCable},
+    hypotheses::{BayesScore, Bayesable, Created, Hypothesis, MCMCable, Temperable},
     inference::Proposal,
     trs::{Composition, Datum, Env, ModelParams, Recursion, SingleLikelihood, Variablization, TRS},
     tryo,
@@ -20,12 +20,12 @@ pub struct MetaProgram<'ctx, 'b> {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct State<'ctx, 'b> {
     pub(crate) data: &'b [&'b Datum],
-    pub(crate) trs: TRS<'ctx, 'b>,
-    pub(crate) n: usize,
-    pub(crate) path: MetaProgram<'ctx, 'b>,
+    pub trs: TRS<'ctx, 'b>,
+    pub n: usize,
+    pub path: MetaProgram<'ctx, 'b>,
     pub(crate) spec: Option<MoveState<'ctx, 'b>>,
     pub(crate) label: StateLabel,
-    pub(crate) probs: Vec<usize>,
+    pub probs: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -265,12 +265,19 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
         // JSR: Removed check for fixed subparts.
 
         // Pick some point in the meta-program.
-        let idx = rng.gen_range(0..meta.len());
+        // // geometric from first
+        // let weights = (0..meta.len())
+        //     .map(|x| 0.25f64.powi((x as i32) + 1))
+        //     .collect_vec();
+        let weights = (0..meta.len()).map(|_| 1.0).collect_vec();
+        let dist = WeightedIndex::new(&weights).ok()?;
+        let idx = dist.sample(rng);
 
         // Compute the probability of what we had there.
         let mut state = State::from_meta(meta, ctl);
         let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
         let old_p_select = -(state.path.len() as f64).ln();
+        let old_len = state.path.len();
 
         // Truncate it.
         meta = state.metaprogram()?;
@@ -285,6 +292,7 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
         // Compute the probability of what we have now.
         let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
         let new_p_select = -(state.path.len() as f64).ln();
+        let new_len = state.path.len();
 
         // Compute the overall FB probability.
         let fb = old_p_select + new_p_meta - (new_p_select + old_p_meta);
@@ -381,7 +389,7 @@ impl<'ctx, 'b> Bayesable for MetaProgramHypothesis<'ctx, 'b> {
             .fold(0.0, |partial_prior, n| partial_prior - (*n as f64).ln());
         self.state.trs.utrs.canonicalize(&mut HashMap::new());
         self.ln_trs = self.state.trs.log_prior(self.ctl.model.prior);
-        self.score.prior = self.ln_trs;
+        self.score.prior = self.ln_meta + self.ln_trs / 100.0;
         self.score.prior
     }
     fn compute_single_likelihood(&mut self, datum: &Self::Datum) -> f64 {
@@ -396,7 +404,7 @@ impl<'ctx, 'b> Bayesable for MetaProgramHypothesis<'ctx, 'b> {
         self.state.trs.utrs.canonicalize(&mut HashMap::new());
         // TODO: this is awkward and hacky.
         let mut l2 = self.ctl.model.likelihood;
-        l2.single = SingleLikelihood::Generalization(0.0);
+        l2.single = SingleLikelihood::Generalization(0.000001);
         self.ln_wf = self.state.trs.log_likelihood(data, l2);
         self.ln_acc = self
             .state
@@ -404,6 +412,13 @@ impl<'ctx, 'b> Bayesable for MetaProgramHypothesis<'ctx, 'b> {
             .log_likelihood(data, self.ctl.model.likelihood);
         self.score.likelihood = self.ln_acc + self.ln_wf;
         self.score.likelihood
+    }
+}
+
+impl<'ctx, 'b> Temperable for MetaProgramHypothesis<'ctx, 'b> {
+    fn at_temperature(&self, t: f64) -> f64 {
+        let score = self.bayes_score();
+        (score.prior + score.likelihood) / t
     }
 }
 
@@ -501,7 +516,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 let mut move_weights = std::iter::repeat(1.0).take(moves_len).collect_vec();
                 // Choose `Stop` 1/3 the time.
                 if let Some(idx) = moves.iter().position(|mv| *mv == Move::Stop) {
-                    move_weights[idx] = (moves_len - 1) as f64 / 2.0;
+                    move_weights[idx] = (moves_len - 1) as f64 / 3.0;
                 }
                 let mut dist = WeightedIndex::new(&move_weights).ok()?;
                 let i = 0;

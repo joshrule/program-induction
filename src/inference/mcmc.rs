@@ -91,6 +91,9 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
             ctl,
             rng,
         }
+    /// Set the temperature.
+    pub fn set_temperature(&mut self, new_temperature: f64) {
+        self.temperature = new_temperature;
     }
     pub fn internal_next<'b, R: Rng>(
         &'b mut self,

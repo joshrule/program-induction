@@ -85,12 +85,6 @@ pub trait MCMCable: Bayesable {
     fn replicate(&mut self, other: &Self);
 }
 
-impl<T: Bayesable> Temperable for T {
-    fn at_temperature(&self, t: f64) -> f64 {
-        let score = self.bayes_score();
-        score.prior + score.likelihood / t
-    }
-}
 
 impl PartialEq for BayesScore {
     fn eq(&self, other: &Self) -> bool {
