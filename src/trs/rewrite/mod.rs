@@ -111,6 +111,11 @@ impl<'ctx, 'b> TRS<'ctx, 'b> {
         }
     }
 
+    pub fn set_bounds(&mut self, lo: usize, hi: usize) {
+        self.utrs.lo = lo;
+        self.utrs.hi = hi;
+    }
+
     pub fn identify_symbols(&mut self) {
         self.bg_ops = self
             .lex
