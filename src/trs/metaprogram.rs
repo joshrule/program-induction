@@ -45,6 +45,7 @@ pub struct MetaProgramControl<'b> {
     pub model: &'b ModelParams,
     pub max_revisions: usize,
     pub max_length: usize,
+    pub trs_temperature: f64,
 }
 
 impl<'b> MetaProgramControl<'b> {
@@ -53,12 +54,14 @@ impl<'b> MetaProgramControl<'b> {
         model: &'b ModelParams,
         max_revisions: usize,
         max_length: usize,
+        trs_temperature: f64,
     ) -> Self {
         MetaProgramControl {
             data,
             model,
             max_revisions,
             max_length,
+            trs_temperature,
         }
     }
 }
@@ -530,7 +533,7 @@ impl<'ctx, 'b> Bayesable for MetaProgramHypothesis<'ctx, 'b> {
             .fold(0.0, |partial_prior, n| partial_prior - (*n as f64).ln());
         self.state.trs.utrs.canonicalize(&mut HashMap::new());
         self.ln_trs = self.state.trs.log_prior(self.ctl.model.prior);
-        self.score.prior = self.ln_meta + self.ln_trs / 100.0;
+        self.score.prior = self.ln_meta + self.ln_trs / self.ctl.trs_temperature;
         self.score.prior
     }
     fn compute_single_likelihood(&mut self, datum: &Self::Datum) -> f64 {
@@ -559,7 +562,7 @@ impl<'ctx, 'b> Bayesable for MetaProgramHypothesis<'ctx, 'b> {
 impl<'ctx, 'b> Temperable for MetaProgramHypothesis<'ctx, 'b> {
     fn at_temperature(&self, t: f64) -> f64 {
         let score = self.bayes_score();
-        (score.prior + score.likelihood) / t
+        score.prior + score.likelihood / t
     }
 }
 
