@@ -1,4 +1,4 @@
-use hypotheses::{Datum, MCMCable};
+use hypotheses::{Datum, MCMCable, Temperable};
 use inference::{Control, MCMCChain};
 use itertools::Itertools;
 use rand::prelude::*;
@@ -50,7 +50,7 @@ where
         }
     }
     /// Set the temperature.
-    pub fn set_temperature(&mut self, new_temperature: f64) {
+    pub fn set_temperature(&mut self, new_temperature: H::TemperatureSpecification) {
         for (_, chain) in self.pool.iter_mut() {
             chain.set_temperature(new_temperature)
         }

@@ -13,7 +13,7 @@ where
 {
     pub(crate) current: H,
     data: &'a [Datum<H>],
-    pub(crate) temperature: f64,
+    pub(crate) temperature: <H as Temperable>::TemperatureSpecification,
     maxval: f64,
     pub(crate) samples: usize,
     proposals: usize,
@@ -42,7 +42,7 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
         MCMCChain {
             current: h0,
             data,
-            temperature: 1.0,
+            temperature: <H as Temperable>::TemperatureSpecification::default(),
             maxval: NEG_INFINITY,
             samples: 1,
             proposals: 0,
@@ -80,10 +80,6 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
     pub fn acceptance_ratio(&self) -> f64 {
         self.history.mean()
     }
-    /// Set the temperature.
-    pub fn set_temperature(&mut self, new_temperature: f64) {
-        self.temperature = new_temperature;
-    }
     pub fn internal_next<'b, R: Rng>(
         &'b mut self,
         ctl: &mut Control,
@@ -94,9 +90,9 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
         }
         while ctl.running() {
             // Track top-hypothesis improvements.
-            if self.current.bayes_score().posterior > self.maxval {
+            if self.current.at_temperature(self.temperature) > self.maxval {
                 // println!("# improving: {}ms", ctl.runtime_ms());
-                self.maxval = self.current.bayes_score().posterior;
+                self.maxval = self.current.at_temperature(self.temperature);
                 self.steps_since_improvement = 0;
             } else {
                 // println!("# no improvement: {}ms", ctl.runtime_ms());
@@ -110,7 +106,7 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
                 self.current.compute_posterior(&self.data, None);
 
                 self.steps_since_improvement = 0; // reset the counter
-                self.maxval = self.current.bayes_score().posterior; // and the new max
+                self.maxval = self.current.at_temperature(self.temperature); // and the new max
 
                 self.samples += 1;
 
@@ -122,7 +118,8 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
             }
 
             // Propose (and restart if at -infinity).
-            let (mut proposal, fb) = if self.current.bayes_score().posterior > NEG_INFINITY {
+            let (mut proposal, fb) = if self.current.at_temperature(self.temperature) > NEG_INFINITY
+            {
                 self.current.propose(rng)
             } else {
                 (self.current.restart(rng), 0.0)
@@ -142,9 +139,9 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
             let ratio = proposal.at_temperature(self.temperature)
                 - self.current.at_temperature(self.temperature)
                 - fb;
-            if self.current.bayes_score().posterior.is_nan()
-                || self.current.bayes_score().posterior == NEG_INFINITY
-                || (!proposal.bayes_score().posterior.is_nan()
+            if self.current.at_temperature(self.temperature).is_nan()
+                || self.current.at_temperature(self.temperature) == NEG_INFINITY
+                || (!proposal.at_temperature(self.temperature).is_nan()
                     && (ratio >= 0.0 || rng.gen::<f64>() < ratio.exp()))
             {
                 self.current = proposal;
@@ -168,8 +165,13 @@ where
     H: MCMCable,
 {
     /// Return the current posterior at temperature `t`.
-    fn at_temperature(&self, t: f64) -> f64 {
+    type TemperatureSpecification = <H as Temperable>::TemperatureSpecification;
+    fn at_temperature(&self, t: Self::TemperatureSpecification) -> f64 {
         self.current.at_temperature(t)
+    }
+    /// Set the temperature to `t`.
+    fn set_temperature(&mut self, t: Self::TemperatureSpecification) {
+        self.temperature = t;
     }
 }
 

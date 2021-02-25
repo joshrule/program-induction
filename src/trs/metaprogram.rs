@@ -557,10 +557,37 @@ impl<'ctx, 'b> Bayesable for MetaProgramHypothesis<'ctx, 'b> {
     }
 }
 
+#[derive(Copy, Clone)]
+pub struct Temperature {
+    t_trs: f64,
+    t_likelihood: f64,
+}
+
+impl Temperature {
+    pub fn new(t_trs: f64, t_likelihood: f64) -> Self {
+        Temperature {
+            t_trs,
+            t_likelihood,
+        }
+    }
+}
+
+impl Default for Temperature {
+    fn default() -> Self {
+        Temperature {
+            t_trs: 1.0,
+            t_likelihood: 1.0,
+        }
+    }
+}
+
 impl<'ctx, 'b> Temperable for MetaProgramHypothesis<'ctx, 'b> {
-    fn at_temperature(&self, t: f64) -> f64 {
-        let score = self.bayes_score();
-        score.prior + score.likelihood / t
+    type TemperatureSpecification = Temperature;
+    fn at_temperature(&self, t: Self::TemperatureSpecification) -> f64 {
+        self.ln_meta + self.ln_trs / t.t_trs + (self.ln_wf + self.ln_acc) / t.t_likelihood
+    }
+    fn set_temperature(&mut self, _t: Self::TemperatureSpecification) {
+        // NOTE: I don't do anything if you set my temperature.
     }
 }
 

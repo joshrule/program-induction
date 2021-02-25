@@ -11,7 +11,9 @@ use std::{
 pub type Datum<B> = <B as Bayesable>::Datum;
 
 pub trait Temperable {
-    fn at_temperature(&self, t: f64) -> f64;
+    type TemperatureSpecification: Copy + Clone + Default;
+    fn at_temperature(&self, t: Self::TemperatureSpecification) -> f64;
+    fn set_temperature(&mut self, t: Self::TemperatureSpecification);
 }
 
 /// `Created` types keep track of when they were created.
