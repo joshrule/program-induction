@@ -14,7 +14,7 @@ use utilities::f64_eq;
 #[derive(Clone, Debug)]
 pub struct MetaProgram<'ctx, 'b> {
     seed: TRS<'ctx, 'b>,
-    moves: Vec<Move<'ctx>>,
+    moves: Vec<Vec<Move<'ctx>>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -66,6 +66,7 @@ impl<'b> MetaProgramControl<'b> {
 pub struct MetaProgramIter<'a, 'ctx, 'b> {
     it: &'a MetaProgram<'ctx, 'b>,
     idx: usize,
+    jdx: usize,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -214,25 +215,32 @@ impl<'ctx, 'b> Eq for MetaProgram<'ctx, 'b> {}
 
 impl<'ctx, 'b> From<TRS<'ctx, 'b>> for MetaProgram<'ctx, 'b> {
     fn from(trs: TRS<'ctx, 'b>) -> Self {
-        MetaProgram::new(trs, vec![Move::Stop])
+        MetaProgram::new(trs, vec![vec![Move::Stop]])
     }
 }
 
 impl<'a, 'ctx, 'b> Iterator for MetaProgramIter<'a, 'ctx, 'b> {
     type Item = &'a Move<'ctx>;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.it.moves.len() {
-            let item = &self.it.moves[self.idx];
-            self.idx += 1;
-            Some(item)
-        } else {
-            None
+        loop {
+            if self.idx < self.it.moves.len() {
+                if self.jdx < self.it.moves[self.idx].len() {
+                    let item = &self.it.moves[self.idx][self.jdx];
+                    self.jdx += 1;
+                    return Some(item);
+                } else {
+                    self.jdx = 0;
+                    self.idx += 1;
+                }
+            } else {
+                return None;
+            }
         }
     }
 }
 
 impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
-    pub fn new(seed: TRS<'ctx, 'b>, moves: Vec<Move<'ctx>>) -> Self {
+    pub fn new(seed: TRS<'ctx, 'b>, moves: Vec<Vec<Move<'ctx>>>) -> Self {
         MetaProgram { seed, moves }
     }
     pub fn is_empty(&self) -> bool {
@@ -244,13 +252,140 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
     pub fn truncate(&mut self, idx: usize) {
         self.moves.truncate(idx);
     }
-    pub fn add(&mut self, mv: Move<'ctx>) {
+    pub fn add(&mut self, mv: Vec<Move<'ctx>>) {
         self.moves.push(mv);
+    }
+    // Note...I can cause all sorts of type problems.
+    // TODO: refactor me to avoid failure.
+    pub fn extend(&mut self, mv: Move<'ctx>) {
+        if !self.moves.is_empty() {
+            let idx = self.moves.len() - 1;
+            self.moves[idx].push(mv);
+        }
     }
     /// Iterate over steps in the meta-program, where each iteration yields a
     /// reference to the step and the number of alternatives.
     pub fn iter<'a>(&'a self) -> MetaProgramIter<'a, 'ctx, 'b> {
-        MetaProgramIter { it: self, idx: 0 }
+        MetaProgramIter {
+            it: self,
+            idx: 0,
+            jdx: 0,
+        }
+    }
+    pub fn regenerate_small<'g, R: Rng>(
+        &'g self,
+        ctl: &'g MetaProgramControl<'b>,
+        rng: &'g mut R,
+    ) -> Option<Proposal<Self>> {
+        // Clone metaprogram.
+        let mut meta = self.clone();
+
+        // Decide what kind of move to make.
+        // - Can only delete if the length is greater than 1.
+        let greater_than_1 = (meta.len() > 1) as usize;
+        let dist = WeightedIndex::new(&[1, greater_than_1, greater_than_1]).ok()?;
+        match dist.sample(rng) {
+            // Insert
+            0 => {
+                // Pick some index.
+                let weights = (0..meta.len()).map(|_| 1.0).collect_vec();
+                let dist = WeightedIndex::new(&weights).ok()?;
+                let idx = dist.sample(rng);
+
+                // Compute the old probabilities.
+                let mut state = State::from_meta(meta, ctl);
+                let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
+                let old_p_select = -(state.path.len() as f64).ln();
+
+                // Insert a new move.
+                // println!("#     idx: {}", idx);
+                state = state.insert_move(ctl, idx, rng)?;
+                meta = state.metaprogram()?;
+
+                // Compute the new probabilities.
+                let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
+                let new_p_select = -(state.path.len() as f64).ln();
+
+                // Compute the FB probability.
+                let fb = (-3f64.ln() + old_p_select + new_p_meta)
+                    - (-3f64.ln() + new_p_select + old_p_meta);
+                // println!("# INSERT old/new lengths: {}/{}", old_len, new_len);
+
+                // Return.
+                Some(Proposal(meta, fb))
+            }
+            // Delete
+            1 => {
+                // Pick some index.
+                let weights = (0..(meta.len() - 1)).map(|_| 1.0).collect_vec();
+                let dist = WeightedIndex::new(&weights).ok()?;
+                let idx = dist.sample(rng);
+
+                // Compute the old probabilities.
+                let mut state = State::from_meta(meta, ctl);
+                let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
+                let old_p_select = -(state.path.len() as f64).ln();
+
+                // Delete that move.
+                // println!("#     idx: {}", idx);
+                meta = state.metaprogram()?;
+                // println!("#     meta: {}", meta);
+                meta.moves.remove(idx);
+                // println!("#     meta after delete: {}", meta);
+                state = State::from_meta(meta, ctl);
+                meta = state.metaprogram()?;
+                // println!("#     final meta: {}", meta);
+
+                // Compute the new probabilities.
+                let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
+                let new_p_select = -(state.path.len() as f64).ln();
+
+                // Compute the FB probability.
+                let fb = (-3f64.ln() + old_p_select + new_p_meta)
+                    - (-3f64.ln() + new_p_select + old_p_meta);
+                // println!("# DELETE old/new lengths: {}/{}", old_len, new_len);
+
+                // Return.
+                Some(Proposal(meta, fb))
+            }
+            // Replace
+            2 => {
+                // Pick some index (cannot pick Stop; it cannot change).
+                let weights = (0..(meta.len() - 1)).map(|_| 1.0).collect_vec();
+                let dist = WeightedIndex::new(&weights).ok()?;
+                let oidx = dist.sample(rng);
+                // println!("#     oidx: {}", oidx);
+
+                // Pick some subindex.
+                let move_len = meta.moves[oidx].len();
+                let iidx = rng.gen_range(0..move_len);
+                // println!("#     iidx: {}", iidx);
+
+                // Compute the old probabilities.
+                let mut state = State::from_meta(meta, ctl);
+                let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
+                let old_p_oselect = -(state.path.len() as f64).ln();
+                let old_p_iselect = -(move_len as f64).ln();
+
+                // Regenerate the rest of the move from the point forward.
+                state = state.replace_move(ctl, oidx, iidx, rng)?;
+                meta = state.metaprogram()?;
+
+                // Compute the new probabilities.
+                let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
+                let move_len = meta.moves[oidx].len();
+                let new_p_iselect = -(move_len as f64).ln();
+
+                // Compute the FB probability.
+                let fb = (-3f64.ln() + old_p_oselect + old_p_iselect + new_p_meta)
+                    - (-3f64.ln() + old_p_oselect + new_p_iselect + old_p_meta);
+                // println!("# REPLACE old/new lengths: {}/{}", old_len, new_len);
+
+                // Return.
+                Some(Proposal(meta, fb))
+            }
+            _ => unreachable!(),
+        }
     }
     /// Regenerate a random subnode of `from`, and return it along with the
     /// forward-backward probability.
@@ -304,7 +439,13 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
 
 impl<'ctx, 'b> Display for MetaProgram<'ctx, 'b> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}]", self.iter().format(", "))
+        write!(
+            f,
+            "[{}]",
+            self.moves.iter().format_with(", ", |e, f| {
+                f(&format_args!("[{}]", e.iter().format(", ")))
+            })
+        )
     }
 }
 
@@ -438,7 +579,7 @@ impl<'ctx, 'b> MCMCable for MetaProgramHypothesis<'ctx, 'b> {
     }
     fn propose<R: Rng>(&mut self, rng: &mut R) -> (Self, f64) {
         loop {
-            match self.state.path.regenerate(self.ctl, rng) {
+            match self.state.path.regenerate_small(self.ctl, rng) {
                 None => continue,
                 Some(Proposal(meta, fb)) => {
                     let mut h = self.clone();
@@ -488,10 +629,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
             n: 0,
             label: StateLabel::CompleteRevision,
         };
-        for mv in path.iter() {
-            let n = state.available_moves(ctl).len();
-            state.make_move(mv, n, ctl.data);
-        }
+        state.extend_with(ctl, &path.moves);
         state
     }
     // pub fn seed(mcts: &TRSMCTS<'ctx, 'b>) -> Self {
@@ -501,49 +639,158 @@ impl<'ctx, 'b> State<'ctx, 'b> {
     //     trs.identify_symbols();
     //     State::from_meta(MetaProgram::from(trs), mcts)
     // }
+    fn insert_move<'g, R: Rng>(
+        &self,
+        ctl: &'g MetaProgramControl<'b>,
+        idx: usize,
+        rng: &'g mut R,
+    ) -> Option<Self> {
+        // 1) run self.program up to idx
+        let mut meta = self.metaprogram()?;
+        let remaining_path = meta.moves.split_off(idx);
+        // println!("#     prefix: {}", meta);
+        let mut state = State::from_meta(meta, ctl);
+        // 2) insert a single new move at idx
+        state = state.add_move(ctl, rng)?;
+        // println!("#     with new move: {}", state.metaprogram()?);
+        // 3) append rest of self.program
+        // println!("#     remaining path: {:?}", remaining_path);
+        state.extend_with(ctl, &remaining_path);
+        // println!("#    after extending: {}", state.metaprogram()?);
+        Some(state)
+    }
+    fn replace_move<'g, R: Rng>(
+        &self,
+        ctl: &'g MetaProgramControl<'b>,
+        oidx: usize,
+        iidx: usize,
+        rng: &'g mut R,
+    ) -> Option<Self> {
+        // 1) Split the program and delete the part to be replaced.
+        let mut meta = self.metaprogram()?;
+        let remaining_path = meta.moves.split_off(oidx + 1);
+        // println!("#     prefix: {}", meta);
+        if iidx > 0 {
+            meta.moves[oidx].truncate(iidx);
+        } else {
+            meta.moves.pop();
+        }
+        // println!("#     truncated: {}", meta);
+        // 2) run self.program up to this point.
+        let mut state = State::from_meta(meta, ctl);
+        // 3) insert a single new move at idx
+        state = state.finish_move(ctl, false, rng)?;
+        // println!("#     with new move: {}", state.metaprogram()?);
+        // println!("#     remaining path: {:?}", remaining_path);
+        // 4) append rest of self.program
+        state.extend_with(ctl, &remaining_path);
+        // println!("#    after extending: {}", state.metaprogram()?);
+        Some(state)
+    }
+    pub fn add_step<R: Rng>(
+        mut self,
+        ctl: &MetaProgramControl<'b>,
+        stop: bool,
+        rng: &mut R,
+    ) -> Option<Self> {
+        if self.path.len() >= ctl.max_length {
+            return None;
+        }
+        // Compute the available moves.
+        let moves = self.available_moves(ctl);
+        // Choose a move (random policy favoring STOP).
+        let moves_len = moves.len();
+        let mut move_weights = std::iter::repeat(1.0).take(moves_len).collect_vec();
+        // Choose `Stop` 1/3 the time.
+        if let Some(idx) = moves.iter().position(|mv| *mv == Move::Stop) {
+            if stop {
+                move_weights[idx] = (moves_len - 1) as f64 / 3.0;
+            } else {
+                move_weights[idx] = 0.0;
+            }
+        }
+        let mut dist = WeightedIndex::new(&move_weights).ok()?;
+        let i = 0;
+        let mut state = self.clone();
+        while i < moves_len {
+            let idx = dist.sample(rng);
+            let mv = &moves[idx];
+            state.make_move(&mv, moves_len, ctl.data);
+            match state.label {
+                StateLabel::Failed => {
+                    dist.update_weights(&[(idx, &0.0)]).ok()?;
+                }
+                _ => return Some(state),
+            }
+        }
+        None
+    }
     pub fn playout<R: Rng>(&self, ctl: &MetaProgramControl<'b>, rng: &mut R) -> Option<Self> {
         // TODO: Maybe try backtracking instead of a fixed count?
         for _ in 0..10 {
             let mut state = self.clone();
-            let mut progress = true;
             let mut length = state.path.len();
-            while progress && length < ctl.max_length {
-                progress = false;
-                // Compute the available moves.
-                let moves = state.available_moves(ctl);
-                // Choose a move (random policy favoring STOP).
-                let moves_len = moves.len();
-                let mut move_weights = std::iter::repeat(1.0).take(moves_len).collect_vec();
-                // Choose `Stop` 1/3 the time.
-                if let Some(idx) = moves.iter().position(|mv| *mv == Move::Stop) {
-                    move_weights[idx] = (moves_len - 1) as f64 / 3.0;
-                }
-                let mut dist = WeightedIndex::new(&move_weights).ok()?;
-                let i = 0;
-                let old_state = state.clone();
-                while i < moves_len {
-                    let idx = dist.sample(rng);
-                    let mv = &moves[idx];
-                    state.make_move(&mv, moves_len, ctl.data);
-                    match state.label {
-                        StateLabel::Failed => {
-                            state = old_state.clone();
-                            dist.update_weights(&[(idx, &0.0)]).ok()?;
-                            continue;
-                        }
-                        StateLabel::Terminal => return Some(state),
+            while length < ctl.max_length {
+                match state.add_step(ctl, true, rng) {
+                    None => break,
+                    Some(new_state) => match new_state.label {
+                        StateLabel::Terminal => return Some(new_state),
+                        StateLabel::Failed => unreachable!(),
                         _ => {
                             length += 1;
-                            progress = true;
-                            break;
+                            state = new_state;
                         }
-                    }
+                    },
                 }
             }
         }
         None
     }
-
+    pub fn finish_move<R: Rng>(
+        &self,
+        ctl: &MetaProgramControl<'b>,
+        stop: bool,
+        rng: &mut R,
+    ) -> Option<Self> {
+        // TODO: Maybe try backtracking instead of a fixed count?
+        for _ in 0..10 {
+            let mut state = self.clone();
+            let mut length = state.path.len();
+            while length < ctl.max_length {
+                match state.add_step(ctl, stop, rng) {
+                    None => break,
+                    Some(new_state) => match new_state.label {
+                        StateLabel::Terminal => return Some(new_state),
+                        StateLabel::Failed => unreachable!(),
+                        _ => {
+                            if new_state.spec.is_none() {
+                                return Some(new_state);
+                            } else {
+                                length += 1;
+                                state = new_state;
+                            }
+                        }
+                    },
+                }
+            }
+        }
+        None
+    }
+    pub fn add_move<R: Rng>(&self, ctl: &MetaProgramControl<'b>, rng: &mut R) -> Option<Self> {
+        // Continue only if we are between moves.
+        match self.spec {
+            Some(_) => None,
+            None => self.finish_move(ctl, false, rng),
+        }
+    }
+    pub fn extend_with(&mut self, ctl: &MetaProgramControl<'b>, path: &[Vec<Move<'ctx>>]) {
+        for mv in path.iter().flatten() {
+            if StateLabel::Failed != self.label {
+                let n = self.available_moves(ctl).len();
+                self.make_move(mv, n, ctl.data);
+            }
+        }
+    }
     pub fn available_moves(&mut self, ctl: &MetaProgramControl<'b>) -> Vec<Move<'ctx>> {
         let mut moves = vec![];
         match &mut self.spec {
@@ -643,7 +890,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
         match *mv {
             Move::Stop => {
                 self.n += 1;
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.spec = None;
                 self.label = StateLabel::Terminal;
@@ -653,7 +900,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 if self.trs != trs {
                     self.trs = trs;
                     self.n += 1;
-                    self.path.add(mv.clone());
+                    self.path.add(vec![mv.clone()]);
                     self.probs.push(n);
                     self.spec = None;
                     self.label = StateLabel::CompleteRevision;
@@ -666,7 +913,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 if self.trs != trs {
                     self.trs = trs;
                     self.n += 1;
-                    self.path.add(mv.clone());
+                    self.path.add(vec![mv.clone()]);
                     self.probs.push(n);
                     self.spec = None;
                     self.label = StateLabel::CompleteRevision;
@@ -675,7 +922,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 }
             }
             Move::Compose(None) => {
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::Compose);
@@ -685,7 +932,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 if self.trs != trs {
                     self.trs = trs;
                     self.n += 1;
-                    self.path.add(mv.clone());
+                    self.path.extend(mv.clone());
                     self.probs.push(n);
                     self.spec = None;
                     self.label = StateLabel::CompleteRevision;
@@ -694,7 +941,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 }
             }
             Move::Recurse(None) => {
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::Recurse);
@@ -704,7 +951,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 if self.trs != trs {
                     self.trs = trs;
                     self.n += 1;
-                    self.path.add(mv.clone());
+                    self.path.extend(mv.clone());
                     self.probs.push(n);
                     self.spec = None;
                     self.label = StateLabel::CompleteRevision;
@@ -713,7 +960,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 }
             }
             Move::Variablize(None) => {
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::Variablize);
@@ -732,7 +979,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 if self.trs != trs {
                     self.trs = trs;
                     self.n += 1;
-                    self.path.add(mv.clone());
+                    self.path.extend(mv.clone());
                     self.probs.push(n);
                     self.spec = None;
                     self.label = StateLabel::CompleteRevision;
@@ -741,7 +988,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 }
             }
             Move::DeleteRule(None) => {
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::DeleteRule);
@@ -749,7 +996,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
             Move::DeleteRule(Some(r)) => {
                 tryo![self, self.trs.utrs.remove_idx(r).ok()];
                 self.n += 1;
-                self.path.add(mv.clone());
+                self.path.extend(mv.clone());
                 self.probs.push(n);
                 self.spec = None;
                 self.label = StateLabel::CompleteRevision;
@@ -773,14 +1020,14 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 } else {
                     tryo![self, self.trs.append_clauses(new_data).ok()];
                     self.n += 1;
-                    self.path.add(mv.clone());
+                    self.path.add(vec![mv.clone()]);
                     self.probs.push(n);
                     self.spec = None;
                     self.label = StateLabel::CompleteRevision;
                 }
             }
             Move::MemorizeDatum(None) => {
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 self.spec.replace(MoveState::MemorizeDatum);
@@ -790,14 +1037,14 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 Datum::Full(ref rule) => {
                     tryo![self, self.trs.append_clauses(vec![rule.clone()]).ok()];
                     self.n += 1;
-                    self.path.add(mv.clone());
+                    self.path.extend(mv.clone());
                     self.probs.push(n);
                     self.spec = None;
                     self.label = StateLabel::CompleteRevision;
                 }
             },
             Move::SampleRule => {
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 let context = RuleContext::default();
@@ -811,7 +1058,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 ));
             }
             Move::RegenerateRule => {
-                self.path.add(mv.clone());
+                self.path.add(vec![mv.clone()]);
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 self.spec
@@ -821,7 +1068,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 if self.trs.utrs.rules.len() <= r {
                     self.label = StateLabel::Failed;
                 } else {
-                    self.path.add(mv.clone());
+                    self.path.extend(mv.clone());
                     self.probs.push(n);
                     self.label = StateLabel::PartialRevision;
                     self.spec
@@ -829,7 +1076,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 }
             }
             Move::RegenerateThisPlace(p) => {
-                self.path.add(mv.clone());
+                self.path.extend(mv.clone());
                 self.probs.push(n);
                 self.label = StateLabel::PartialRevision;
                 match self.spec.take() {
@@ -914,7 +1161,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                             Ok(rule) => {
                                 tryo![self, self.trs.append_clauses(vec![rule]).ok()];
                                 self.n += 1;
-                                self.path.add(mv.clone());
+                                self.path.extend(mv.clone());
                                 self.probs.push(n);
                                 self.spec = None;
                                 self.label = StateLabel::CompleteRevision;
@@ -930,7 +1177,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                                 let tp = arg_tps[0];
                                 let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                                 new_arg_tps.extend_from_slice(&arg_tps[1..]);
-                                self.path.add(mv.clone());
+                                self.path.extend(mv.clone());
                                 self.probs.push(n);
                                 self.label = StateLabel::PartialRevision;
                                 self.spec.replace(MoveState::SampleRule(
@@ -964,7 +1211,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                                 tryo![self, self.trs.utrs.remove_idx(r).ok()];
                                 tryo![self, self.trs.utrs.insert_idx(r, rule).ok()];
                                 self.n += 1;
-                                self.path.add(mv.clone());
+                                self.path.extend(mv.clone());
                                 self.probs.push(n);
                                 self.spec = None;
                                 self.label = StateLabel::CompleteRevision;
@@ -980,7 +1227,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                                 let tp = arg_tps[0];
                                 let mut new_arg_tps = tryo![self, env.check_atom(tp, atom).ok()];
                                 new_arg_tps.extend_from_slice(&arg_tps[1..]);
-                                self.path.add(mv.clone());
+                                self.path.extend(mv.clone());
                                 self.probs.push(n);
                                 self.label = StateLabel::PartialRevision;
                                 self.spec.replace(MoveState::RegenerateRule(
