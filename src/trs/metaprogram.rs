@@ -23,8 +23,8 @@ pub struct State<'ctx, 'b> {
     pub trs: TRS<'ctx, 'b>,
     pub n: usize,
     pub path: MetaProgram<'ctx, 'b>,
-    pub(crate) spec: Option<MoveState<'ctx, 'b>>,
-    pub(crate) label: StateLabel,
+    pub spec: Option<MoveState<'ctx, 'b>>,
+    pub label: StateLabel,
     pub probs: Vec<usize>,
 }
 
@@ -415,7 +415,6 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
         let mut state = State::from_meta(meta, ctl);
         let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
         let old_p_select = -(state.path.len() as f64).ln();
-        let old_len = state.path.len();
 
         // Truncate it.
         meta = state.metaprogram()?;
@@ -430,7 +429,6 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
         // Compute the probability of what we have now.
         let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
         let new_p_select = -(state.path.len() as f64).ln();
-        let new_len = state.path.len();
 
         // Compute the overall FB probability.
         let fb = old_p_select + new_p_meta - (new_p_select + old_p_meta);
