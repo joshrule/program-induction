@@ -72,7 +72,7 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
     pub fn maxval(&self) -> f64 {
         self.maxval
     }
-    /// Return the best posterior seen since the last restart.
+    /// Return the number of samples collected.
     pub fn samples(&self) -> usize {
         self.samples
     }
@@ -80,17 +80,6 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
     pub fn acceptance_ratio(&self) -> f64 {
         self.history.mean()
     }
-    /// Feed the chain a `Control` structure and a source of randomness to begin collecting samples.
-    pub fn iter<'b, R: Rng>(
-        &'b mut self,
-        ctl: Control,
-        rng: &'b mut R,
-    ) -> MCMCChainIterator<'a, 'b, H, R> {
-        MCMCChainIterator {
-            chain: self,
-            ctl,
-            rng,
-        }
     /// Set the temperature.
     pub fn set_temperature(&mut self, new_temperature: f64) {
         self.temperature = new_temperature;
@@ -101,7 +90,6 @@ impl<'a, H: MCMCable> MCMCChain<'a, H> {
         rng: &mut R,
     ) -> Option<&'b H> {
         if !ctl.started() {
-            println!("# starting ctl");
             ctl.start();
         }
         while ctl.running() {

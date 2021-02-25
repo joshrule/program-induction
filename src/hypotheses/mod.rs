@@ -79,7 +79,7 @@ pub trait Bayesable: Hypothesis {
 }
 
 /// `MCMCable` hypothesis spaces can be searched using MCMC.
-pub trait MCMCable: Bayesable {
+pub trait MCMCable: Bayesable + Temperable {
     fn restart<R: Rng>(&mut self, rng: &mut R) -> Self;
     fn propose<R: Rng>(&mut self, rng: &mut R) -> (Self, f64);
     fn replicate(&mut self, other: &Self);
