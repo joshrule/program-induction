@@ -890,6 +890,9 @@ impl<'ctx, 'b> State<'ctx, 'b> {
         moves
     }
     pub fn make_move(&mut self, mv: &Move<'ctx>, n: usize, data: &[&'b Datum]) {
+        if self.label == StateLabel::Failed {
+            return;
+        }
         match *mv {
             Move::Stop => {
                 self.n += 1;
@@ -972,6 +975,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 let mut clauses = self.trs.utrs.clauses();
                 if clauses.len() <= v.0 {
                     self.label = StateLabel::Failed;
+                    return;
                 }
                 clauses[v.0] = tryo![
                     self,
@@ -1244,7 +1248,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                             }
                         }
                     }
-                    ref x => panic!("* MoveState doesn't match Move: {:?}", x),
+                    ref x => panic!("* MoveState doesn't match Move: {} & {:?}", mv, x),
                 }
             }
         }
