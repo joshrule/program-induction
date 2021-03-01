@@ -3,11 +3,19 @@ use crate::{
     inference::Proposal,
     trs::{Composition, Datum, Env, ModelParams, Recursion, SingleLikelihood, Variablization, TRS},
     tryo,
+    utilities::logsumexp,
 };
 use itertools::Itertools;
 use polytype::atype::Ty;
 use rand::{distributions::weighted::WeightedIndex, prelude::*};
-use std::{collections::HashMap, convert::TryFrom, f64::NAN, fmt, fmt::Display, hash::Hash};
+use std::{
+    collections::HashMap,
+    convert::TryFrom,
+    f64::{NAN, NEG_INFINITY},
+    fmt,
+    fmt::Display,
+    hash::Hash,
+};
 use term_rewriting::{Atom, Context, Rule, RuleContext, SituatedAtom, Term};
 use utilities::f64_eq;
 
@@ -200,6 +208,95 @@ pub fn rulecontext_fillers<'ctx, 'b>(
     }
 }
 
+fn fb_if_insert<'ctx, 'b>(
+    old: &MetaProgram<'ctx, 'b>,
+    new: &MetaProgram<'ctx, 'b>,
+    old_p: f64,
+    new_p: f64,
+) -> (f64, f64) {
+    // INVARIANT: old and new cannot be identical.
+    if old != new && old.len() + 1 == new.len() {
+        for idx in 0..old.len() {
+            if old.moves[idx] != new.moves[idx] {
+                let old_p_select = -(old.len() as f64).ln();
+                let new_p_select = -(new.moves.len() as f64).ln();
+                let f = p_of(0, old) + old_p_select + new_p;
+                let b = p_of(0, new) + new_p_select + old_p;
+                // Confirm same after this
+                for jdx in idx..old.len() {
+                    if old.moves[jdx] != new.moves[jdx + 1] {
+                        return (NEG_INFINITY, NEG_INFINITY);
+                    }
+                }
+                return (f, b);
+            }
+        }
+    }
+    (NEG_INFINITY, NEG_INFINITY)
+}
+
+fn fb_if_delete<'ctx, 'b>(
+    old: &MetaProgram<'ctx, 'b>,
+    new: &MetaProgram<'ctx, 'b>,
+    old_p: f64,
+    new_p: f64,
+) -> (f64, f64) {
+    // INVARIANT: old and new cannot be identical.
+    if old != new && old.len() == new.len() + 1 {
+        for idx in 0..new.len() {
+            if old.moves[idx] != new.moves[idx] {
+                let old_p_select = -(old.len() as f64).ln();
+                let new_p_select = -(new.moves.len() as f64).ln();
+                let f = p_of(1, old) + old_p_select + new_p;
+                let b = p_of(1, new) + new_p_select + old_p;
+                // Confirm same after this
+                for jdx in idx..new.len() {
+                    if old.moves[jdx + 1] != new.moves[jdx] {
+                        return (NEG_INFINITY, NEG_INFINITY);
+                    }
+                }
+                return (f, b);
+            }
+        }
+    }
+    (NEG_INFINITY, NEG_INFINITY)
+}
+
+fn fb_if_replace<'ctx, 'b>(
+    old: &MetaProgram<'ctx, 'b>,
+    new: &MetaProgram<'ctx, 'b>,
+    old_p: f64,
+    new_p: f64,
+) -> (f64, f64) {
+    // INVARIANT: old and new cannot be identical.
+    if old == new {
+        return (NAN, NAN);
+    }
+    let n_diff = old
+        .iter()
+        .zip(new.iter())
+        .filter(|(omv, nmv)| omv == nmv)
+        .count();
+    if n_diff == 1 {
+        for oidx in 0..old.len() {
+            if old.moves[oidx] != new.moves[oidx] {
+                let min_len = old.moves[oidx].len().min(new.moves[oidx].len());
+                for iidx in 0..min_len {
+                    if old.moves[oidx][iidx] != new.moves[oidx][iidx] {
+                        let old_p_oselect = -(old.len() as f64).ln();
+                        let old_p_iselect = -(old.moves[oidx].len() as f64).ln();
+                        let new_p_iselect = -(new.moves[oidx].len() as f64).ln();
+                        let f = p_of(2, old) + old_p_oselect + old_p_iselect + new_p;
+                        let b = p_of(2, new) + old_p_oselect + new_p_iselect + old_p;
+                        return (f, b);
+                    }
+                }
+            }
+        }
+    }
+    return (NEG_INFINITY, NEG_INFINITY);
+}
+
 impl PartialEq for BirthRecord {
     fn eq(&self, other: &Self) -> bool {
         f64_eq(self.time, other.time) && self.count == other.count
@@ -242,6 +339,27 @@ impl<'a, 'ctx, 'b> Iterator for MetaProgramIter<'a, 'ctx, 'b> {
     }
 }
 
+fn ps<'ctx, 'b>(meta: &MetaProgram<'ctx, 'b>) -> (f64, f64, f64, f64, f64) {
+    let greater_than_1 = (meta.len() > 1) as usize as f64;
+    let p_insert = 1.0;
+    let p_delete = greater_than_1;
+    let p_replace = greater_than_1;
+    let p_resample = 1.0;
+    let p_total = p_insert + p_resample + p_delete + p_replace;
+    (p_insert, p_delete, p_replace, p_resample, p_total)
+}
+
+fn p_of<'ctx, 'b>(choice: usize, meta: &MetaProgram<'ctx, 'b>) -> f64 {
+    let (p_insert, p_delete, p_replace, p_resample, p_total) = ps(meta);
+    match choice {
+        0 => p_insert.ln() - p_total.ln(),
+        1 => p_delete.ln() - p_total.ln(),
+        2 => p_replace.ln() - p_total.ln(),
+        3 => p_resample.ln() - p_total.ln(),
+        _ => NEG_INFINITY,
+    }
+}
+
 impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
     pub fn new(seed: TRS<'ctx, 'b>, moves: Vec<Vec<Move<'ctx>>>) -> Self {
         MetaProgram { seed, moves }
@@ -281,12 +399,12 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
         rng: &'g mut R,
     ) -> Option<Proposal<Self>> {
         // Clone metaprogram.
-        let mut meta = self.clone();
+        let meta = self.clone();
 
         // Decide what kind of move to make.
         // - Can only delete if the length is greater than 1.
-        let greater_than_1 = (meta.len() > 1) as usize;
-        let dist = WeightedIndex::new(&[1, greater_than_1, greater_than_1]).ok()?;
+        let (p_insert, p_delete, p_replace, p_resample, _) = ps(&meta);
+        let dist = WeightedIndex::new(&[p_insert, p_delete, p_replace, p_resample]).ok()?;
         match dist.sample(rng) {
             // Insert
             0 => {
@@ -296,26 +414,36 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
                 let idx = dist.sample(rng);
 
                 // Compute the old probabilities.
-                let mut state = State::from_meta(meta, ctl);
+                let state = State::from_meta(meta.clone(), ctl);
                 let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
                 let old_p_select = -(state.path.len() as f64).ln();
 
                 // Insert a new move.
                 // println!("#     idx: {}", idx);
-                state = state.insert_move(ctl, idx, rng)?;
-                meta = state.metaprogram()?;
+                let new_state = state.insert_move(ctl, idx, rng)?;
+                let new_meta = new_state.metaprogram()?;
 
                 // Compute the new probabilities.
-                let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
-                let new_p_select = -(state.path.len() as f64).ln();
+                let new_p_meta = new_state
+                    .probs
+                    .iter()
+                    .map(|x| -(*x as f64).ln())
+                    .sum::<f64>();
+                let new_p_select = -(new_state.path.len() as f64).ln();
 
                 // Compute the FB probability.
-                let fb = (-3f64.ln() + old_p_select + new_p_meta)
-                    - (-3f64.ln() + new_p_select + old_p_meta);
-                // println!("# INSERT old/new lengths: {}/{}", old_len, new_len);
+                let f = logsumexp(&[
+                    p_of(0, &meta) + old_p_select + new_p_meta,
+                    p_of(4, &meta) + new_p_meta,
+                ]);
+                let b = logsumexp(&[
+                    p_of(1, &new_meta) + new_p_select + old_p_meta,
+                    p_of(4, &new_meta) + old_p_meta,
+                ]);
+                let fb = f - b;
 
                 // Return.
-                Some(Proposal(meta, fb))
+                Some(Proposal(new_meta, fb))
             }
             // Delete
             1 => {
@@ -325,31 +453,39 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
                 let idx = dist.sample(rng);
 
                 // Compute the old probabilities.
-                let mut state = State::from_meta(meta, ctl);
+                let state = State::from_meta(meta.clone(), ctl);
                 let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
                 let old_p_select = -(state.path.len() as f64).ln();
 
                 // Delete that move.
-                // println!("#     idx: {}", idx);
-                meta = state.metaprogram()?;
-                // println!("#     meta: {}", meta);
-                meta.moves.remove(idx);
-                // println!("#     meta after delete: {}", meta);
-                state = State::from_meta(meta, ctl);
-                meta = state.metaprogram()?;
-                // println!("#     final meta: {}", meta);
+                let mut new_meta = state.metaprogram()?;
+                new_meta.moves.remove(idx);
+                let new_state = State::from_meta(new_meta.clone(), ctl);
+                if new_state.label == StateLabel::Failed {
+                    return None;
+                }
 
                 // Compute the new probabilities.
-                let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
-                let new_p_select = -(state.path.len() as f64).ln();
+                let new_p_meta = new_state
+                    .probs
+                    .iter()
+                    .map(|x| -(*x as f64).ln())
+                    .sum::<f64>();
+                let new_p_select = -(new_state.path.len() as f64).ln();
 
                 // Compute the FB probability.
-                let fb = (-3f64.ln() + old_p_select + new_p_meta)
-                    - (-3f64.ln() + new_p_select + old_p_meta);
-                // println!("# DELETE old/new lengths: {}/{}", old_len, new_len);
+                let f = logsumexp(&[
+                    p_of(1, &meta) + old_p_select + new_p_meta,
+                    p_of(4, &meta) + new_p_meta,
+                ]);
+                let b = logsumexp(&[
+                    p_of(0, &new_meta) + new_p_select + old_p_meta,
+                    p_of(4, &new_meta) + old_p_meta,
+                ]);
+                let fb = f - b;
 
                 // Return.
-                Some(Proposal(meta, fb))
+                Some(Proposal(new_meta, fb))
             }
             // Replace
             2 => {
@@ -365,27 +501,84 @@ impl<'ctx, 'b> MetaProgram<'ctx, 'b> {
                 // println!("#     iidx: {}", iidx);
 
                 // Compute the old probabilities.
-                let mut state = State::from_meta(meta, ctl);
+                let state = State::from_meta(meta.clone(), ctl);
                 let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
                 let old_p_oselect = -(state.path.len() as f64).ln();
                 let old_p_iselect = -(move_len as f64).ln();
 
                 // Regenerate the rest of the move from the point forward.
-                state = state.replace_move(ctl, oidx, iidx, rng)?;
-                meta = state.metaprogram()?;
+                let new_state = state.replace_move(ctl, oidx, iidx, rng)?;
+                if meta == new_state.path {
+                    return None;
+                }
+                let new_meta = new_state.metaprogram()?;
 
                 // Compute the new probabilities.
-                let new_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
-                let move_len = meta.moves[oidx].len();
+                let new_p_meta = new_state
+                    .probs
+                    .iter()
+                    .map(|x| -(*x as f64).ln())
+                    .sum::<f64>();
+                let move_len = new_meta.moves[oidx].len();
                 let new_p_iselect = -(move_len as f64).ln();
 
                 // Compute the FB probability.
-                let fb = (-3f64.ln() + old_p_oselect + old_p_iselect + new_p_meta)
-                    - (-3f64.ln() + old_p_oselect + new_p_iselect + old_p_meta);
-                // println!("# REPLACE old/new lengths: {}/{}", old_len, new_len);
+                let f = logsumexp(&[
+                    p_of(2, &meta) + old_p_oselect + old_p_iselect + new_p_meta,
+                    p_of(4, &meta) + new_p_meta,
+                ]);
+                let b = logsumexp(&[
+                    p_of(2, &new_meta) + old_p_oselect + new_p_iselect + old_p_meta,
+                    p_of(4, &new_meta) + old_p_meta,
+                ]);
+                let fb = f - b;
 
                 // Return.
-                Some(Proposal(meta, fb))
+                Some(Proposal(new_meta, fb))
+            }
+            // Resample.
+            3 => {
+                // Compute the old probabilities.
+                let old_len = meta.len();
+                let state = State::from_meta(meta.clone(), ctl);
+                let old_p_meta = state.probs.iter().map(|x| -(*x as f64).ln()).sum::<f64>();
+
+                // Generate a new state.
+                let new_state = State::random_state(ctl, state.path.seed.clone(), rng)?;
+                if meta == new_state.path {
+                    return None;
+                }
+                let new_meta = new_state.metaprogram()?;
+
+                // Compute the new probabilities.
+                let new_p_meta = new_state
+                    .probs
+                    .iter()
+                    .map(|x| -(*x as f64).ln())
+                    .sum::<f64>();
+                let new_len = new_meta.len();
+
+                // Compute the FB probability.
+                let basic_f = p_of(3, &meta) + new_p_meta;
+                let basic_b = p_of(3, &new_meta) + old_p_meta;
+                let fb = if old_len == new_len {
+                    let (f, b) = fb_if_replace(&meta, &new_meta, old_p_meta, new_p_meta);
+                    logsumexp(&[basic_f, f]) - logsumexp(&[basic_b, b])
+                    // replace case
+                } else if old_len + 1 == new_len {
+                    // insert case
+                    let (f, b) = fb_if_insert(&meta, &new_meta, old_p_meta, new_p_meta);
+                    logsumexp(&[basic_f, f]) - logsumexp(&[basic_b, b])
+                } else if old_len == new_len + 1 {
+                    // delete case
+                    let (f, b) = fb_if_delete(&meta, &new_meta, old_p_meta, new_p_meta);
+                    logsumexp(&[basic_f, f]) - logsumexp(&[basic_b, b])
+                } else {
+                    basic_f - basic_b
+                };
+
+                // Return.
+                Some(Proposal(new_meta, fb))
             }
             _ => unreachable!(),
         }
@@ -610,10 +803,18 @@ impl<'ctx, 'b> MCMCable for MetaProgramHypothesis<'ctx, 'b> {
             match self.state.path.regenerate_small(self.ctl, rng) {
                 None => continue,
                 Some(Proposal(meta, fb)) => {
-                    let mut h = self.clone();
+                    let h = MetaProgramHypothesis {
+                        ctl: self.ctl,
+                        birth: self.birth,
+                        state: State::from_meta(meta, self.ctl),
+                        ln_meta: NAN,
+                        ln_trs: NAN,
+                        ln_acc: NAN,
+                        ln_wf: NAN,
+                        score: BayesScore::default(),
+                    };
                     // TODO: fix incorrect birthtime.
                     // Don't compute posterior here.
-                    h.state = State::from_meta(meta, self.ctl);
                     return (h, fb);
                 }
             }
@@ -729,7 +930,7 @@ impl<'ctx, 'b> State<'ctx, 'b> {
         // Choose a move (random policy favoring STOP).
         let moves_len = moves.len();
         let mut move_weights = std::iter::repeat(1.0).take(moves_len).collect_vec();
-        // Choose `Stop` 1/3 the time.
+        // Choose `Stop` 1/4 the time.
         if let Some(idx) = moves.iter().position(|mv| *mv == Move::Stop) {
             if stop {
                 move_weights[idx] = (moves_len - 1) as f64 / 3.0;
@@ -818,6 +1019,13 @@ impl<'ctx, 'b> State<'ctx, 'b> {
                 self.make_move(mv, n, ctl.data);
             }
         }
+    }
+    pub fn random_state<R: Rng>(
+        ctl: &MetaProgramControl<'b>,
+        seed: TRS<'ctx, 'b>,
+        rng: &mut R,
+    ) -> Option<Self> {
+        State::from_meta(MetaProgram::new(seed, vec![]), ctl).playout(ctl, rng)
     }
     pub fn available_moves(&mut self, ctl: &MetaProgramControl<'b>) -> Vec<Move<'ctx>> {
         let mut moves = vec![];
