@@ -116,6 +116,15 @@ where
             .map(|(_, chain)| chain.acceptance_ratio())
             .collect_vec()
     }
+    /// Change the data available to the pool, and optionally update the
+    /// posterior of the current samples.
+    pub fn set_data(&mut self, data: &'a [Datum<H>], recompute_posterior: bool) {
+        for (active, chain) in self.pool.iter_mut() {
+            if *active {
+                chain.set_data(data, recompute_posterior);
+            }
+        }
+    }
     /// Run the chain.
     pub fn internal_next<'b, R: Rng>(
         &'b mut self,
