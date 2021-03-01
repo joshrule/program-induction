@@ -9,6 +9,8 @@ fn k(t: f64, v: f64, t0: f64) -> f64 {
     (1.0 / v) * t0 / (t + t0)
 }
 
+pub struct TemperatureLadder<T>(pub Vec<T>);
+
 /// Specifications for constructing a temperature ladder as used, e.g., in `ParallelTempering`.
 pub enum TemperatureLadderSpec {
     /// Specify using the number of temperatures and the highest temperature.
@@ -66,13 +68,13 @@ where
     pub fn new<R: Rng>(
         mut h0: H,
         data: &'a [Datum<H>],
-        spec: TemperatureLadderSpec,
+        ladder: TemperatureLadder<<H as Temperable>::TemperatureSpecification>,
         swap: usize,
         // adapt: usize,
         rng: &mut R,
     ) -> Self {
-        let pool = spec
-            .make()
+        let pool = ladder
+            .0
             .iter()
             .enumerate()
             .map(|(i, t)| {
@@ -81,7 +83,7 @@ where
                 } else {
                     MCMCChain::new(h0.restart(rng), data)
                 };
-                chain.temperature = *t;
+                chain.set_temperature(*t);
                 (true, chain)
             })
             .collect_vec();
